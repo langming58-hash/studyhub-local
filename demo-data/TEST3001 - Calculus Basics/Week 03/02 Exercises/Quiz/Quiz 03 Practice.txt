@@ -1,0 +1,9 @@
+TEST3001 Calculus Basics
+Week 03 Quiz
+
+Q1. Use the power rule to differentiate f(x) = x^4.
+
+Q2. Explain in one sentence what a derivative represents graphically.
+
+Source note:
+These synthetic quiz questions are included only for demo mode.

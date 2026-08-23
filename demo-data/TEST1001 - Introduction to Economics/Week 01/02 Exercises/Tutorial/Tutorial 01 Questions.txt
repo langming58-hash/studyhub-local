@@ -1,0 +1,11 @@
+TEST1001 Introduction to Economics
+Week 01 Tutorial
+
+Q1. Define opportunity cost in your own words and apply it to a student choosing between paid work and exam revision.
+
+Q2. A cafe reduces the price of coffee. Explain one reason demand might increase and one reason total revenue might not increase.
+
+Q3. Draw a short verbal explanation of how excess demand can place upward pressure on price.
+
+Source note:
+These are synthetic teacher-style demo questions created only for software testing.

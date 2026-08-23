@@ -1,0 +1,11 @@
+TEST2001 Data Fundamentals
+Week 02 Lecture Notes
+
+Topic: Data Types
+
+Categorical variables describe group membership, such as tutorial group or survey response category. Numerical variables measure quantities, such as age, income, or time spent studying.
+
+Clean data analysis begins by checking variable definitions, missing values, and units before fitting a model or making a chart.
+
+Source note:
+This is synthetic demo content for StudyHub Local.

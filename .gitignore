@@ -1,0 +1,50 @@
+# Runtime data: never commit local study metadata or extracted text.
+data/
+cache/
+logs/
+backups/
+exports/
+*.sqlite
+*.sqlite-*
+*.sqlite.bak
+
+# Secrets and local machine settings.
+.env
+.env.*
+!.env.example
+.privacy.local.json
+*.key
+*.pem
+*.p12
+*.mobileprovision
+
+# Private study materials live outside this repo.
+StudyLibrary/
+study-library/
+canvas-downloads/
+Source Index.csv
+Question Bank.csv
+
+# Python/editor noise.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.DS_Store
+.idea/
+.vscode/
+
+# Do not let normal Canvas documents slip into app history.
+*.pdf
+*.doc
+*.docx
+*.ppt
+*.pptx
+*.xls
+*.xlsx
+*.csv
+*.ipynb
+!docs/**/*.md
+!demo-data/**/*.txt
+!demo-data/**/*.py

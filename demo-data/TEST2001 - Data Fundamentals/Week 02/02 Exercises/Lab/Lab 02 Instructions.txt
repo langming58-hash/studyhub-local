@@ -1,0 +1,11 @@
+TEST2001 Data Fundamentals
+Week 02 Lab
+
+Q1. Identify whether each variable in a small survey table is categorical or numerical.
+
+Q2. Write pseudocode for checking missing values in a dataset before analysis.
+
+Q3. Explain why units should be recorded before comparing two numerical variables.
+
+Source note:
+These are synthetic lab questions for public demo testing.

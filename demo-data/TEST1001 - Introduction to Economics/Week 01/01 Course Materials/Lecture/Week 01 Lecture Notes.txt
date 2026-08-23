@@ -1,0 +1,15 @@
+TEST1001 Introduction to Economics
+Week 01 Lecture Notes
+
+Topic: Markets and Opportunity Cost
+
+A market is a setting where buyers and sellers exchange goods, services, or information. The demo model uses a simple demand schedule and supply schedule to show how price adjusts when there is excess demand or excess supply.
+
+Key idea:
+Opportunity cost is the value of the best alternative that is given up when a choice is made.
+
+Example:
+If a student spends two hours revising economics instead of working a casual shift, the opportunity cost includes the forgone wage and any other valued alternative use of that time.
+
+Source note:
+This is synthetic demo content created for StudyHub Local. It is not copied from any university course.

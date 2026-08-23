@@ -1,0 +1,20 @@
+TEST1001 Introduction to Economics
+Week 04 Slides
+
+Slide 1: Keynesian Cross
+The Keynesian cross compares planned aggregate expenditure with actual output.
+
+Slide 2: Planned Expenditure
+Planned expenditure is the amount households, firms, government, and foreign buyers plan to spend on domestic output.
+
+Slide 3: Equilibrium
+In the simple Keynesian model, equilibrium occurs where planned expenditure equals actual output.
+
+Slide 4: Multiplier
+The expenditure multiplier shows how an initial autonomous spending change can lead to a larger change in equilibrium output.
+
+Slide 5: Marginal Propensity to Consume
+The marginal propensity to consume is the fraction of an additional dollar of income that households spend on consumption.
+
+Source note:
+This synthetic slide text exists only for demo-mode source-grounded search and Ask GPT testing.

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>StudyHub Local</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">SH</div>
+          <div>
+            <strong>StudyHub Local</strong>
+            <span id="libraryState">Checking library</span>
+          </div>
+        </div>
+        <nav class="nav">
+          <button class="nav-item active" data-view="home">⌂ <span>Home</span></button>
+          <button class="nav-item" data-view="thisWeek">◷ <span>This Week</span></button>
+          <button class="nav-item" data-view="courses">▦ <span>Courses</span></button>
+          <button class="nav-item" data-view="search">⌕ <span>Search</span></button>
+          <button class="nav-item" data-view="askgpt">? <span>Ask GPT</span></button>
+          <button class="nav-item" data-view="starred">★ <span>Starred</span></button>
+          <button class="nav-item" data-view="practice">✓ <span>Practice</span></button>
+          <button class="nav-item" data-view="wrong">! <span>Wrong Questions</span></button>
+          <button class="nav-item" data-view="exam">◇ <span>Exam Review</span></button>
+          <button class="nav-item" data-view="settings">⚙ <span>Settings</span></button>
+        </nav>
+        <div class="course-list" id="courseList"></div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Private localhost study manager</p>
+            <h1 id="pageTitle">Home</h1>
+          </div>
+          <div class="top-actions">
+            <button id="uploadBtn" class="button secondary">＋ Add Material</button>
+            <button id="scanBtn" class="button primary">↻ Scan Library</button>
+          </div>
+        </header>
+
+        <section id="view" class="view"></section>
+      </main>
+    </div>
+
+    <div id="fileDrawer" class="drawer" hidden>
+      <div class="drawer-panel">
+        <div class="drawer-head">
+          <div>
+            <p class="eyebrow" id="drawerMeta"></p>
+            <h2 id="drawerTitle"></h2>
+          </div>
+          <button class="icon-button" id="closeDrawer" aria-label="Close">×</button>
+        </div>
+        <div class="drawer-actions">
+          <button id="openOriginal" class="button primary">Open Original</button>
+          <button id="askFileFull" class="button secondary">Ask GPT</button>
+          <button id="starFile" class="button secondary">Star</button>
+          <button id="copyContext" class="button secondary">Prepare Context</button>
+        </div>
+        <div class="drawer-body">
+          <div class="preview-frame" id="previewFrame"></div>
+          <aside class="context-panel">
+            <h3>Context</h3>
+            <div id="contextIndicator" class="notice compact"></div>
+            <h3>Extracted Preview</h3>
+            <pre id="extractedText"></pre>
+            <h3>Ask GPT</h3>
+            <textarea id="askPrompt" placeholder="Ask about this selected file."></textarea>
+            <button id="askBtn" class="button secondary full">Ask</button>
+            <div id="askResponse" class="notice"></div>
+          </aside>
+        </div>
+      </div>
+    </div>
+
+    <dialog id="uploadDialog">
+      <form method="dialog" class="dialog-form">
+        <div class="drawer-head">
+          <div>
+            <p class="eyebrow">Local study library</p>
+            <h2>Add Material</h2>
+          </div>
+          <button class="icon-button" value="cancel" aria-label="Close">×</button>
+        </div>
+        <label>Course <select id="uploadCourse"></select></label>
+        <label>Week <select id="uploadWeek"></select></label>
+        <label>Section
+          <select id="uploadSection">
+            <option>01 Course Materials</option>
+            <option>02 Exercises</option>
+            <option>My_Work</option>
+            <option>Review</option>
+          </select>
+        </label>
+        <label>Category <input id="uploadCategory" value="Lecture" /></label>
+        <label class="dropzone">
+          <input id="uploadFile" type="file" multiple />
+          <span>Select files to copy into the study library</span>
+        </label>
+        <menu>
+          <button value="cancel" class="button secondary">Cancel</button>
+          <button id="uploadSubmit" value="default" class="button primary">Upload</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" hidden></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

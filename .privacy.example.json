@@ -1,0 +1,6 @@
+{
+  "forbidden_markers": [
+    "EXAMPLE-PRIVATE-STUDY-MARKER",
+    "TEST-PRIVATE-COURSE"
+  ]
+}

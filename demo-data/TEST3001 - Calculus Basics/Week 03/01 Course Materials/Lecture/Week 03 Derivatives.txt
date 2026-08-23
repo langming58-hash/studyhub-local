@@ -1,0 +1,12 @@
+TEST3001 Calculus Basics
+Week 03 Lecture Notes
+
+Topic: Derivatives
+
+The derivative of a function at a point measures the instantaneous rate of change. For a smooth curve, it is the slope of the tangent line at that point.
+
+Power rule:
+If f(x) = x^n, then f'(x) = n x^(n-1) for constant n.
+
+Source note:
+This is synthetic demo content created for software testing.
