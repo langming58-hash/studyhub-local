@@ -221,18 +221,45 @@ def header_host_without_port(value: str) -> str:
     return host.rsplit(":", 1)[0] if ":" in host and host.count(":") == 1 else host
 
 
+def split_host_port(value: str) -> tuple[str, int | None]:
+    host = (value or "").strip()
+    if not host:
+        return "", None
+    if host.startswith("[") and "]" in host:
+        name = host[1 : host.index("]")]
+        rest = host[host.index("]") + 1 :]
+        if rest.startswith(":") and rest[1:].isdigit():
+            return name.lower(), int(rest[1:])
+        return name.lower(), None
+    if ":" in host and host.count(":") == 1:
+        name, port = host.rsplit(":", 1)
+        return name.lower(), int(port) if port.isdigit() else None
+    return host.lower(), None
+
+
+def default_port_for_scheme(scheme: str) -> int | None:
+    if scheme == "http":
+        return 80
+    if scheme == "https":
+        return 443
+    return None
+
+
 def is_safe_loopback_origin(origin: str, host_header: str) -> bool:
     if not origin:
         return True
     parsed = urllib.parse.urlparse(origin)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    if parsed.scheme != "http" or not parsed.hostname:
         return False
-    if not is_loopback_host(parsed.hostname):
+    origin_host = parsed.hostname.lower()
+    if not is_loopback_host(origin_host):
         return False
-    request_host = header_host_without_port(host_header)
-    if request_host and not is_loopback_host(request_host):
+    request_host, request_port = split_host_port(host_header)
+    if not request_host or not is_loopback_host(request_host):
         return False
-    return True
+    origin_port = parsed.port or default_port_for_scheme(parsed.scheme)
+    request_port = request_port or default_port_for_scheme("http")
+    return origin_host == request_host and origin_port == request_port
 
 
 def request_host_is_loopback(host_header: str) -> bool:

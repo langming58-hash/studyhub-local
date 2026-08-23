@@ -1,6 +1,6 @@
 {
   "name": "studyhub-local",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Local-first course material hub with source-grounded AI study tools.",
   "license": "MIT",
   "scripts": {

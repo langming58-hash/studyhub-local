@@ -179,6 +179,29 @@ def main() -> int:
             FakeHandler(server, valid_headers | {"Origin": "https://example.invalid", "Sec-Fetch-Site": "cross-site"}),
         )
         valid_same_origin = bind_methods(server, FakeHandler(server, valid_headers))
+        cross_port_localhost = bind_methods(server, FakeHandler(server, valid_headers | {"Origin": "http://localhost:3000"}))
+        cross_port_loopback_ip = bind_methods(
+            server,
+            FakeHandler(server, valid_headers | {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:9999"}),
+        )
+        localhost_ip_mismatch = bind_methods(server, FakeHandler(server, valid_headers | {"Origin": "http://127.0.0.1:8765"}))
+        ip_localhost_mismatch = bind_methods(
+            server,
+            FakeHandler(server, valid_headers | {"Host": "127.0.0.1:8765", "Origin": "http://localhost:8765"}),
+        )
+        scheme_mismatch = bind_methods(server, FakeHandler(server, valid_headers | {"Origin": "https://localhost:8765"}))
+        exact_ip_same_origin = bind_methods(
+            server,
+            FakeHandler(server, valid_headers | {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}),
+        )
+        exact_ipv6_same_origin = bind_methods(
+            server,
+            FakeHandler(server, valid_headers | {"Host": "[::1]:8765", "Origin": "http://[::1]:8765"}),
+        )
+        no_origin_with_valid_csrf = bind_methods(
+            server,
+            FakeHandler(server, {"Host": "localhost:8765", "Sec-Fetch-Site": "same-origin", "X-StudyHub-CSRF": server.CSRF_TOKEN}),
+        )
 
         conn = sqlite3.connect(server.DB_PATH)
         conn.row_factory = sqlite3.Row
@@ -296,6 +319,15 @@ def main() -> int:
             "missing_csrf_token_rejected": raises(PermissionError, missing_csrf.validate_same_origin_mutation),
             "invalid_csrf_token_rejected": raises(PermissionError, invalid_csrf.validate_same_origin_mutation),
             "valid_same_origin_csrf_request_accepted": not raises(Exception, valid_same_origin.validate_same_origin_mutation),
+            "cross_port_localhost_origin_rejected": raises(PermissionError, cross_port_localhost.validate_same_origin_mutation),
+            "cross_port_loopback_ip_origin_rejected": raises(PermissionError, cross_port_loopback_ip.validate_same_origin_mutation),
+            "localhost_vs_127_origin_mismatch_rejected": raises(PermissionError, localhost_ip_mismatch.validate_same_origin_mutation),
+            "127_vs_localhost_origin_mismatch_rejected": raises(PermissionError, ip_localhost_mismatch.validate_same_origin_mutation),
+            "http_https_scheme_mismatch_rejected": raises(PermissionError, scheme_mismatch.validate_same_origin_mutation),
+            "exact_localhost_origin_accepted": not raises(Exception, valid_same_origin.validate_same_origin_mutation),
+            "exact_127_origin_accepted": not raises(Exception, exact_ip_same_origin.validate_same_origin_mutation),
+            "exact_ipv6_origin_accepted": not raises(Exception, exact_ipv6_same_origin.validate_same_origin_mutation),
+            "no_origin_still_requires_valid_csrf": not raises(Exception, no_origin_with_valid_csrf.validate_same_origin_mutation),
             "non_loopback_host_refused": raises(PermissionError, lambda: server.validate_loopback_bind_host("0.0.0.0")),
             "preview_outside_study_root_rejected": raises(PermissionError, lambda: server.get_file(server.connect_db(), outside_id)),
             "open_outside_study_root_rejected": raises(PermissionError, lambda: server.get_file(server.connect_db(), outside_id)),

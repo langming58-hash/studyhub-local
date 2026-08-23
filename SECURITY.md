@@ -20,7 +20,7 @@ The scanner, previews, upload flow, open-original action, Ask GPT, and MCP tools
 
 ## Browser/API Boundary
 
-Mutating HTTP routes require a per-process CSRF token and same-origin loopback headers. The frontend obtains that token from a local-only session bootstrap endpoint, not from the general health payload. API responses include security headers, deny framing, disable referrer leakage, and use `Cache-Control: no-store` for API/MCP responses.
+Mutating HTTP routes require a per-process CSRF token and exact same-origin headers: HTTP scheme, Host hostname literal, and effective port must match. The frontend obtains that token from a local-only session bootstrap endpoint, not from the general health payload. API responses include security headers, deny framing, disable referrer leakage, and use `Cache-Control: no-store` for API/MCP responses.
 
 ## MCP Boundary
 
