@@ -63,7 +63,7 @@ Open [http://127.0.0.1:8765](http://127.0.0.1:8765).
 
 `npm install` is intentionally lightweight. The app currently uses Python standard-library backend code and static frontend files.
 
-StudyHub Local is designed for loopback access only. It refuses non-loopback `HOST` values such as `0.0.0.0`. Do not expose it with ngrok, Cloudflare Tunnel, port forwarding, reverse proxies, or public hosting unless you have performed a separate security review for your own deployment.
+StudyHub Local is designed for loopback access only. It refuses non-loopback `HOST` values such as `0.0.0.0` at startup and rejects non-loopback HTTP `Host` headers on every request. Do not expose it with ngrok, Cloudflare Tunnel, port forwarding, reverse proxies, or public hosting unless you have performed a separate security review for your own deployment.
 
 ## Demo Mode
 
@@ -175,6 +175,7 @@ The read-only MCP endpoint is available for local integrations. It is designed t
 - Listen on localhost
 - Restrict file access to the configured study library
 - Deny path traversal
+- Reject hostile non-loopback `Host` headers on GET and POST requests
 - Require same-origin CSRF protection for HTTP POST requests
 - Avoid returning local absolute paths or provider IDs
 - Expose read-only tools such as list, search, fetch, and question lookup

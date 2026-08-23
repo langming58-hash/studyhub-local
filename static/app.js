@@ -256,8 +256,9 @@ function fileCard(file) {
 }
 
 async function loadBase() {
+  const session = await api("/api/session");
+  state.csrfToken = session.csrfToken || state.csrfToken || "";
   state.health = await api("/api/health");
-  state.csrfToken = state.health.csrfToken || state.csrfToken || "";
   state.courses = await api("/api/courses");
   await Promise.all(
     state.courses.map(async (course) => {
@@ -789,7 +790,6 @@ function wrongRow(row) {
 async function renderSettings() {
   setTitle("Settings");
   state.health = await api("/api/health");
-  state.csrfToken = state.health.csrfToken || state.csrfToken || "";
   const ai = await api("/api/ai-status");
   const askReady = ai.openAI === "Configured" && ai.vectorStore === "Configured" ? "Ready" : "Not ready";
   view.innerHTML = `

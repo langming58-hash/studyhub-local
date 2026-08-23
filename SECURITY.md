@@ -6,7 +6,7 @@ Please report security issues privately to the repository maintainer. Do not inc
 
 ## Local-First Model
 
-StudyHub Local is designed to run on `127.0.0.1`, `localhost`, or `::1` only. The server refuses non-loopback bind hosts. Do not expose a live StudyHub Local instance through ngrok, Cloudflare Tunnel, port forwarding, reverse proxies, or public hosting without a separate security review.
+StudyHub Local is designed to run on `127.0.0.1`, `localhost`, or `::1` only. The server refuses non-loopback bind hosts and rejects non-loopback HTTP `Host` headers on all supported methods. Do not expose a live StudyHub Local instance through ngrok, Cloudflare Tunnel, port forwarding, reverse proxies, or public hosting without a separate security review.
 
 ## API Keys
 
@@ -20,7 +20,7 @@ The scanner, previews, upload flow, open-original action, Ask GPT, and MCP tools
 
 ## Browser/API Boundary
 
-Mutating HTTP routes require a per-process CSRF token and same-origin loopback headers. API responses include security headers, deny framing, disable referrer leakage, and use `Cache-Control: no-store` for API/MCP responses.
+Mutating HTTP routes require a per-process CSRF token and same-origin loopback headers. The frontend obtains that token from a local-only session bootstrap endpoint, not from the general health payload. API responses include security headers, deny framing, disable referrer leakage, and use `Cache-Control: no-store` for API/MCP responses.
 
 ## MCP Boundary
 

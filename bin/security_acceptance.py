@@ -42,9 +42,23 @@ class FakeHandler:
     def __init__(self, server: Any, headers: dict[str, str] | None = None, body: bytes = b""):
         self.headers = headers or {}
         self.rfile = io.BytesIO(body)
+        self.wfile = io.BytesIO()
         self.sent: dict[str, Any] = {}
+        self.response_headers: list[tuple[str, str]] = []
         self.path = "/api/test"
         self.server_module = server
+
+    def send_response(self, status: int, message: str | None = None) -> None:
+        self.sent["status_code"] = status
+
+    def send_header(self, key: str, value: str) -> None:
+        self.response_headers.append((key, value))
+
+    def end_headers(self) -> None:
+        return None
+
+    def send_error(self, status: int, message: str | None = None) -> None:
+        self.send_json({"error": message or "Error"}, status)
 
     def send_json(self, data: Any, status: int = 200) -> None:
         self.sent = {"status_code": status, "data": data}
@@ -57,9 +71,16 @@ def bind_methods(server: Any, fake: FakeHandler) -> FakeHandler:
     for name in (
         "read_limited_body",
         "parse_body_json",
+        "validate_loopback_request_host",
         "validate_same_origin_mutation",
         "handle_exception",
+        "handle_api_get",
+        "handle_preview",
+        "serve_static",
         "handle_upload",
+        "do_GET",
+        "do_HEAD",
+        "do_OPTIONS",
     ):
         setattr(fake, name, getattr(server.StudyHubHandler, name).__get__(fake, server.StudyHubHandler))
     return fake
@@ -120,6 +141,13 @@ def raises(exc_type: type[BaseException], fn) -> bool:
     except Exception:
         return False
     return False
+
+
+def get_status(server: Any, path: str, host: str) -> tuple[int | None, Any, bytes]:
+    handler = bind_methods(server, FakeHandler(server, {"Host": host}))
+    handler.path = path
+    server.StudyHubHandler.do_GET(handler)
+    return handler.sent.get("status_code"), handler.sent.get("data"), handler.wfile.getvalue()
 
 
 def main() -> int:
@@ -231,7 +259,37 @@ def main() -> int:
         upload_response_safe = not has_absolute_or_forbidden(upload.sent["data"])
         sync_meta_safe = not has_absolute_or_forbidden(server.file_metadata(file_row))
 
+        hostile_hosts = ["evil.example:8765", "attacker.test", "192.168.1.50:8765", "0.0.0.0:8765"]
+        valid_hosts = ["localhost:8765", "127.0.0.1:8765", "[::1]:8765"]
+        get_paths = ["/", "/api/health", "/api/courses", f"/preview/{file_row['id']}", "/mcp"]
+        hostile_get_rejected = all(get_status(server, path, host)[0] == 403 for host in hostile_hosts for path in get_paths)
+        valid_get_accepted = all((get_status(server, path, host)[0] or 0) < 400 for host in valid_hosts for path in get_paths)
+        malicious_preview_status, _, malicious_preview_body = get_status(server, f"/preview/{file_row['id']}", "evil.example:8765")
+        valid_preview_status, _, valid_preview_body = get_status(server, f"/preview/{file_row['id']}", "localhost:8765")
+
+        conn = server.connect_db()
+        api_payloads = [
+            server.api_session(),
+            server.api_health(conn),
+            [server.public_course(row) for row in conn.execute("SELECT c.*, COUNT(f.id) AS file_count FROM courses c LEFT JOIN files f ON f.course_id=c.id GROUP BY c.id")],
+            [server.public_week(row) for row in conn.execute("SELECT * FROM weeks")],
+            [server.public_file(row) for row in conn.execute("SELECT * FROM files WHERE active=1")],
+            server.build_context_pack(conn, file_row["id"]),
+        ]
+        health_payload = server.api_health(conn)
+        session_payload = server.api_session()
+        conn.close()
+        api_get_privacy_safe = all(not has_absolute_or_forbidden(payload) for payload in api_payloads)
+        csrf_bootstrap_review = "csrfToken" not in health_payload and bool(session_payload.get("csrfToken"))
+
         checks = {
+            "universal_host_validation_rejects_hostile_host": all(not server.request_host_is_loopback(host) for host in hostile_hosts),
+            "get_hostile_host_rejection": hostile_get_rejected,
+            "dns_rebinding_regression_tests": hostile_get_rejected and valid_get_accepted,
+            "preview_hostile_host_protection": malicious_preview_status == 403 and not malicious_preview_body,
+            "preview_valid_localhost_allowed": valid_preview_status == 200 and b"synthetic localhost-only rule" in valid_preview_body,
+            "api_get_privacy_audit": api_get_privacy_safe,
+            "csrf_bootstrap_exposure_review": csrf_bootstrap_review,
             "upload_traversal_rejected": traversal_rejected and raises(PermissionError, lambda: server.StudyHubHandler.handle_upload(bad_upload)),
             "absolute_upload_path_rejected": raises(PermissionError, lambda: server.StudyHubHandler.handle_upload(abs_upload)),
             "cross_site_post_rejected": raises(PermissionError, cross_site.validate_same_origin_mutation),

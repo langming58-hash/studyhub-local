@@ -235,6 +235,11 @@ def is_safe_loopback_origin(origin: str, host_header: str) -> bool:
     return True
 
 
+def request_host_is_loopback(host_header: str) -> bool:
+    host = header_host_without_port(host_header)
+    return bool(host and is_loopback_host(host))
+
+
 def public_course(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     return {
         key: row[key]
@@ -1303,7 +1308,6 @@ def api_health(conn: sqlite3.Connection) -> dict[str, Any]:
         "demoMode": DEMO_MODE,
         "studyLibraryConnected": DEFAULT_STUDY_ROOT.exists(),
         "database": "Healthy",
-        "csrfToken": CSRF_TOKEN,
         "filesIndexed": file_count,
         "suspiciousFiles": suspicious,
         "chunksIndexed": chunks,
@@ -1316,6 +1320,10 @@ def api_health(conn: sqlite3.Connection) -> dict[str, Any]:
         "openAI": "Configured" if bool(os.environ.get("OPENAI_API_KEY")) else "Not configured",
         "canvas": "Handled separately by an authenticated user-approved importer workflow",
     }
+
+
+def api_session() -> dict[str, Any]:
+    return {"csrfToken": CSRF_TOKEN}
 
 
 def build_context_pack(conn: sqlite3.Connection, file_id: int) -> dict[str, Any]:
@@ -2206,6 +2214,16 @@ def local_bridge_response(prompt: str, chunks: list[dict[str, Any]], questions: 
 class StudyHubHandler(BaseHTTPRequestHandler):
     server_version = "StudyHubLocal/1.0"
 
+    def parse_request(self) -> bool:
+        if not super().parse_request():
+            return False
+        try:
+            self.validate_loopback_request_host()
+        except Exception as exc:
+            self.handle_exception(exc)
+            return False
+        return True
+
     def log_message(self, fmt: str, *args: Any) -> None:
         log_event("http", "request handled")
 
@@ -2251,11 +2269,13 @@ class StudyHubHandler(BaseHTTPRequestHandler):
             return {}
         return json.loads(body.decode("utf-8"))
 
-    def validate_same_origin_mutation(self) -> None:
-        host = self.headers.get("Host", "")
-        request_host = header_host_without_port(host)
-        if request_host and not is_loopback_host(request_host):
+    def validate_loopback_request_host(self) -> None:
+        if not request_host_is_loopback(self.headers.get("Host", "")):
             raise PermissionError("Non-loopback host denied")
+
+    def validate_same_origin_mutation(self) -> None:
+        self.validate_loopback_request_host()
+        host = self.headers.get("Host", "")
         origin = self.headers.get("Origin", "")
         if origin and not is_safe_loopback_origin(origin, host):
             raise PermissionError("Cross-origin request denied")
@@ -2284,6 +2304,7 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
         try:
+            self.validate_loopback_request_host()
             if path == "/mcp":
                 self.send_json(
                     {
@@ -2302,6 +2323,23 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.handle_preview(int(path.rsplit("/", 1)[-1]))
                 return
             self.serve_static(path)
+        except Exception as exc:
+            self.handle_exception(exc)
+
+    def do_HEAD(self) -> None:
+        try:
+            self.validate_loopback_request_host()
+            self.send_response(204)
+            self.end_headers()
+        except Exception as exc:
+            self.handle_exception(exc)
+
+    def do_OPTIONS(self) -> None:
+        try:
+            self.validate_loopback_request_host()
+            self.send_response(204)
+            self.send_header("Allow", "GET, POST, HEAD, OPTIONS")
+            self.end_headers()
         except Exception as exc:
             self.handle_exception(exc)
 
@@ -2382,7 +2420,9 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         conn = connect_db()
         init_db(conn)
         try:
-            if path == "/api/health":
+            if path == "/api/session":
+                self.send_json(api_session())
+            elif path == "/api/health":
                 self.send_json(api_health(conn))
             elif path == "/api/courses":
                 rows = conn.execute(
