@@ -103,11 +103,16 @@ ACADEMIC_EXTS = {
     ".r",
     ".html",
     ".htm",
+    ".xhtml",
+    ".xml",
+    ".svg",
     ".png",
     ".jpg",
     ".jpeg",
     ".webp",
 }
+ACTIVE_WEB_PREVIEW_EXTS = {".html", ".htm", ".xhtml", ".xml", ".svg"}
+OOXML_PREVIEW_EXTS = {".docx", ".pptx", ".xlsx"}
 INTERNAL_FILENAMES = {
     "source index.csv",
     "question bank.csv",
@@ -503,7 +508,7 @@ def extract_text(path: Path) -> str:
             return xml_text_from_zip(path, ("word/",))
         if ext == ".pptx":
             return xml_text_from_zip(path, ("ppt/slides/", "ppt/notesSlides/"))
-        if ext in {".csv", ".tsv", ".txt", ".md", ".py", ".r", ".html", ".htm"}:
+        if ext in {".csv", ".tsv", ".txt", ".md", ".py", ".r", ".html", ".htm", ".xhtml", ".xml", ".svg"}:
             return path.read_text(encoding="utf-8", errors="ignore")[:200_000]
         if ext == ".ipynb":
             data = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
@@ -2625,15 +2630,32 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_escaped_text_preview(self, path: Path, text: str) -> None:
+        body = html.escape(text[:20000] or "No text preview available. Use Open Original.").encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Disposition", f"inline; filename*=UTF-8''{urllib.parse.quote(path.name + '.txt')}")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+        self.end_headers()
+        self.wfile.write(body)
+
     def handle_preview(self, file_id: int) -> None:
         conn = connect_db()
         try:
             row = get_file(conn, file_id)
             path = Path(row["original_path"]).resolve()
             ctype = row["mime_type"] or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-            if path.suffix.lower() in {".docx", ".pptx", ".xlsx"}:
+            ext = path.suffix.lower()
+            if ext in ACTIVE_WEB_PREVIEW_EXTS:
+                text = path.read_text(encoding="utf-8", errors="ignore")[:20000]
+                self.send_escaped_text_preview(path, text)
+                return
+            if ext in OOXML_PREVIEW_EXTS:
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("X-Content-Type-Options", "nosniff")
                 self.end_headers()
                 text = read_cached_text(row, 20000)
                 body = f"<pre>{html.escape(text[:20000] or 'No text preview available. Use Open Original.')}</pre>"
@@ -2643,6 +2665,7 @@ class StudyHubHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Disposition", f"inline; filename*=UTF-8''{urllib.parse.quote(path.name)}")
             self.send_header("Content-Length", str(path.stat().st_size))
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             with path.open("rb") as f:
                 shutil.copyfileobj(f, self.wfile)

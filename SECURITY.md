@@ -18,6 +18,8 @@ OpenAI/vector indexing is opt-in. When enabled, selected indexed file content an
 
 The scanner, previews, upload flow, open-original action, Ask GPT, and MCP tools should only access the configured `STUDY_LIBRARY_PATH`. Path traversal and arbitrary filesystem reads are not allowed. Upload targets are built from validated server-side components and copied by temporary file plus atomic rename.
 
+Study-library files are treated as untrusted content. Active browser formats such as HTML, XHTML, XML, and SVG are not rendered as same-origin active documents in preview; they are shown as escaped plaintext with MIME sniffing disabled.
+
 ## Browser/API Boundary
 
 Mutating HTTP routes require a per-process CSRF token and exact same-origin headers: HTTP scheme, Host hostname literal, and effective port must match. The frontend obtains that token from a local-only session bootstrap endpoint, not from the general health payload. API responses include security headers, deny framing, disable referrer leakage, and use `Cache-Control: no-store` for API/MCP responses.

@@ -76,6 +76,7 @@ def bind_methods(server: Any, fake: FakeHandler) -> FakeHandler:
         "handle_exception",
         "handle_api_get",
         "handle_preview",
+        "send_escaped_text_preview",
         "serve_static",
         "handle_upload",
         "do_GET",
@@ -91,10 +92,16 @@ def make_library(server: Any) -> sqlite3.Row:
     course_dir = root / "TEST1001 - Synthetic Course" / "Week 01" / "02 Exercises" / "Tutorial"
     course_dir.mkdir(parents=True)
     (course_dir / "Tutorial_1.txt").write_text("Q1. Explain the synthetic localhost-only rule.\n", encoding="utf-8")
+    (course_dir / "Active_HTML.html").write_text("<script>window.__studyhub_xss = true</script>\n", encoding="utf-8")
+    (course_dir / "Active_HTM.htm").write_text('<img src=x onerror="window.__studyhub_xss=true">\n', encoding="utf-8")
+    (course_dir / "Active_SVG.svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg"><script>window.__studyhub_xss=true</script></svg>\n',
+        encoding="utf-8",
+    )
     server.scan_library(root)
     conn = sqlite3.connect(server.DB_PATH)
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM files WHERE active=1 ORDER BY id LIMIT 1").fetchone()
+    row = conn.execute("SELECT * FROM files WHERE filename='Tutorial_1.txt' AND active=1 ORDER BY id LIMIT 1").fetchone()
     conn.close()
     return row
 
@@ -150,11 +157,28 @@ def get_status(server: Any, path: str, host: str) -> tuple[int | None, Any, byte
     return handler.sent.get("status_code"), handler.sent.get("data"), handler.wfile.getvalue()
 
 
+def preview_response(server: Any, file_id: int, host: str = "localhost:8765") -> tuple[int | None, dict[str, str], bytes]:
+    handler = bind_methods(server, FakeHandler(server, {"Host": host}))
+    handler.path = f"/preview/{file_id}"
+    server.StudyHubHandler.do_GET(handler)
+    headers: dict[str, str] = {}
+    for key, value in handler.response_headers:
+        headers[key.lower()] = value
+    return handler.sent.get("status_code"), headers, handler.wfile.getvalue()
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
         server = load_server(tmp)
         file_row = make_library(server)
+        conn = sqlite3.connect(server.DB_PATH)
+        conn.row_factory = sqlite3.Row
+        active_rows = {
+            row["filename"]: row
+            for row in conn.execute("SELECT * FROM files WHERE filename IN ('Active_HTML.html', 'Active_HTM.htm', 'Active_SVG.svg')")
+        }
+        conn.close()
 
         traversal_cases = [
             "../../outside",
@@ -289,6 +313,21 @@ def main() -> int:
         valid_get_accepted = all((get_status(server, path, host)[0] or 0) < 400 for host in valid_hosts for path in get_paths)
         malicious_preview_status, _, malicious_preview_body = get_status(server, f"/preview/{file_row['id']}", "evil.example:8765")
         valid_preview_status, _, valid_preview_body = get_status(server, f"/preview/{file_row['id']}", "localhost:8765")
+        html_status, html_headers, html_body = preview_response(server, active_rows["Active_HTML.html"]["id"])
+        htm_status, htm_headers, htm_body = preview_response(server, active_rows["Active_HTM.htm"]["id"])
+        svg_status, svg_headers, svg_body = preview_response(server, active_rows["Active_SVG.svg"]["id"])
+
+        def text_plain(headers: dict[str, str]) -> bool:
+            return headers.get("content-type", "").lower().startswith("text/plain")
+
+        def nosniff(headers: dict[str, str]) -> bool:
+            return headers.get("x-content-type-options", "").lower() == "nosniff"
+
+        def not_active_inline(headers: dict[str, str]) -> bool:
+            content_type = headers.get("content-type", "").lower()
+            disposition = headers.get("content-disposition", "").lower()
+            active_type = content_type.startswith(("text/html", "image/svg+xml", "application/xhtml+xml", "application/xml", "text/xml"))
+            return not (active_type and "inline" in disposition)
 
         conn = server.connect_db()
         api_payloads = [
@@ -306,6 +345,11 @@ def main() -> int:
         csrf_bootstrap_review = "csrfToken" not in health_payload and bool(session_payload.get("csrfToken"))
 
         checks = {
+            "active_html_preview_isolation": html_status == 200 and text_plain(html_headers) and b"&lt;script&gt;" in html_body and b"<script>" not in html_body,
+            "htm_preview_isolation": htm_status == 200 and text_plain(htm_headers) and b"&lt;img" in htm_body and b"<img" not in htm_body,
+            "svg_active_content_isolation": svg_status == 200 and text_plain(svg_headers) and "image/svg+xml" not in svg_headers.get("content-type", "").lower() and b"&lt;svg" in svg_body,
+            "preview_mime_sniffing_protection": nosniff(html_headers) and nosniff(htm_headers) and nosniff(svg_headers),
+            "active_preview_content_disposition_safe": not_active_inline(html_headers) and not_active_inline(htm_headers) and not_active_inline(svg_headers),
             "universal_host_validation_rejects_hostile_host": all(not server.request_host_is_loopback(host) for host in hostile_hosts),
             "get_hostile_host_rejection": hostile_get_rejected,
             "dns_rebinding_regression_tests": hostile_get_rejected and valid_get_accepted,

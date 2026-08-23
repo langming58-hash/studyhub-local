@@ -115,6 +115,8 @@ StudyLibrary/
 
 Supported readable formats include PDF, DOCX, PPTX, TXT, CSV, Python, R, and IPYNB where local extraction support is available.
 
+Imported active web files such as HTML, XHTML, XML, and SVG are treated as untrusted content in preview and displayed as escaped plaintext rather than executable same-origin pages.
+
 ## Optional OpenAI Setup
 
 OpenAI is optional. Without an API key, the app still runs locally with course browsing, metadata search, source previews, practice records, and demo mode.
