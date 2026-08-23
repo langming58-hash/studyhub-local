@@ -10,8 +10,10 @@ import html
 import json
 import mimetypes
 import os
+import ipaddress
 import re
 import shutil
+import secrets
 import socket
 import sqlite3
 import subprocess
@@ -72,6 +74,11 @@ DEFAULT_STUDY_ROOT = configured_path(
 )
 OPENAI_API_BASE = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1").rstrip("/")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4")
+CSRF_TOKEN = secrets.token_urlsafe(32)
+MAX_JSON_BODY_SIZE = int(os.environ.get("MAX_JSON_BODY_SIZE", str(512 * 1024)))
+MAX_MCP_BODY_SIZE = int(os.environ.get("MAX_MCP_BODY_SIZE", str(512 * 1024)))
+MAX_UPLOAD_FILE_SIZE = int(os.environ.get("MAX_UPLOAD_FILE_SIZE", str(50 * 1024 * 1024)))
+MAX_UPLOAD_REQUEST_SIZE = int(os.environ.get("MAX_UPLOAD_REQUEST_SIZE", str(60 * 1024 * 1024)))
 CHUNK_TARGET_CHARS = 3200
 QUESTION_RE = re.compile(r"^\s*(?:Q(?:uestion)?\.?\s*)?(?P<num>\d{1,3}|[A-Z])[\).\:]\s+(?P<body>.{12,})", re.IGNORECASE)
 SOLUTION_RE = re.compile(r"\b(solution|solutions|answer|answers|worked|key)\b", re.IGNORECASE)
@@ -111,6 +118,12 @@ INTERNAL_FILENAMES = {
 }
 COURSE_RE = re.compile(r"^(?P<code>[A-Z]{3,5}\d{4}(?:\s+[A-Z]{3,5}\d{4})*)\s+-\s+(?P<name>.+)$")
 WEEK_RE = re.compile(r"^Week\s+(?P<num>\d{2})$")
+SAFE_COMPONENT_RE = re.compile(r"^[\w .(),&+-]{1,120}$", re.UNICODE)
+ALLOWED_SECTIONS = {"00 Course Information", "01 Course Materials", "02 Exercises", "My_Work", "Review"}
+
+
+class PayloadTooLarge(ValueError):
+    pass
 
 
 def ensure_dirs() -> None:
@@ -142,6 +155,139 @@ def is_inside(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def validate_path_component(component: Any) -> str:
+    value = str(component or "").strip()
+    if (
+        not value
+        or "\x00" in value
+        or ".." in value
+        or "/" in value
+        or "\\" in value
+        or Path(value).is_absolute()
+        or re.match(r"^[A-Za-z]:", value)
+        or not SAFE_COMPONENT_RE.fullmatch(value)
+    ):
+        raise PermissionError("Unsafe path component")
+    return value
+
+
+def safe_child_path(root: Path, *components: Any) -> Path:
+    base = root.expanduser().resolve()
+    validated = [validate_path_component(component) for component in components]
+    target = base.joinpath(*validated).resolve()
+    if not is_inside(target, base):
+        raise PermissionError("Path escapes configured study library")
+    return target
+
+
+def safe_cache_path(raw_path: str | None) -> Path | None:
+    if not raw_path:
+        return None
+    path = Path(raw_path).expanduser()
+    if not is_inside(path, TEXT_CACHE_DIR):
+        raise PermissionError("Cache path outside StudyHub cache")
+    return path.resolve()
+
+
+def read_cached_text(row: sqlite3.Row | dict[str, Any], limit: int) -> str:
+    path = safe_cache_path(row["text_cache_path"])
+    if path and path.exists():
+        return path.read_text(encoding="utf-8", errors="ignore")[:limit]
+    return ""
+
+
+def is_loopback_host(host: str) -> bool:
+    candidate = (host or "").strip().strip("[]").lower()
+    if candidate == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_loopback_bind_host(host: str) -> str:
+    if not is_loopback_host(host):
+        raise PermissionError("StudyHub Local refuses non-loopback binding for privacy reasons.")
+    return host
+
+
+def header_host_without_port(value: str) -> str:
+    host = (value or "").strip()
+    if host.startswith("[") and "]" in host:
+        return host[1 : host.index("]")]
+    return host.rsplit(":", 1)[0] if ":" in host and host.count(":") == 1 else host
+
+
+def is_safe_loopback_origin(origin: str, host_header: str) -> bool:
+    if not origin:
+        return True
+    parsed = urllib.parse.urlparse(origin)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    if not is_loopback_host(parsed.hostname):
+        return False
+    request_host = header_host_without_port(host_header)
+    if request_host and not is_loopback_host(request_host):
+        return False
+    return True
+
+
+def public_course(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: row[key]
+        for key in ("id", "code", "name", "folder_name", "created_at", "updated_at", "file_count", "latest_week")
+        if key in row.keys()
+    }
+
+
+def public_week(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    return {key: row[key] for key in ("id", "course_id", "week_label", "week_number", "has_materials", "file_count") if key in row.keys()}
+
+
+def public_file(row: sqlite3.Row | dict[str, Any], include_text: str | None = None) -> dict[str, Any]:
+    allowed = (
+        "id",
+        "course_id",
+        "week_id",
+        "course_code",
+        "course_name",
+        "week_label",
+        "week_number",
+        "section",
+        "category",
+        "exercise_type",
+        "filename",
+        "rel_path",
+        "source",
+        "source_label",
+        "size",
+        "modified_at",
+        "indexed_at",
+        "extension",
+        "mime_type",
+        "is_official",
+        "suspicious",
+        "stable_id",
+        "source_type",
+        "file_extension",
+        "file_size",
+        "sha256",
+        "is_solution",
+        "is_question_source",
+        "active",
+        "missing_at",
+        "ai_index_status",
+        "ai_index_error",
+        "star_id",
+        "rank",
+    )
+    data = {key: row[key] for key in allowed if key in row.keys()}
+    if include_text is not None:
+        data["extractedText"] = include_text
+    return data
 
 
 def sha256_file(path: Path) -> str:
@@ -1069,7 +1215,7 @@ def scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
     seed_demo_records(conn)
     conn.commit()
     conn.close()
-    log_event("scan", f"{stats.files} files indexed from {study_root}")
+    log_event("scan", json.dumps({"files": stats.files, "root": "configured-study-library"}, ensure_ascii=False))
     return stats
 
 
@@ -1086,9 +1232,11 @@ def get_file(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
     if row is None:
         raise FileNotFoundError("file not found")
-    path = Path(row["original_path"])
+    path = Path(row["original_path"]).expanduser().resolve()
     if not is_inside(path, DEFAULT_STUDY_ROOT):
         raise PermissionError("file outside study root")
+    if not path.exists():
+        raise FileNotFoundError("file not found")
     return row
 
 
@@ -1115,19 +1263,20 @@ class MultipartUpload:
             if data.endswith(b"\r\n"):
                 data = data[:-2]
             if filename_m and filename_m.group(1):
-                self.files.append((name, Path(filename_m.group(1)).name, data))
+                self.files.append((name, filename_m.group(1), data))
             else:
                 self.fields[name] = data.decode("utf-8", errors="ignore")
 
 
 def safe_filename(filename: str) -> str:
-    name = Path(filename).name.replace("/", "-").replace(":", "-")
-    return name.strip() or "uploaded-file"
+    return validate_path_component(filename)
 
 
 def unique_path_for_upload(target_dir: Path, filename: str, digest: str) -> tuple[Path, bool]:
     target_dir.mkdir(parents=True, exist_ok=True)
-    candidate = target_dir / safe_filename(filename)
+    if not is_inside(target_dir, DEFAULT_STUDY_ROOT):
+        raise PermissionError("Upload target outside study root")
+    candidate = safe_child_path(target_dir, safe_filename(filename))
     if candidate.exists():
         try:
             if sha256_file(candidate) == digest:
@@ -1136,7 +1285,7 @@ def unique_path_for_upload(target_dir: Path, filename: str, digest: str) -> tupl
             pass
         stem = candidate.stem
         suffix = candidate.suffix
-        candidate = target_dir / f"{stem} - {datetime.now().strftime('%Y%m%d-%H%M%S')}{suffix}"
+        candidate = safe_child_path(target_dir, f"{stem} - {datetime.now().strftime('%Y%m%d-%H%M%S')}{suffix}")
     return candidate, False
 
 
@@ -1152,17 +1301,16 @@ def api_health(conn: sqlite3.Connection) -> dict[str, Any]:
     return {
         "app": APP_NAME,
         "demoMode": DEMO_MODE,
-        "studyRoot": str(DEFAULT_STUDY_ROOT),
         "studyLibraryConnected": DEFAULT_STUDY_ROOT.exists(),
         "database": "Healthy",
-        "databasePath": str(DB_PATH),
+        "csrfToken": CSRF_TOKEN,
         "filesIndexed": file_count,
         "suspiciousFiles": suspicious,
         "chunksIndexed": chunks,
         "questionsIndexed": questions,
         "aiIndexedFiles": ai_indexed,
         "vectorStore": "Configured" if vector_store_id else "Not configured",
-        "vectorStoreId": vector_store_id[:8] + "..." if vector_store_id else "",
+        "vectorStoreLabel": "Configured" if vector_store_id else "Not configured",
         "lastScan": last_scan["created_at"] if last_scan else None,
         "lastAISync": last_ai["ts"] if last_ai else None,
         "openAI": "Configured" if bool(os.environ.get("OPENAI_API_KEY")) else "Not configured",
@@ -1173,8 +1321,7 @@ def api_health(conn: sqlite3.Connection) -> dict[str, Any]:
 def build_context_pack(conn: sqlite3.Connection, file_id: int) -> dict[str, Any]:
     row = get_file(conn, file_id)
     text = ""
-    if row["text_cache_path"] and Path(row["text_cache_path"]).exists():
-        text = Path(row["text_cache_path"]).read_text(encoding="utf-8", errors="ignore")[:4000]
+    text = read_cached_text(row, 4000)
     return {
         "course": row["course_code"],
         "week": row["week_label"],
@@ -1307,9 +1454,7 @@ def teacher_questions_for_context(conn: sqlite3.Connection, context: dict[str, A
     rows = conn.execute(sql, params).fetchall()
     questions = []
     for row in rows:
-        source_text = ""
-        if row["text_cache_path"] and Path(row["text_cache_path"]).exists():
-            source_text = Path(row["text_cache_path"]).read_text(encoding="utf-8", errors="ignore")
+        source_text = read_cached_text(row, 200_000)
         original = extract_question_from_source_text(source_text, row["question_number"]) or row["question_text"]
         questions.append(
             {
@@ -1397,8 +1542,8 @@ def mcp_week(value: Any) -> str:
     return normalize_week(str(value))
 
 
-def mcp_file_projection(row: sqlite3.Row | dict[str, Any], include_path: bool = False) -> dict[str, Any]:
-    data = {
+def mcp_file_projection(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    return {
         "file_id": external_file_id(row),
         "filename": row["filename"],
         "course": row["course_code"],
@@ -1412,15 +1557,11 @@ def mcp_file_projection(row: sqlite3.Row | dict[str, Any], include_path: bool = 
         "mime_type": row["mime_type"],
         "file_extension": row["file_extension"],
         "file_size": row["file_size"],
-        "sha256": row["sha256"],
         "is_official": bool(row["is_official"]),
         "is_solution": bool(row["is_solution"]),
         "is_question_source": bool(row["is_question_source"]),
         "relative_path": row["rel_path"],
     }
-    if include_path:
-        data["original_path"] = row["original_path"]
-    return data
 
 
 def resolve_mcp_file(conn: sqlite3.Connection, file_id: str) -> sqlite3.Row:
@@ -1437,7 +1578,7 @@ def resolve_mcp_file(conn: sqlite3.Connection, file_id: str) -> sqlite3.Row:
     ).fetchone()
     if row is None:
         raise FileNotFoundError("NOT FOUND")
-    path = Path(row["original_path"])
+    path = Path(row["original_path"]).expanduser().resolve()
     if not is_inside(path, DEFAULT_STUDY_ROOT):
         raise PermissionError("DENY")
     if not path.exists():
@@ -1572,7 +1713,7 @@ def mcp_get_file_metadata(args: dict[str, Any]) -> dict[str, Any]:
     conn = connect_db()
     init_db(conn)
     row = resolve_mcp_file(conn, str(args.get("file_id", "")))
-    out = {"file": mcp_file_projection(row, include_path=True)}
+    out = {"file": mcp_file_projection(row)}
     conn.close()
     return out
 
@@ -1599,11 +1740,13 @@ def mcp_read_file(args: dict[str, Any]) -> dict[str, Any]:
             content_parts.append(piece)
             total += len(piece)
         chunk_payload.append(dict(chunk) | {"text": text[:2500]})
-    if not content_parts and row["text_cache_path"] and Path(row["text_cache_path"]).exists():
-        content_parts.append(Path(row["text_cache_path"]).read_text(encoding="utf-8", errors="ignore")[:limit])
+    if not content_parts:
+        cached = read_cached_text(row, limit)
+        if cached:
+            content_parts.append(cached)
     conn.close()
     return {
-        "file": mcp_file_projection(row, include_path=True),
+        "file": mcp_file_projection(row),
         "content": "\n\n".join(content_parts),
         "chunks": chunk_payload,
         "note": "Original file remains authoritative in the configured STUDY_LIBRARY_PATH.",
@@ -1671,9 +1814,7 @@ def mcp_get_question(args: dict[str, Any]) -> dict[str, Any]:
                 "question_number": row["question_number"],
                 "original_question": (
                     extract_question_from_source_text(
-                        Path(row["text_cache_path"]).read_text(encoding="utf-8", errors="ignore")
-                        if row["text_cache_path"] and Path(row["text_cache_path"]).exists()
-                        else "",
+                        read_cached_text(row, 200_000),
                         row["question_number"],
                     )
                     or row["question_text"]
@@ -1817,7 +1958,7 @@ def openai_responses_request(
         ],
         "store": False,
     }
-    vector_store_id = str(context.get("vectorStoreId") or current_vector_store_id())
+    vector_store_id = current_vector_store_id()
     if vector_store_id:
         filters = []
         if context.get("course"):
@@ -1978,8 +2119,8 @@ def sync_openai_vector_store(limit: int = 20) -> dict[str, Any]:
                     openai_delete(f"/vector_stores/{row['old_vector_store_id']}/files/{row['old_provider_file_id']}")
                     openai_delete(f"/files/{row['old_provider_file_id']}")
                     stale_removed += 1
-                except Exception as exc:
-                    errors.append({"file": row["filename"], "stale_remove_warning": str(exc)})
+                except Exception:
+                    errors.append({"file": row["filename"], "stale_remove_warning": "Could not remove stale OpenAI file"})
             uploaded = openai_upload_file(Path(row["original_path"]))
             attrs = file_metadata(row)
             attrs["source"] = "Canvas"
@@ -2012,20 +2153,21 @@ def sync_openai_vector_store(limit: int = 20) -> dict[str, Any]:
             synced += 1
         except Exception as exc:
             failed += 1
-            errors.append({"file": row["filename"], "error": str(exc)})
+            safe_error = type(exc).__name__
+            errors.append({"file": row["filename"], "error": safe_error})
             conn.execute(
                 """
                 INSERT INTO ai_index_state(file_id, stable_id, sha256, provider, vector_store_id, status, error, last_synced_at, metadata_json)
                 VALUES (?, ?, ?, 'openai', ?, 'failed', ?, ?, ?)
                 ON CONFLICT(file_id, provider) DO UPDATE SET status='failed', error=excluded.error, last_synced_at=excluded.last_synced_at
                 """,
-                (row["id"], row["stable_id"], row["sha256"], vector_store_id, str(exc), now_iso(), json.dumps(file_metadata(row), ensure_ascii=False)),
+                (row["id"], row["stable_id"], row["sha256"], vector_store_id, safe_error, now_iso(), json.dumps(file_metadata(row), ensure_ascii=False)),
             )
     conn.commit()
     conn.close()
     return {
         "status": "ok",
-        "vectorStoreId": vector_store_id,
+        "vectorStore": "Configured" if vector_store_id else "Not configured",
         "candidates": len(rows),
         "synced": synced,
         "unchanged": unchanged,
@@ -2065,7 +2207,20 @@ class StudyHubHandler(BaseHTTPRequestHandler):
     server_version = "StudyHubLocal/1.0"
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        log_event("http", fmt % args)
+        log_event("http", "request handled")
+
+    def end_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none';",
+        )
+        request_path = urllib.parse.urlparse(getattr(self, "path", "")).path
+        if request_path.startswith("/api/") or request_path == "/mcp":
+            self.send_header("Cache-Control", "no-store")
+        super().end_headers()
 
     def send_json(self, data: Any, status: int = 200) -> None:
         body = json_dumps(data)
@@ -2082,11 +2237,47 @@ class StudyHubHandler(BaseHTTPRequestHandler):
     def send_error_json(self, status: int, message: str) -> None:
         self.send_json({"error": message}, status)
 
-    def parse_body_json(self) -> dict[str, Any]:
+    def read_limited_body(self, limit: int) -> bytes:
         length = int(self.headers.get("Content-Length", "0") or 0)
         if length <= 0:
+            return b""
+        if length > limit:
+            raise PayloadTooLarge("Request body too large")
+        return self.rfile.read(length)
+
+    def parse_body_json(self, limit: int = MAX_JSON_BODY_SIZE) -> dict[str, Any]:
+        body = self.read_limited_body(limit)
+        if not body:
             return {}
-        return json.loads(self.rfile.read(length).decode("utf-8"))
+        return json.loads(body.decode("utf-8"))
+
+    def validate_same_origin_mutation(self) -> None:
+        host = self.headers.get("Host", "")
+        request_host = header_host_without_port(host)
+        if request_host and not is_loopback_host(request_host):
+            raise PermissionError("Non-loopback host denied")
+        origin = self.headers.get("Origin", "")
+        if origin and not is_safe_loopback_origin(origin, host):
+            raise PermissionError("Cross-origin request denied")
+        sec_fetch_site = (self.headers.get("Sec-Fetch-Site", "") or "").lower()
+        if sec_fetch_site == "cross-site":
+            raise PermissionError("Cross-site request denied")
+        token = self.headers.get("X-StudyHub-CSRF", "")
+        if not secrets.compare_digest(token, CSRF_TOKEN):
+            raise PermissionError("Invalid CSRF token")
+
+    def handle_exception(self, exc: Exception) -> None:
+        if isinstance(exc, PayloadTooLarge):
+            self.send_error_json(413, "Request body too large")
+        elif isinstance(exc, PermissionError):
+            self.send_error_json(403, str(exc) if str(exc) else "Forbidden")
+        elif isinstance(exc, FileNotFoundError):
+            self.send_error_json(404, "Not found")
+        elif isinstance(exc, (ValueError, json.JSONDecodeError)):
+            self.send_error_json(400, str(exc) if str(exc) else "Invalid request")
+        else:
+            log_event("error", type(exc).__name__)
+            self.send_error_json(500, "Internal StudyHub error")
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
@@ -2099,7 +2290,6 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                         "name": "StudyHub Local Readonly MCP",
                         "transport": "streamable-http/json-rpc",
                         "endpoint": "/mcp",
-                        "studyRoot": str(DEFAULT_STUDY_ROOT),
                         "tools": [tool["name"] for tool in mcp_tool_descriptors()],
                         "readOnly": True,
                     }
@@ -2113,11 +2303,12 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 return
             self.serve_static(path)
         except Exception as exc:
-            self.send_error_json(500, str(exc))
+            self.handle_exception(exc)
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         try:
+            self.validate_same_origin_mutation()
             if parsed.path == "/mcp":
                 self.handle_mcp_rpc()
             elif parsed.path == "/api/scan":
@@ -2138,10 +2329,10 @@ class StudyHubHandler(BaseHTTPRequestHandler):
             else:
                 self.send_error_json(404, "Not found")
         except Exception as exc:
-            self.send_error_json(500, str(exc))
+            self.handle_exception(exc)
 
     def handle_mcp_rpc(self) -> None:
-        body = self.parse_body_json()
+        body = self.parse_body_json(MAX_MCP_BODY_SIZE)
         if not isinstance(body, dict):
             self.send_json(jsonrpc_error(None, -32600, "Invalid Request"), 400)
             return
@@ -2179,7 +2370,11 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 return
             self.send_json(jsonrpc_success(rpc_id, result))
         except KeyError as exc:
-            self.send_json(jsonrpc_error(rpc_id, -32602, str(exc)), 400)
+            self.send_json(jsonrpc_error(rpc_id, -32602, "Invalid tool name"), 400)
+        except PermissionError:
+            self.send_json(jsonrpc_error(rpc_id, -32603, "DENY"), 403)
+        except FileNotFoundError:
+            self.send_json(jsonrpc_error(rpc_id, -32602, "NOT FOUND"), 404)
         except ValueError as exc:
             self.send_json(jsonrpc_error(rpc_id, -32602, str(exc)), 400)
 
@@ -2201,14 +2396,14 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                     ORDER BY c.code
                     """
                 ).fetchall()
-                self.send_json(rows_to_dicts(rows))
+                self.send_json([public_course(row) for row in rows])
             elif path == "/api/weeks":
                 course_id = int(qs.get("course_id", ["0"])[0])
                 rows = conn.execute(
                     "SELECT * FROM weeks WHERE course_id=? ORDER BY week_number",
                     (course_id,),
                 ).fetchall()
-                self.send_json(rows_to_dicts(rows))
+                self.send_json([public_week(row) for row in rows])
             elif path == "/api/files":
                 course_id = int(qs.get("course_id", ["0"])[0])
                 week_label = qs.get("week", [""])[0]
@@ -2218,15 +2413,11 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                     sql += " AND f.week_label=?"
                     params.append(week_label)
                 sql += " ORDER BY f.week_label, f.section, f.category, f.filename"
-                self.send_json(rows_to_dicts(conn.execute(sql, params).fetchall()))
+                self.send_json([public_file(row) for row in conn.execute(sql, params).fetchall()])
             elif path == "/api/file":
                 file_id = int(qs.get("id", ["0"])[0])
-                row = dict(get_file(conn, file_id))
-                text = ""
-                if row["text_cache_path"] and Path(row["text_cache_path"]).exists():
-                    text = Path(row["text_cache_path"]).read_text(encoding="utf-8", errors="ignore")[:8000]
-                row["extractedText"] = text
-                self.send_json(row)
+                row = get_file(conn, file_id)
+                self.send_json(public_file(row, include_text=read_cached_text(row, 8000)))
             elif path == "/api/search":
                 query = qs.get("q", [""])[0].strip()
                 course_id = qs.get("course_id", [""])[0]
@@ -2253,15 +2444,15 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                     sql += " AND (f.section=? OR f.category=? OR f.exercise_type=?)"
                     params.extend([scope, scope, scope])
                 sql += " ORDER BY rank, f.modified_at DESC LIMIT 80"
-                self.send_json(rows_to_dicts(conn.execute(sql, params).fetchall()))
+                self.send_json([public_file(row) for row in conn.execute(sql, params).fetchall()])
             elif path == "/api/recent":
                 rows = conn.execute("SELECT * FROM files WHERE active=1 ORDER BY indexed_at DESC LIMIT 20").fetchall()
-                self.send_json(rows_to_dicts(rows))
+                self.send_json([public_file(row) for row in rows])
             elif path == "/api/starred":
                 rows = conn.execute(
                     "SELECT f.* FROM stars s JOIN files f ON f.id=s.target_id WHERE s.target_type='file' AND f.active=1 ORDER BY s.created_at DESC"
                 ).fetchall()
-                self.send_json(rows_to_dicts(rows))
+                self.send_json([public_file(row) for row in rows])
             elif path == "/api/context":
                 file_id = int(qs.get("file_id", ["0"])[0])
                 self.send_json(build_context_pack(conn, file_id))
@@ -2345,7 +2536,7 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         return {
             "openAI": "Configured" if bool(os.environ.get("OPENAI_API_KEY")) else "Not configured",
             "vectorStore": "Configured" if vector_store_id else "Not configured",
-            "vectorStoreId": vector_store_id[:8] + "..." if vector_store_id else "",
+            "vectorStoreLabel": "Configured" if vector_store_id else "Not configured",
             "localIndex": rows_to_dicts(rows),
             "indexedFiles": indexed_files,
             "vectorIndexedFiles": vector_indexed,
@@ -2371,15 +2562,13 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         conn = connect_db()
         try:
             row = get_file(conn, file_id)
-            path = Path(row["original_path"])
+            path = Path(row["original_path"]).resolve()
             ctype = row["mime_type"] or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
             if path.suffix.lower() in {".docx", ".pptx", ".xlsx"}:
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.end_headers()
-                text = ""
-                if row["text_cache_path"] and Path(row["text_cache_path"]).exists():
-                    text = Path(row["text_cache_path"]).read_text(encoding="utf-8", errors="ignore")
+                text = read_cached_text(row, 20000)
                 body = f"<pre>{html.escape(text[:20000] or 'No text preview available. Use Open Original.')}</pre>"
                 self.wfile.write(body.encode("utf-8"))
                 return
@@ -2397,7 +2586,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         conn = connect_db()
         try:
             row = get_file(conn, file_id)
-            subprocess.Popen(["open", row["original_path"]])
+            path = Path(row["original_path"]).resolve()
+            subprocess.Popen(["open", str(path)])
             self.send_json({"ok": True})
         finally:
             conn.close()
@@ -2443,9 +2633,6 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         conn = connect_db()
         prompt = body.get("prompt", "").strip()
         context = normalize_ask_context(conn, body.get("context", {}) or {}, prompt)
-        vector_store_id = current_vector_store_id(conn)
-        if vector_store_id:
-            context["vectorStoreId"] = vector_store_id
         questions = teacher_questions_for_context(conn, context, prompt, limit=5)
         solutions = official_solutions_for_context(conn, context, limit=5)
         if wants_generated_question(prompt):
@@ -2473,8 +2660,9 @@ class StudyHubHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 response = (
                     "OpenAI request failed, so I am falling back to local indexed excerpts.\n\n"
-                    f"{local_bridge_response(prompt, chunks, questions)}\n\nOpenAI error: {exc}"
+                    f"{local_bridge_response(prompt, chunks, questions)}"
                 )
+                log_event("openai_error", type(exc).__name__)
                 status = "openai_error_local_fallback"
         else:
             response = local_bridge_response(prompt, chunks, questions)
@@ -2489,39 +2677,57 @@ class StudyHubHandler(BaseHTTPRequestHandler):
 
     def handle_upload(self) -> None:
         ctype = self.headers.get("Content-Type", "")
-        length = int(self.headers.get("Content-Length", "0") or 0)
-        upload = MultipartUpload(ctype, self.rfile.read(length))
+        upload = MultipartUpload(ctype, self.read_limited_body(MAX_UPLOAD_REQUEST_SIZE))
         course_id = int(upload.fields.get("course_id", "0") or 0)
-        week = upload.fields.get("week", "")
-        section = upload.fields.get("section", "")
-        category = upload.fields.get("category", "")
+        week = normalize_week(upload.fields.get("week", ""))
+        section = validate_path_component(upload.fields.get("section", ""))
+        category = validate_path_component(upload.fields.get("category", ""))
         if not course_id or not week or not section or not category:
             raise ValueError("course_id, week, section, and category are required")
+        if section not in ALLOWED_SECTIONS:
+            raise PermissionError("Unknown upload section")
         conn = connect_db()
-        course = conn.execute("SELECT * FROM courses WHERE id=?", (course_id,)).fetchone()
-        if course is None:
-            raise ValueError("unknown course")
-        target_dir = DEFAULT_STUDY_ROOT / course["folder_name"] / week / section / category
-        saved = []
-        for _field, filename, data in upload.files:
-            safe_name = safe_filename(filename)
-            digest = hashlib.sha256(data).hexdigest()
-            target, duplicate = unique_path_for_upload(target_dir, safe_name, digest)
-            if not duplicate:
-                target.write_bytes(data)
-                log_event("upload", str(target))
-            saved.append({"filename": target.name, "path": str(target), "duplicate": duplicate})
-        conn.close()
+        try:
+            course = conn.execute("SELECT * FROM courses WHERE id=?", (course_id,)).fetchone()
+            if course is None:
+                raise ValueError("unknown course")
+            week_row = conn.execute("SELECT id FROM weeks WHERE course_id=? AND week_label=?", (course_id, week)).fetchone()
+            if week_row is None:
+                raise PermissionError("Unknown upload week")
+            target_dir = safe_child_path(DEFAULT_STUDY_ROOT, course["folder_name"], week, section, category)
+            saved = []
+            for _field, filename, data in upload.files:
+                if len(data) > MAX_UPLOAD_FILE_SIZE:
+                    raise PayloadTooLarge("Uploaded file too large")
+                safe_name = safe_filename(filename)
+                digest = hashlib.sha256(data).hexdigest()
+                target, duplicate = unique_path_for_upload(target_dir, safe_name, digest)
+                if not duplicate:
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    tmp_path: Path | None = None
+                    try:
+                        with tempfile.NamedTemporaryFile(dir=target_dir, prefix=".upload-", delete=False) as tmp:
+                            tmp.write(data)
+                            tmp_path = Path(tmp.name)
+                        tmp_path.replace(target)
+                    finally:
+                        if tmp_path and tmp_path.exists():
+                            tmp_path.unlink(missing_ok=True)
+                    log_event("upload", json.dumps({"file": safe_relative(target, DEFAULT_STUDY_ROOT)}, ensure_ascii=False))
+                saved.append({"filename": target.name, "relative_path": safe_relative(target, DEFAULT_STUDY_ROOT), "duplicate": duplicate})
+        finally:
+            conn.close()
         stats = scan_library(DEFAULT_STUDY_ROOT)
         self.send_json({"ok": True, "saved": saved, "scan": stats.__dict__})
 
 
 def find_free_port(start_port: int) -> int:
+    bind_host = validate_loopback_bind_host(DEFAULT_HOST)
     port = start_port
     while port < start_port + 50:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             try:
-                sock.bind((DEFAULT_HOST, port))
+                sock.bind((bind_host, port))
                 return port
             except OSError:
                 port += 1
@@ -2530,14 +2736,16 @@ def find_free_port(start_port: int) -> int:
 
 def serve(port: int, open_browser: bool = False, scan_first: bool = True) -> None:
     ensure_dirs()
+    bind_host = validate_loopback_bind_host(DEFAULT_HOST)
     if scan_first:
         scan_library(DEFAULT_STUDY_ROOT)
     chosen_port = find_free_port(port)
-    server = ThreadingHTTPServer((DEFAULT_HOST, chosen_port), StudyHubHandler)
-    url = f"http://localhost:{chosen_port}"
+    server = ThreadingHTTPServer((bind_host, chosen_port), StudyHubHandler)
+    display_host = "localhost" if bind_host in {"127.0.0.1", "::1", "localhost"} else bind_host
+    url = f"http://{display_host}:{chosen_port}"
     print(f"{APP_NAME} running at {url}", flush=True)
-    print(f"Study library: {DEFAULT_STUDY_ROOT}", flush=True)
-    print(f"SQLite database: {DB_PATH}", flush=True)
+    print("Study library: configured local path", flush=True)
+    print("SQLite database: local runtime database", flush=True)
     if open_browser:
         webbrowser.open(url)
     server.serve_forever()
@@ -2551,7 +2759,7 @@ def verify_library() -> int:
     for row in rows:
         issue = is_suspicious_file(Path(row["original_path"]))
         if issue:
-            bad.append((row["original_path"], issue))
+            bad.append((row["rel_path"], issue))
     print(f"Indexed files: {len(rows)}")
     print(f"Suspicious files: {len(bad)}")
     for path, issue in bad[:50]:

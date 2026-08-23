@@ -6,6 +6,7 @@ const state = {
   selectedCourseId: null,
   selectedWeek: "",
   selectedFile: null,
+  csrfToken: "",
   weekFiles: [],
   weekFilter: "all",
   weekSort: "section",
@@ -22,7 +23,12 @@ const $ = (selector) => document.querySelector(selector);
 const view = $("#view");
 
 async function api(path, options = {}) {
-  const response = await fetch(path, options);
+  const method = (options.method || "GET").toUpperCase();
+  const headers = new Headers(options.headers || {});
+  if (method !== "GET" && state.csrfToken) {
+    headers.set("X-StudyHub-CSRF", state.csrfToken);
+  }
+  const response = await fetch(path, { ...options, headers });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || response.statusText);
   return data;
@@ -251,6 +257,7 @@ function fileCard(file) {
 
 async function loadBase() {
   state.health = await api("/api/health");
+  state.csrfToken = state.health.csrfToken || state.csrfToken || "";
   state.courses = await api("/api/courses");
   await Promise.all(
     state.courses.map(async (course) => {
@@ -782,6 +789,7 @@ function wrongRow(row) {
 async function renderSettings() {
   setTitle("Settings");
   state.health = await api("/api/health");
+  state.csrfToken = state.health.csrfToken || state.csrfToken || "";
   const ai = await api("/api/ai-status");
   const askReady = ai.openAI === "Configured" && ai.vectorStore === "Configured" ? "Ready" : "Not ready";
   view.innerHTML = `
@@ -800,7 +808,7 @@ async function renderSettings() {
         <div><span>Last AI Sync</span><strong>${escapeHtml(ai.lastAISync || "Never")}</strong></div>
         <div><span>Local Indexed Files</span><strong>${escapeHtml(ai.indexedFiles || 0)}</strong></div>
         <div><span>Vector Indexed Files</span><strong>${escapeHtml(ai.vectorIndexedFiles || 0)}</strong></div>
-        <div><span>Vector Store ID</span><strong>${escapeHtml(ai.vectorStoreId || "Not configured")}</strong></div>
+        <div><span>Vector Store Status</span><strong>${escapeHtml(ai.vectorStoreLabel || ai.vectorStore || "Not configured")}</strong></div>
       </div>
     </section>
   `;
@@ -962,7 +970,7 @@ async function uploadMaterial(event) {
   form.append("section", $("#uploadSection").value);
   form.append("category", $("#uploadCategory").value.trim() || "Uploaded");
   Array.from(files).forEach((file) => form.append("files", file));
-  await fetch("/api/upload", { method: "POST", body: form }).then(async (response) => {
+  await fetch("/api/upload", { method: "POST", headers: { "X-StudyHub-CSRF": state.csrfToken }, body: form }).then(async (response) => {
     if (!response.ok) throw new Error((await response.json()).error || "Upload failed");
   });
   $("#uploadDialog").close();

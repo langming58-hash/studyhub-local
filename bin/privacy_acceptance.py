@@ -60,6 +60,9 @@ def run_detection_cases() -> dict[str, bool]:
             "runtime_database_rejected": issue_contains(issues, "runtime directory") and issue_contains(issues, "runtime database"),
             "absolute_private_path_rejected": issue_contains(issues, "private absolute path"),
             "local_config_marker_rejected": issue_contains(issues, "local privacy marker"),
+            "personal_commit_email_rejected": not privacy.is_privacy_safe_public_email("person" + "@gmail.com"),
+            "github_noreply_email_allowed": privacy.is_privacy_safe_public_email("12345+maintainer" + "@users.noreply.github.com"),
+            "synthetic_example_email_allowed": privacy.is_privacy_safe_public_email("maintainers" + "@example.com"),
         }
 
 

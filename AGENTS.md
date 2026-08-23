@@ -21,6 +21,7 @@
 - Run `python3 bin/bridge_acceptance.py` when changing indexing, MCP, or practice behavior.
 - Run `python3 bin/askgpt_acceptance.py` when changing Ask GPT behavior.
 - Use meaningful commits that describe the real change.
+- Public commits must use the repository's privacy-safe maintainer identity / GitHub noreply email. Never commit with a personal email address.
 
 ## Privacy
 

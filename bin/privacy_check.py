@@ -80,6 +80,12 @@ PRIVATE_PATH_PATTERNS = [
     re.compile(r"[A-Za-z]:\\Users\\[^\\\s'\"`<>]+(?:\\[^\s'\"`<>]*)?"),
 ]
 
+EMAIL_RE = re.compile(r"^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$")
+APPROVED_PUBLIC_EMAIL_RE = re.compile(
+    r"^(?:[^@\s<>]+@users\.noreply\.github\.com|[^@\s<>]+@example\.(?:com|net|org))$",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class PrivacyConfig:
@@ -170,11 +176,42 @@ def check_text(root: Path, paths: list[Path], config: PrivacyConfig) -> list[str
     return issues
 
 
+def normalize_email(value: str) -> str:
+    return value.strip().strip("<>").lower()
+
+
+def is_privacy_safe_public_email(value: str) -> bool:
+    email = normalize_email(value)
+    if not email:
+        return True
+    return bool(EMAIL_RE.fullmatch(email) and APPROVED_PUBLIC_EMAIL_RE.fullmatch(email))
+
+
+def check_git_metadata(root: Path) -> list[str]:
+    issues: list[str] = []
+    commit_rows = run_git(root, ["log", "--all", "--format=%H%x09%ae%x09%ce"])
+    for row in commit_rows:
+        parts = row.split("\t")
+        if len(parts) != 3:
+            continue
+        commit_sha, author_email, committer_email = parts
+        if not is_privacy_safe_public_email(author_email):
+            issues.append(f"Potential personal author email in commit metadata: {commit_sha[:12]}")
+        if not is_privacy_safe_public_email(committer_email):
+            issues.append(f"Potential personal committer email in commit metadata: {commit_sha[:12]}")
+    tag_rows = run_git(root, ["for-each-ref", "refs/tags", "--format=%(refname:short)%09%(taggeremail)"])
+    for row in tag_rows:
+        tag_name, _, tagger_email = row.partition("\t")
+        if not is_privacy_safe_public_email(tagger_email):
+            issues.append(f"Potential personal tagger email in tag metadata: {tag_name}")
+    return issues
+
+
 def check_repository(root: Path = ROOT) -> list[str]:
     root = root.resolve()
     paths = tracked_or_staged(root)
     config = load_local_config(root)
-    return check_paths(root, paths) + check_text(root, paths, config)
+    return check_paths(root, paths) + check_text(root, paths, config) + check_git_metadata(root)
 
 
 def main() -> int:

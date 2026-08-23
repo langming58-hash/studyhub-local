@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""Synthetic security acceptance checks. Uses no real course material."""
+
+from __future__ import annotations
+
+import importlib.util
+import io
+import json
+import os
+import re
+import sqlite3
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+
+def load_server(tmp: Path):
+    os.environ["STUDY_LIBRARY_PATH"] = str(tmp / "StudyLibrary")
+    os.environ["DATABASE_PATH"] = str(tmp / "studyhub.sqlite")
+    os.environ["HOST"] = "127.0.0.1"
+    server_path = Path(__file__).resolve().parents[1] / "server.py"
+    spec = importlib.util.spec_from_file_location("studyhub_server_security_test", server_path)
+    server = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    sys.modules[spec.name] = server
+    spec.loader.exec_module(server)
+    server.DATA_DIR = tmp / "data"
+    server.CACHE_DIR = tmp / "cache"
+    server.TEXT_CACHE_DIR = server.CACHE_DIR / "text"
+    server.LOG_DIR = tmp / "logs"
+    server.DB_PATH = tmp / "studyhub.sqlite"
+    server.DEFAULT_STUDY_ROOT = tmp / "StudyLibrary"
+    server.MAX_UPLOAD_REQUEST_SIZE = 4096
+    server.MAX_UPLOAD_FILE_SIZE = 64
+    server.MAX_JSON_BODY_SIZE = 64
+    server.MAX_MCP_BODY_SIZE = 64
+    return server
+
+
+class FakeHandler:
+    def __init__(self, server: Any, headers: dict[str, str] | None = None, body: bytes = b""):
+        self.headers = headers or {}
+        self.rfile = io.BytesIO(body)
+        self.sent: dict[str, Any] = {}
+        self.path = "/api/test"
+        self.server_module = server
+
+    def send_json(self, data: Any, status: int = 200) -> None:
+        self.sent = {"status_code": status, "data": data}
+
+    def send_error_json(self, status: int, message: str) -> None:
+        self.send_json({"error": message}, status)
+
+
+def bind_methods(server: Any, fake: FakeHandler) -> FakeHandler:
+    for name in (
+        "read_limited_body",
+        "parse_body_json",
+        "validate_same_origin_mutation",
+        "handle_exception",
+        "handle_upload",
+    ):
+        setattr(fake, name, getattr(server.StudyHubHandler, name).__get__(fake, server.StudyHubHandler))
+    return fake
+
+
+def make_library(server: Any) -> sqlite3.Row:
+    root = server.DEFAULT_STUDY_ROOT
+    course_dir = root / "TEST1001 - Synthetic Course" / "Week 01" / "02 Exercises" / "Tutorial"
+    course_dir.mkdir(parents=True)
+    (course_dir / "Tutorial_1.txt").write_text("Q1. Explain the synthetic localhost-only rule.\n", encoding="utf-8")
+    server.scan_library(root)
+    conn = sqlite3.connect(server.DB_PATH)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM files WHERE active=1 ORDER BY id LIMIT 1").fetchone()
+    conn.close()
+    return row
+
+
+def multipart(fields: dict[str, str], filename: str, data: bytes) -> tuple[str, bytes]:
+    boundary = "----studyhub-security"
+    parts: list[bytes] = []
+    for key, value in fields.items():
+        parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n{value}\r\n".encode())
+    parts.append(
+        (
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"{filename}\"\r\n"
+            "Content-Type: text/plain\r\n\r\n"
+        ).encode()
+        + data
+        + b"\r\n"
+    )
+    parts.append(f"--{boundary}--\r\n".encode())
+    return f"multipart/form-data; boundary={boundary}", b"".join(parts)
+
+
+def has_absolute_or_forbidden(value: Any) -> bool:
+    if isinstance(value, dict):
+        forbidden = {"original_path", "absolute_path", "text_cache_path", "databasePath", "studyRoot", "vectorStoreId", "provider_file_id"}
+        if forbidden & set(value):
+            return True
+        return any(has_absolute_or_forbidden(item) for item in value.values())
+    if isinstance(value, list):
+        return any(has_absolute_or_forbidden(item) for item in value)
+    if isinstance(value, str):
+        if value.startswith(("/api/", "/mcp", "/preview/")):
+            return False
+        if re.match(r"^[A-Za-z]:\\", value):
+            return True
+        return Path(value).is_absolute()
+    return False
+
+
+def raises(exc_type: type[BaseException], fn) -> bool:
+    try:
+        fn()
+    except exc_type:
+        return True
+    except Exception:
+        return False
+    return False
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        server = load_server(tmp)
+        file_row = make_library(server)
+
+        traversal_cases = [
+            "../../outside",
+            "../outside",
+            "/".join(["", "absolute", "path"]),
+            "C:" + "\\" + "Users" + "\\" + "example" + "\\" + "outside",
+            ".." + "\\" + ".." + "\\" + "outside",
+            "nested" + "/" + ".." + "/" + ".." + "/" + "escape",
+        ]
+        traversal_rejected = all(raises(PermissionError, lambda case=case: server.safe_child_path(server.DEFAULT_STUDY_ROOT, case)) for case in traversal_cases)
+
+        valid_headers = {
+            "Host": "localhost:8765",
+            "Origin": "http://localhost:8765",
+            "Sec-Fetch-Site": "same-origin",
+            "X-StudyHub-CSRF": server.CSRF_TOKEN,
+        }
+        missing_csrf = bind_methods(server, FakeHandler(server, {"Host": "localhost:8765", "Origin": "http://localhost:8765"}))
+        invalid_csrf = bind_methods(server, FakeHandler(server, valid_headers | {"X-StudyHub-CSRF": "bad"}))
+        cross_site = bind_methods(
+            server,
+            FakeHandler(server, valid_headers | {"Origin": "https://example.invalid", "Sec-Fetch-Site": "cross-site"}),
+        )
+        valid_same_origin = bind_methods(server, FakeHandler(server, valid_headers))
+
+        conn = sqlite3.connect(server.DB_PATH)
+        conn.row_factory = sqlite3.Row
+        outside = tmp / "outside.txt"
+        outside.write_text("synthetic outside content", encoding="utf-8")
+        conn.execute(
+            """
+            INSERT INTO files(
+              course_id, week_id, course_code, week_label, section, category, exercise_type, filename,
+              original_path, rel_path, source, source_label, hash, size, modified_at, indexed_at,
+              extension, mime_type, is_official, suspicious, text_cache_path, stable_id, course_name,
+              week_number, absolute_path, source_type, file_extension, file_size, sha256, is_solution,
+              is_question_source, active
+            )
+            SELECT course_id, week_id, course_code, week_label, section, category, exercise_type, 'outside.txt',
+              ?, 'outside.txt', source, source_label, 'deadbeefcafefeed', 1, modified_at, indexed_at,
+              '.txt', 'text/plain', 1, '', '', 'deadbeefcafefeed', course_name, week_number, ?,
+              source_type, '.txt', 1, 'deadbeefcafefeed', 0, 0, 1
+            FROM files WHERE id=?
+            """,
+            (str(outside), str(outside), file_row["id"]),
+        )
+        outside_id = conn.execute("SELECT id FROM files WHERE stable_id='deadbeefcafefeed'").fetchone()["id"]
+        conn.commit()
+        conn.close()
+
+        ctype, ok_body = multipart(
+            {
+                "course_id": str(file_row["course_id"]),
+                "week": "Week 01",
+                "section": "02 Exercises",
+                "category": "Tutorial",
+            },
+            "Extra.txt",
+            b"small upload",
+        )
+        upload = bind_methods(server, FakeHandler(server, {"Content-Type": ctype, "Content-Length": str(len(ok_body))}, ok_body))
+        server.StudyHubHandler.handle_upload(upload)
+        conn = sqlite3.connect(server.DB_PATH)
+        conn.execute("UPDATE files SET active=1 WHERE id=?", (outside_id,))
+        conn.commit()
+        conn.close()
+
+        bad_ctype, bad_body = multipart(
+            {
+                "course_id": str(file_row["course_id"]),
+                "week": "Week 01",
+                "section": "02 Exercises",
+                "category": "Tutorial",
+            },
+            "../outside.txt",
+            b"bad",
+        )
+        bad_upload = bind_methods(server, FakeHandler(server, {"Content-Type": bad_ctype, "Content-Length": str(len(bad_body))}, bad_body))
+
+        abs_ctype, abs_body = multipart(
+            {
+                "course_id": str(file_row["course_id"]),
+                "week": "Week 01",
+                "section": "02 Exercises",
+                "category": "Tutorial",
+            },
+            "/".join(["", "absolute", "outside.txt"]),
+            b"bad",
+        )
+        abs_upload = bind_methods(server, FakeHandler(server, {"Content-Type": abs_ctype, "Content-Length": str(len(abs_body))}, abs_body))
+
+        oversized_upload = bind_methods(server, FakeHandler(server, {"Content-Length": str(server.MAX_UPLOAD_REQUEST_SIZE + 1), "Content-Type": ctype}))
+        oversized_json = bind_methods(server, FakeHandler(server, {"Content-Length": str(server.MAX_JSON_BODY_SIZE + 1)}))
+
+        err_handler = bind_methods(server, FakeHandler(server))
+        secret = "sk-" + "x" * 24
+        raw_path = "/".join(["", "private", "example", "secret.txt"])
+        err_handler.handle_exception(RuntimeError(f"{secret} {raw_path}"))
+
+        mcp_meta = server.mcp_get_file_metadata({"file_id": server.external_file_id(file_row)})
+        mcp_read = server.mcp_read_file({"file_id": server.external_file_id(file_row)})
+        upload_response_safe = not has_absolute_or_forbidden(upload.sent["data"])
+        sync_meta_safe = not has_absolute_or_forbidden(server.file_metadata(file_row))
+
+        checks = {
+            "upload_traversal_rejected": traversal_rejected and raises(PermissionError, lambda: server.StudyHubHandler.handle_upload(bad_upload)),
+            "absolute_upload_path_rejected": raises(PermissionError, lambda: server.StudyHubHandler.handle_upload(abs_upload)),
+            "cross_site_post_rejected": raises(PermissionError, cross_site.validate_same_origin_mutation),
+            "missing_csrf_token_rejected": raises(PermissionError, missing_csrf.validate_same_origin_mutation),
+            "invalid_csrf_token_rejected": raises(PermissionError, invalid_csrf.validate_same_origin_mutation),
+            "valid_same_origin_csrf_request_accepted": not raises(Exception, valid_same_origin.validate_same_origin_mutation),
+            "non_loopback_host_refused": raises(PermissionError, lambda: server.validate_loopback_bind_host("0.0.0.0")),
+            "preview_outside_study_root_rejected": raises(PermissionError, lambda: server.get_file(server.connect_db(), outside_id)),
+            "open_outside_study_root_rejected": raises(PermissionError, lambda: server.get_file(server.connect_db(), outside_id)),
+            "mcp_outside_study_root_rejected": server.mcp_call_tool("read_file", {"file_id": "file_deadbeefcafefeed"})["structuredContent"]["status"] == "DENY",
+            "mcp_no_absolute_paths": not has_absolute_or_forbidden(mcp_meta) and not has_absolute_or_forbidden(mcp_read),
+            "upload_api_no_absolute_paths": upload_response_safe,
+            "oversized_upload_rejected": raises(server.PayloadTooLarge, lambda: server.StudyHubHandler.handle_upload(oversized_upload)),
+            "oversized_json_rejected": raises(server.PayloadTooLarge, lambda: oversized_json.parse_body_json(server.MAX_JSON_BODY_SIZE)),
+            "unexpected_secret_not_present_in_response": secret not in json.dumps(err_handler.sent) and raw_path not in json.dumps(err_handler.sent),
+            "raw_exception_path_not_returned": err_handler.sent.get("status_code") == 500 and err_handler.sent["data"]["error"] == "Internal StudyHub error",
+            "openai_metadata_no_local_path": sync_meta_safe,
+            "mcp_remains_read_only": set(server.MCP_TOOLS) == {
+                "list_courses",
+                "list_weeks",
+                "list_files",
+                "search_files",
+                "search_content",
+                "search_study_library",
+                "get_file_metadata",
+                "read_file",
+                "fetch_study_file",
+                "get_question",
+            },
+        }
+        for name, ok in checks.items():
+            print(f"{name}: {'PASS' if ok else 'FAIL'}")
+        return 0 if all(checks.values()) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
