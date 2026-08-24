@@ -17,6 +17,4 @@ The engineering focus has been privacy boundaries rather than cloud-first conven
 
 Repository: https://github.com/langming58-hash/studyhub-local
 
-Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.4
-
 Issues, feedback, and PRs are welcome. I would especially appreciate feedback on local-first education tooling, retrieval UX, and privacy/security tradeoffs.
