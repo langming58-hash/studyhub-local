@@ -1,0 +1,25 @@
+# Show HN First Comment
+
+I originally built StudyHub Local because course PDFs, slides, tutorials, labs, and code files were spread across too many folders.
+
+The design gradually became local-first:
+
+- the study folder remains the source of truth
+- SQLite and extracted text are just indexes
+- OpenAI is optional
+- without an API key the main app still works
+- AI responses are intended to stay source-grounded
+- MCP access is read-only
+- the HTTP service intentionally refuses non-loopback exposure
+
+The biggest engineering rabbit hole ended up being privacy/security rather than the UI: filesystem containment, CSRF, DNS rebinding protection, exact same-origin handling, active HTML/SVG preview isolation, and keeping provider IDs/private paths out of user-facing responses.
+
+It is still early-stage. I would especially appreciate feedback on:
+
+1. onboarding
+2. document extraction
+3. search quality
+4. the local-first architecture
+5. whether the source-grounded workflow is actually useful
+
+The demo data is synthetic, and the app works without an OpenAI API key.
