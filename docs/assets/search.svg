@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-label="StudyHub Local demo search screen">
+  <rect width="1280" height="760" fill="#f7f9fc"/>
+  <rect width="1280" height="64" fill="#17202a"/>
+  <text x="32" y="41" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="700" fill="#fff">StudyHub Local</text>
+  <text x="52" y="124" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="800" fill="#1f2b38">Search</text>
+  <rect x="52" y="166" width="1176" height="64" rx="8" fill="#ffffff" stroke="#dbe3ed"/>
+  <text x="84" y="205" font-family="Inter, Arial, sans-serif" font-size="18" fill="#26313d">Keynesian multiplier</text>
+  <rect x="1070" y="180" width="116" height="36" rx="6" fill="#1e4b86"/>
+  <text x="1108" y="203" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700" fill="#ffffff">Search</text>
+  <rect x="52" y="266" width="1176" height="360" rx="8" fill="#ffffff" stroke="#dbe3ed"/>
+  <text x="82" y="308" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="800" fill="#26313d">Results</text>
+  <rect x="82" y="338" width="1110" height="76" rx="7" fill="#fbfcfe" stroke="#dbe3ed"/>
+  <text x="110" y="368" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#26313d">TEST1001 · Week 04 · Slides</text>
+  <text x="110" y="392" font-family="Inter, Arial, sans-serif" font-size="13" fill="#506070">Week 04 Keynesian Model Slides.txt · matched "multiplier"</text>
+  <rect x="82" y="430" width="1110" height="76" rx="7" fill="#fbfcfe" stroke="#dbe3ed"/>
+  <text x="110" y="460" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#26313d">TEST1001 · Week 04 · Workshop</text>
+  <text x="110" y="484" font-family="Inter, Arial, sans-serif" font-size="13" fill="#506070">Workshop 04 Questions.txt · matched "aggregate demand"</text>
+  <rect x="82" y="522" width="1110" height="76" rx="7" fill="#fffaf1" stroke="#ecd49b"/>
+  <text x="110" y="552" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#5d4100">Metadata filters active</text>
+  <text x="110" y="576" font-family="Inter, Arial, sans-serif" font-size="13" fill="#506070">course=TEST1001 · week=04 · material=Course Materials / Exercises</text>
+</svg>

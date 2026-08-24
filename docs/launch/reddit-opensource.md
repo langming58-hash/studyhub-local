@@ -1,0 +1,28 @@
+# StudyHub Local: an open-source local-first study material hub
+
+I wanted a cleaner way to manage course PDFs, slides, tutorials, labs, quizzes, and notes without putting the whole study folder into a cloud dashboard, so I built StudyHub Local and released it as an early-stage open-source project.
+
+What it does:
+
+- organizes files by Course -> Week -> Course Materials / Exercises
+- scans a local folder into a SQLite metadata index
+- supports local search and source previews
+- includes synthetic Demo Mode, enabled by default
+- works without an OpenAI API key
+- optionally uses server-side OpenAI retrieval with source citations
+- refuses to generate new practice questions; it only returns teacher-provided/demo questions when found
+- exposes a read-only MCP endpoint for local integrations
+
+Privacy/security defaults:
+
+- no telemetry by default
+- localhost-only
+- course files stay outside the repository
+- API keys stay server-side in local config
+- runtime databases and extracted text are rejected by the privacy scanner
+
+Repository: https://github.com/langming58-hash/studyhub-local
+
+Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.4
+
+Issues, feedback, and PRs are welcome. I would especially appreciate testing on different operating systems and feedback on onboarding.

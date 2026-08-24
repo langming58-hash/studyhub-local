@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-label="StudyHub Local demo course and week browsing screen">
+  <rect width="1280" height="760" fill="#f7f9fc"/>
+  <rect width="1280" height="64" fill="#17202a"/>
+  <text x="32" y="41" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="700" fill="#fff">StudyHub Local</text>
+  <text x="338" y="124" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="800" fill="#1f2b38">TEST1001 · Introduction to Economics</text>
+  <text x="338" y="154" font-family="Inter, Arial, sans-serif" font-size="15" fill="#5c6a78">Course view from synthetic Demo Mode fixtures.</text>
+  <rect x="32" y="94" width="250" height="610" rx="8" fill="#ffffff" stroke="#dbe3ed"/>
+  <text x="56" y="132" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#26313d">Weeks</text>
+  <g font-family="Inter, Arial, sans-serif" font-size="14">
+    <rect x="52" y="162" width="190" height="34" rx="6" fill="#e9f2ff" stroke="#9dc5ff"/><text x="70" y="184" fill="#1e4b86" font-weight="700">Week 01</text>
+    <rect x="52" y="208" width="190" height="34" rx="6" fill="#ffffff" stroke="#e1e7ef"/><text x="70" y="230" fill="#4d5c6b">Week 02</text>
+    <rect x="52" y="254" width="190" height="34" rx="6" fill="#ffffff" stroke="#e1e7ef"/><text x="70" y="276" fill="#4d5c6b">Week 03</text>
+    <rect x="52" y="300" width="190" height="34" rx="6" fill="#e7f8f2" stroke="#9ad7c2"/><text x="70" y="322" fill="#1f7a62" font-weight="700">Week 04</text>
+    <rect x="52" y="346" width="190" height="34" rx="6" fill="#ffffff" stroke="#e1e7ef"/><text x="70" y="368" fill="#4d5c6b">Week 05</text>
+    <rect x="52" y="392" width="190" height="34" rx="6" fill="#ffffff" stroke="#e1e7ef"/><text x="70" y="414" fill="#4d5c6b">Week 06</text>
+  </g>
+  <rect x="338" y="194" width="890" height="438" rx="8" fill="#ffffff" stroke="#dbe3ed"/>
+  <text x="366" y="234" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="800" fill="#24313d">Week 04</text>
+  <rect x="366" y="268" width="390" height="92" rx="7" fill="#fbfcfe" stroke="#dbe3ed"/>
+  <text x="390" y="301" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#26313d">01 Course Materials</text>
+  <text x="390" y="331" font-family="Inter, Arial, sans-serif" font-size="14" fill="#506070">Slides · Week 04 Keynesian Model Slides.txt</text>
+  <rect x="788" y="268" width="390" height="92" rx="7" fill="#fbfcfe" stroke="#dbe3ed"/>
+  <text x="812" y="301" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#26313d">02 Exercises</text>
+  <text x="812" y="331" font-family="Inter, Arial, sans-serif" font-size="14" fill="#506070">Workshop · Workshop 04 Questions.txt</text>
+  <rect x="366" y="388" width="812" height="172" rx="7" fill="#fffaf1" stroke="#ecd49b"/>
+  <text x="390" y="423" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#5d4100">Narrow context ready</text>
+  <text x="390" y="454" font-family="Inter, Arial, sans-serif" font-size="14" fill="#5d6b7a">Ask GPT can use current course → current week → selected file metadata.</text>
+  <text x="390" y="488" font-family="Inter, Arial, sans-serif" font-size="14" fill="#5d6b7a">Source citations are shown only when StudyHub has reliable metadata.</text>
+</svg>

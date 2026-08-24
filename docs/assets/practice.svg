@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-label="StudyHub Local demo practice question screen">
+  <rect width="1280" height="760" fill="#f7f9fc"/>
+  <rect width="1280" height="64" fill="#17202a"/>
+  <text x="32" y="41" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="700" fill="#fff">StudyHub Local</text>
+  <text x="52" y="124" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="800" fill="#1f2b38">Practice</text>
+  <text x="52" y="154" font-family="Inter, Arial, sans-serif" font-size="15" fill="#5c6a78">Only teacher-provided synthetic questions are returned.</text>
+  <rect x="52" y="194" width="1176" height="372" rx="8" fill="#ffffff" stroke="#dbe3ed"/>
+  <text x="82" y="234" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="800" fill="#26313d">TEST1001 · Week 01 · Tutorial 01 Questions.txt</text>
+  <rect x="82" y="264" width="1060" height="110" rx="7" fill="#fbfcfe" stroke="#dbe3ed"/>
+  <text x="108" y="296" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700" fill="#26313d">Q1</text>
+  <text x="108" y="326" font-family="Inter, Arial, sans-serif" font-size="15" fill="#26313d">Using the demo lecture notes, describe one example of opportunity cost.</text>
+  <rect x="82" y="396" width="1060" height="92" rx="7" fill="#eef8f4" stroke="#bde4d5"/>
+  <text x="108" y="427" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700" fill="#1f7a62">Source</text>
+  <text x="108" y="450" font-family="Inter, Arial, sans-serif" font-size="13" fill="#506070">Course: TEST1001 · Week: 01 · Type: Tutorial · Question: Q1</text>
+  <text x="108" y="472" font-family="Inter, Arial, sans-serif" font-size="13" fill="#506070">The question is synthetic demo content, not generated during the request.</text>
+  <rect x="52" y="596" width="1176" height="68" rx="8" fill="#fff1f1" stroke="#efc2c2"/>
+  <text x="82" y="636" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700" fill="#8a2b2b">Safety rule: StudyHub Local never creates new practice questions.</text>
+</svg>
