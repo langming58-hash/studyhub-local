@@ -843,7 +843,48 @@ async function openFileDrawer(fileId) {
   $("#previewFrame").innerHTML = `<iframe title="Preview" src="/preview/${file.id}"></iframe>`;
   $("#askResponse").textContent = "";
   $("#askPrompt").value = "";
+  $("#noteBody").value = "";
+  await loadFileNotes(file.id);
   $("#fileDrawer").hidden = false;
+}
+
+async function loadFileNotes(fileId) {
+  const notes = await api(`/api/notes?targetType=file&targetId=${fileId}`);
+  $("#fileNotes").innerHTML = notes.length
+    ? notes.map(noteCard).join("")
+    : `<div class="notice compact">No user notes for this file yet.</div>`;
+}
+
+function noteCard(note) {
+  return `
+    <article class="note-card">
+      <div class="chips"><span class="chip">User note</span><span class="chip">${escapeHtml(note.updated_at || "")}</span></div>
+      <p>${escapeHtml(note.body)}</p>
+    </article>
+  `;
+}
+
+async function saveNote() {
+  if (!state.selectedFile) return;
+  const body = $("#noteBody").value.trim();
+  if (!body) {
+    toast("Write a note first");
+    return;
+  }
+  await api("/api/notes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      targetType: "file",
+      targetId: state.selectedFile.id,
+      courseId: state.selectedFile.course_id,
+      week: state.selectedFile.week_label,
+      body,
+    }),
+  });
+  $("#noteBody").value = "";
+  await loadFileNotes(state.selectedFile.id);
+  toast("Note saved");
 }
 
 async function openAskForFile(fileId, prompt = "") {
@@ -1038,6 +1079,7 @@ $("#askFileFull").addEventListener("click", () => state.selectedFile && openAskF
 $("#starFile").addEventListener("click", () => state.selectedFile && toggleStar(state.selectedFile.id));
 $("#copyContext").addEventListener("click", () => state.selectedFile && copyContext(state.selectedFile.id));
 $("#askBtn").addEventListener("click", askAboutFile);
+$("#saveNote").addEventListener("click", saveNote);
 $("#scanBtn").addEventListener("click", scanLibrary);
 $("#uploadBtn").addEventListener("click", () => $("#uploadDialog").showModal());
 $("#uploadSubmit").addEventListener("click", uploadMaterial);

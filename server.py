@@ -82,9 +82,50 @@ MAX_UPLOAD_REQUEST_SIZE = int(os.environ.get("MAX_UPLOAD_REQUEST_SIZE", str(60 *
 CHUNK_TARGET_CHARS = 3200
 QUESTION_RE = re.compile(r"^\s*(?:Q(?:uestion)?\.?\s*)?(?P<num>\d{1,3}|[A-Z])[\).\:]\s+(?P<body>.{12,})", re.IGNORECASE)
 SOLUTION_RE = re.compile(r"\b(solution|solutions|answer|answers|worked|key)\b", re.IGNORECASE)
+SOLUTION_HEADING_RE = re.compile(
+    r"^\s*(?:(?:Official|Teacher)\s+){0,2}(?:Solution|Solutions|Answer|Answers)\s*:?\s*$",
+    re.IGNORECASE,
+)
 QUESTION_CATEGORY_RE = re.compile(r"\b(tutorial|workshop|lab|practice|revision|quiz)\b", re.IGNORECASE)
 ASK_QUESTION_RE = re.compile(r"\bQ(?:uestion)?\.?\s*(?P<num>\d{1,3}|[A-Z])\b|题\s*(?P<cnum>\d{1,3})", re.IGNORECASE)
 SOLUTION_INTENT_RE = re.compile(r"\b(solution|answer|solve|calculate|work(?:ed)?\s*out)\b|答案|解答|求解|计算", re.IGNORECASE)
+QUESTION_INTENT_RE = re.compile(r"\b(question|tutorial|workshop|lab|quiz|practice)\b|题目|练习", re.IGNORECASE)
+LOCAL_SEARCH_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "current",
+    "file",
+    "for",
+    "from",
+    "explain",
+    "generate",
+    "give",
+    "help",
+    "important",
+    "in",
+    "is",
+    "it",
+    "key",
+    "me",
+    "of",
+    "on",
+    "or",
+    "prepare",
+    "selected",
+    "summarize",
+    "summary",
+    "the",
+    "this",
+    "to",
+    "what",
+    "when",
+    "where",
+    "why",
+    "with",
+}
 
 ACADEMIC_EXTS = {
     ".pdf",
@@ -602,7 +643,7 @@ def detect_questions_from_chunks(file_row: sqlite3.Row | dict[str, Any], chunks:
                 stripped = follow.strip()
                 if not stripped:
                     continue
-                if QUESTION_RE.match(stripped) or re.match(r"^(Source note|Note|Solution|Answer)\b", stripped, re.IGNORECASE):
+                if QUESTION_RE.match(stripped) or re.match(r"^(Source note|Note)\b", stripped, re.IGNORECASE) or SOLUTION_HEADING_RE.match(stripped):
                     break
                 body_lines.append(stripped)
             questions.append(
@@ -619,6 +660,31 @@ def detect_questions_from_chunks(file_row: sqlite3.Row | dict[str, Any], chunks:
                 }
             )
     return questions
+
+
+def detect_solution_headings_from_chunks(file_row: sqlite3.Row | dict[str, Any], chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    solutions: list[dict[str, Any]] = []
+    for chunk in chunks:
+        lines = chunk["text"].splitlines()
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if not SOLUTION_HEADING_RE.match(stripped):
+                continue
+            following = [candidate.strip() for candidate in lines[idx + 1 : idx + 4] if candidate.strip()]
+            if not following:
+                continue
+            solutions.append(
+                {
+                    "file_id": file_row["id"],
+                    "course_code": file_row["course_code"],
+                    "week_label": file_row["week_label"],
+                    "exercise_type": file_row["exercise_type"] or file_row["category"],
+                    "solution_label": stripped,
+                    "source_location": chunk["source_location"] or file_row["filename"],
+                    "official_source": 1 if file_row["is_official"] else 0,
+                }
+            )
+    return solutions
 
 
 def connect_db() -> sqlite3.Connection:
@@ -994,6 +1060,24 @@ def rebuild_file_index(conn: sqlite3.Connection, file_id: int, text: str, chunks
             ),
         )
         solution_count = 1
+    elif file_row["is_official"]:
+        for solution in detect_solution_headings_from_chunks(file_row, chunks):
+            conn.execute(
+                """
+                INSERT INTO solutions(file_id, course_code, week_label, exercise_type, solution_label, source_location, official_source, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+                """,
+                (
+                    file_id,
+                    solution["course_code"],
+                    solution["week_label"],
+                    solution["exercise_type"],
+                    solution["solution_label"],
+                    solution["source_location"],
+                    now_iso(),
+                ),
+            )
+            solution_count += 1
     status = "indexed" if file_row["is_official"] and not file_row["suspicious"] and text else "not_indexed"
     error = "" if status == "indexed" else ("No extracted text" if not text else file_row["suspicious"])
     conn.execute(
@@ -1265,6 +1349,22 @@ def fts_query(raw: str) -> str:
     return " ".join(tokens[:12])
 
 
+def meaningful_search_words(query: str) -> list[str]:
+    words = []
+    for token in query.split():
+        word = token.lower()
+        if word in LOCAL_SEARCH_STOPWORDS:
+            continue
+        if len(word) < 3 and not re.search(r"\d", word):
+            continue
+        words.append(word)
+    return words
+
+
+def has_context_scope(context: dict[str, Any]) -> bool:
+    return bool(context.get("fileId") or context.get("week") or context.get("course"))
+
+
 def get_file(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
     if row is None:
@@ -1410,7 +1510,13 @@ def search_local_context(conn: sqlite3.Connection, prompt: str, context: dict[st
         sql += " AND f.id=?"
         params.append(int(context["fileId"]))
     if query:
-        words = [w.lower() for w in query.split()]
+        words = meaningful_search_words(query)
+        if not words:
+            if not has_context_scope(context):
+                return []
+            sql += " ORDER BY dc.id LIMIT ?"
+            params.append(limit)
+            return rows_to_dicts(conn.execute(sql, params).fetchall())
         rows = conn.execute(sql, params).fetchall()
         scored = []
         for row in rows:
@@ -1461,6 +1567,16 @@ def normalize_ask_context(conn: sqlite3.Connection, raw_context: dict[str, Any],
     if qn:
         context["questionNumber"] = qn
     return context
+
+
+def has_specific_teacher_question_scope(context: dict[str, Any], prompt: str) -> bool:
+    if context.get("questionId") or context.get("questionNumber") or detect_question_number(prompt):
+        return True
+    if context.get("fileId"):
+        return True
+    if context.get("course") and context.get("week") and context.get("exerciseType") and QUESTION_INTENT_RE.search(prompt):
+        return True
+    return False
 
 
 def teacher_questions_for_context(conn: sqlite3.Connection, context: dict[str, Any], prompt: str, limit: int = 5) -> list[dict[str, Any]]:
@@ -1662,7 +1778,9 @@ def mcp_list_courses(_args: dict[str, Any]) -> dict[str, Any]:
         FROM courses c
         LEFT JOIN files f ON f.course_id=c.id AND f.active=1
         LEFT JOIN weeks w ON w.course_id=c.id AND w.has_materials=1
-        GROUP BY c.id ORDER BY c.code
+        GROUP BY c.id
+        HAVING file_count > 0
+        ORDER BY c.code
         """
     ).fetchall()
     conn.close()
@@ -1800,7 +1918,7 @@ def extract_question_from_source_text(text: str, question_number: str) -> str:
     marker = rf"(?:Q(?:uestion)?\.?\s*)?{re.escape(num)}[\).:]"
     next_marker = r"(?:Q(?:uestion)?\.?\s*)?(?:\d{1,3}|[A-Z])[\).:]"
     match = re.search(
-        rf"(?ms)(?:^|\n)\s*\*?\s*{marker}\s*(?P<body>.*?)(?=(?:\n\s*\*?\s*{next_marker}\s+)|\Z)",
+        rf"(?ms)(?:^|\n)\s*\*?\s*{marker}\s*(?P<body>.*?)(?=(?:\n\s*\*?\s*{next_marker}\s+)|(?:\n\s*(?:(?:Official|Teacher)\s+){{0,2}}(?:Solution|Solutions|Answer|Answers)\s*:?\s*$)|\Z)",
         text,
     )
     if not match:
@@ -2465,6 +2583,7 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                     LEFT JOIN files f ON f.course_id=c.id AND f.active=1
                     LEFT JOIN weeks w ON w.course_id=c.id
                     GROUP BY c.id
+                    HAVING file_count > 0
                     ORDER BY c.code
                     """
                 ).fetchall()
@@ -2490,6 +2609,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 file_id = int(qs.get("id", ["0"])[0])
                 row = get_file(conn, file_id)
                 self.send_json(public_file(row, include_text=read_cached_text(row, 8000)))
+            elif path == "/api/notes":
+                self.send_json(self.handle_notes_get(conn, qs))
             elif path == "/api/search":
                 query = qs.get("q", [""])[0].strip()
                 course_id = qs.get("course_id", [""])[0]
@@ -2541,6 +2662,24 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.send_error_json(404, "Not found")
         finally:
             conn.close()
+
+    def handle_notes_get(self, conn: sqlite3.Connection, qs: dict[str, list[str]]) -> list[dict[str, Any]]:
+        target_type = qs.get("targetType", ["file"])[0] or "file"
+        target_id = int(qs.get("targetId", ["0"])[0] or 0)
+        if target_type != "file" or not target_id:
+            return []
+        get_file(conn, target_id)
+        rows = conn.execute(
+            """
+            SELECT id, target_type, target_id, course_id, week_label, body, created_at, updated_at
+            FROM notes
+            WHERE target_type='file' AND target_id=?
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 50
+            """,
+            (target_id,),
+        ).fetchall()
+        return rows_to_dicts(rows)
 
     def handle_questions(self, conn: sqlite3.Connection, qs: dict[str, list[str]]) -> list[dict[str, Any]]:
         params: list[Any] = []
@@ -2702,20 +2841,30 @@ class StudyHubHandler(BaseHTTPRequestHandler):
     def handle_note(self) -> None:
         body = self.parse_body_json()
         conn = connect_db()
-        conn.execute(
-            "INSERT INTO notes(target_type, target_id, course_id, week_label, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                body.get("targetType", "file"),
-                body.get("targetId"),
-                body.get("courseId"),
-                body.get("week"),
-                body.get("body", ""),
-                now_iso(),
-                now_iso(),
-            ),
-        )
-        conn.commit()
-        conn.close()
+        try:
+            target_type = body.get("targetType", "file")
+            target_id = int(body.get("targetId") or 0)
+            if target_type != "file" or not target_id:
+                raise ValueError("Notes must target a file")
+            file_row = get_file(conn, target_id)
+            note_body = str(body.get("body", "")).strip()
+            if not note_body:
+                raise ValueError("Note body is required")
+            conn.execute(
+                "INSERT INTO notes(target_type, target_id, course_id, week_label, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    target_type,
+                    target_id,
+                    body.get("courseId") or file_row["course_id"],
+                    body.get("week") or file_row["week_label"],
+                    note_body[:10_000],
+                    now_iso(),
+                    now_iso(),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
         self.send_json({"ok": True})
 
     def handle_ask(self) -> None:
@@ -2723,7 +2872,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         conn = connect_db()
         prompt = body.get("prompt", "").strip()
         context = normalize_ask_context(conn, body.get("context", {}) or {}, prompt)
-        questions = teacher_questions_for_context(conn, context, prompt, limit=5)
+        question_scope = has_specific_teacher_question_scope(context, prompt)
+        questions = teacher_questions_for_context(conn, context, prompt, limit=5) if question_scope else []
         solutions = official_solutions_for_context(conn, context, limit=5)
         if wants_generated_question(prompt):
             response = teacher_question_response(questions)
@@ -2739,6 +2889,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
             self.send_json({"status": status, "response": response, "sources": [], "questions": questions, "solutions": solutions})
             return
         chunks = search_local_context(conn, prompt, context, limit=8)
+        if chunks and not questions and QUESTION_INTENT_RE.search(prompt):
+            questions = teacher_questions_for_context(conn, context, prompt, limit=5) if question_scope else []
         status = "local"
         if not chunks and not questions:
             response = "I couldn't find this in the currently indexed official course materials."

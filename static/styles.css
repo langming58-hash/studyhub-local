@@ -548,8 +548,9 @@ textarea {
 .context-panel {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(160px, 1fr) auto auto auto;
+  align-content: start;
   gap: 8px;
+  overflow: auto;
 }
 
 pre,
@@ -566,6 +567,27 @@ pre {
   border-radius: 8px;
   padding: 10px;
   font-size: 12px;
+  max-height: 240px;
+}
+
+.notes-list {
+  display: grid;
+  gap: 8px;
+}
+
+.note-card {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.note-card p {
+  white-space: pre-wrap;
+  color: var(--text);
+  font-size: 13px;
 }
 
 textarea {
