@@ -21,6 +21,6 @@ StudyHub Local 是一个早期开源项目，核心结构很简单：
 
 Repo: https://github.com/langming58-hash/studyhub-local
 
-Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.4
+Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.5
 
 欢迎试用、提 Issue、PR，尤其欢迎对本地优先架构、隐私边界、教育工具体验和文档提取的反馈。

@@ -8,7 +8,7 @@ Course -> Week organization, local search, synthetic demo, optional source-groun
 
 Repo: https://github.com/langming58-hash/studyhub-local
 
-Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.4
+Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.5
 
 ## Optional Thread
 
@@ -24,6 +24,6 @@ Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.4
 
 6. Repo: https://github.com/langming58-hash/studyhub-local
 
-7. Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.4
+7. Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.5
 
 8. Issues, feedback, and PRs are welcome.

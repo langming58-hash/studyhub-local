@@ -74,7 +74,7 @@ Caption: localhost only、默认没有 telemetry、不开 API key 也能跑 Demo
 
 Repo: https://github.com/langming58-hash/studyhub-local
 
-Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.4
+Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.5
 
 这是早期开源项目，欢迎试用、提 Issue、PR 和反馈。
 

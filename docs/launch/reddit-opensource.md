@@ -23,6 +23,6 @@ Privacy/security defaults:
 
 Repository: https://github.com/langming58-hash/studyhub-local
 
-Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.4
+Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.5
 
 Issues, feedback, and PRs are welcome. I would especially appreciate testing on different operating systems and feedback on onboarding.

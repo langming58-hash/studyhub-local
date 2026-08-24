@@ -18,4 +18,4 @@ Repo:
 https://github.com/langming58-hash/studyhub-local
 
 Release:
-https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.4
+https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.5

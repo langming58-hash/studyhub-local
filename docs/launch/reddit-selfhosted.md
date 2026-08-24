@@ -19,6 +19,6 @@ The source of truth remains your own local study folder. The repository ships on
 
 Repository: https://github.com/langming58-hash/studyhub-local
 
-Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.4
+Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.5
 
 Issues, feedback, and PRs are welcome, especially around local-first security boundaries and cross-platform launcher polish.

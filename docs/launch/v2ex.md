@@ -19,6 +19,6 @@
 
 Repo: https://github.com/langming58-hash/studyhub-local
 
-Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.4
+Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.5
 
 目前还是早期版本，很多地方肯定可以继续打磨。欢迎试用、提 Issue、PR，或者从架构、搜索、资料整理方式、跨平台体验这些角度给点反馈。

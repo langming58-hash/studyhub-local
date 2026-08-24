@@ -1,6 +1,6 @@
 # Release Announcement
 
-StudyHub Local v0.1.4 is the first version I am comfortable sharing broadly.
+StudyHub Local v0.1.5 is the current version I am comfortable sharing broadly.
 
 It includes:
 
@@ -20,4 +20,4 @@ It is still early-stage, and feedback is welcome.
 
 Repository: https://github.com/langming58-hash/studyhub-local
 
-Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.4
+Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.5
