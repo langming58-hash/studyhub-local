@@ -1,5 +1,3 @@
-# [分享创造] 做了一个本地优先的开源学习资料管理器 StudyHub Local
-
 我平时课程里的 PDF / PPT / Tutorial / Lab / Quiz 和代码文件越来越多，散在下载目录、网盘和各种文件夹里找起来很麻烦，所以做了一个早期开源项目 StudyHub Local。
 
 它主要是把本地学习资料按 Course -> Week -> Materials / Exercises 整理起来。
