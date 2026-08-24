@@ -368,6 +368,23 @@ def public_file(row: sqlite3.Row | dict[str, Any], include_text: str | None = No
     return data
 
 
+def public_solution(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    allowed = (
+        "id",
+        "file_id",
+        "course_code",
+        "week_label",
+        "exercise_type",
+        "solution_label",
+        "source_location",
+        "official_source",
+        "created_at",
+        "filename",
+        "rel_path",
+    )
+    return {key: row[key] for key in allowed if key in row.keys()}
+
+
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -1648,7 +1665,7 @@ def official_solutions_for_context(conn: sqlite3.Connection, context: dict[str, 
         params.append(context["exerciseType"])
     sql += " ORDER BY s.course_code, s.week_label, s.exercise_type, s.solution_label LIMIT ?"
     params.append(limit)
-    return rows_to_dicts(conn.execute(sql, params).fetchall())
+    return [public_solution(row) for row in conn.execute(sql, params).fetchall()]
 
 
 def teacher_question_response(questions: list[dict[str, Any]]) -> str:
@@ -2895,6 +2912,7 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         if not chunks and not questions:
             response = "I couldn't find this in the currently indexed official course materials."
             status = "no_source"
+            solutions = []
         elif os.environ.get("OPENAI_API_KEY"):
             try:
                 response = openai_responses_request(prompt, chunks, context, questions=questions, solutions=solutions)

@@ -147,13 +147,16 @@ def main() -> int:
             "custom_library_scan_ok": stats.new_files == 1 and stats.removed_files == 1,
             "askgpt_no_match_scoped": no_match["status"] == "no_source"
             and "currently indexed official course materials" in no_match["response"]
-            and not no_match["questions"],
+            and not no_match["questions"]
+            and not no_match["solutions"],
             "askgpt_generic_file_scope_preserved": generic_file_summary["status"] == "local"
             and generic_file_summary["sources"]
             and generic_file_summary["sources"][0]["source_file_id"] == tutorial["id"],
             "teacher_question_still_allowed": teacher_question["status"] == "teacher_question"
             and teacher_question["questions"]
             and teacher_question["questions"][0]["course_code"] == "DEMO1010",
+            "solutions_payload_has_no_cache_path": teacher_question["solutions"]
+            and all("text_cache_path" not in solution for solution in teacher_question["solutions"]),
             "notes_persist_after_reload": note_count_before == 1 and note_count_after == 1,
             "solution_heading_not_in_question": "Official Teacher Solution" not in question_texts.get("Q2", ""),
             "plain_text_solution_heading_detected": solution_count == 1,
