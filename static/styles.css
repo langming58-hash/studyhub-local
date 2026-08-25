@@ -843,12 +843,32 @@ textarea {
   font-family: "STIX Two Math", "Cambria Math", ui-serif, serif;
 }
 
+.math-inline .katex {
+  font-size: 1em;
+}
+
 .math-block {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 10px 12px;
-  white-space: pre;
+  padding: 4px 0 8px;
+  white-space: normal;
+}
+
+.math-block .katex-display {
+  margin: 0.25em 0;
+}
+
+.math-block .katex {
+  font-size: 1.08em;
+}
+
+.math-error,
+.math-fallback {
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.95em;
+}
+
+.math-error {
+  text-decoration: underline dotted;
 }
 
 .message-actions {

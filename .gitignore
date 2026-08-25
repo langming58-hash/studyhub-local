@@ -28,6 +28,7 @@ Question Bank.csv
 # Python/editor noise.
 __pycache__/
 *.py[cod]
+node_modules/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/

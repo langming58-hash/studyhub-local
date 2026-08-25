@@ -270,72 +270,10 @@ function setAiMode(mode) {
   localStorage.setItem("studyhub.aiMode", mode);
 }
 
-function renderInlineMarkdown(text) {
-  return escapeHtml(text)
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
-    .replace(/\\\((.+?)\\\)|\$([^$\n]+)\$/g, (_m, a, b) => `<span class="math-inline">${a || b}</span>`);
-}
-
 function renderMarkdown(text = "") {
-  const blocks = String(text).replace(/\r\n/g, "\n").split(/\n{2,}/);
-  const html = [];
-  let inCode = false;
-  let code = [];
-  let codeLang = "";
-  const flushCode = () => {
-    if (!inCode) return;
-    html.push(`<pre><code data-lang="${escapeHtml(codeLang)}">${escapeHtml(code.join("\n"))}</code></pre>`);
-    inCode = false;
-    code = [];
-    codeLang = "";
-  };
-  for (const block of blocks) {
-    const lines = block.split("\n");
-    if (lines[0].startsWith("```")) {
-      inCode = true;
-      codeLang = lines[0].slice(3).trim();
-      code.push(...lines.slice(1));
-      if (lines.at(-1).startsWith("```") && lines.length > 1) {
-        code.pop();
-        flushCode();
-      }
-      continue;
-    }
-    if (inCode) {
-      code.push("", ...lines);
-      if (lines.at(-1).startsWith("```")) {
-        code.pop();
-        flushCode();
-      }
-      continue;
-    }
-    const trimmed = block.trim();
-    if (/^#{1,3}\s/.test(trimmed)) {
-      const level = Math.min(trimmed.match(/^#+/)[0].length, 3);
-      html.push(`<h${level}>${renderInlineMarkdown(trimmed.replace(/^#{1,3}\s*/, ""))}</h${level}>`);
-    } else if (/^(\*|-)\s+/m.test(trimmed)) {
-      html.push(`<ul>${lines.map((line) => `<li>${renderInlineMarkdown(line.replace(/^(\*|-)\s+/, ""))}</li>`).join("")}</ul>`);
-    } else if (/^\d+\.\s+/m.test(trimmed)) {
-      html.push(`<ol>${lines.map((line) => `<li>${renderInlineMarkdown(line.replace(/^\d+\.\s+/, ""))}</li>`).join("")}</ol>`);
-    } else if (/^\|.+\|\n\|[-:\s|]+\|/.test(trimmed)) {
-      const rows = lines.filter((line) => /^\|.*\|$/.test(line)).map((line) => line.split("|").slice(1, -1).map((cell) => cell.trim()));
-      const head = rows[0] || [];
-      const body = rows.slice(2);
-      html.push(`<div class="table-wrap"><table><thead><tr>${head.map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`).join("")}</tr></thead><tbody>${body.map((row) => `<tr>${row.map((cell) => `<td>${renderInlineMarkdown(cell)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
-    } else if (/^\\\[([\s\S]+)\\\]$/.test(trimmed) || /^\$\$([\s\S]+)\$\$$/.test(trimmed)) {
-      html.push(`<div class="math-block">${escapeHtml(trimmed.replace(/^\\\[|\\\]$|^\$\$|\$\$$/g, ""))}</div>`);
-    } else if (/^>\s+/m.test(trimmed)) {
-      html.push(`<blockquote>${lines.map((line) => renderInlineMarkdown(line.replace(/^>\s?/, ""))).join("<br>")}</blockquote>`);
-    } else if (/^---+$/.test(trimmed)) {
-      html.push("<hr>");
-    } else {
-      html.push(`<p>${lines.map(renderInlineMarkdown).join("<br>")}</p>`);
-    }
-  }
-  flushCode();
-  return html.join("");
+  return window.StudyHubAIRenderer?.renderMarkdown
+    ? window.StudyHubAIRenderer.renderMarkdown(text)
+    : `<p>${escapeHtml(text)}</p>`;
 }
 
 function hydrateMessages(messages = []) {
@@ -1075,7 +1013,7 @@ function renderAskMessages() {
       return `
         <article class="chat-message ${message.role}">
           <div class="message-head">${badge}${message.status ? `<span class="chip">${escapeHtml(message.status)}</span>` : ""}</div>
-          <div class="message-body">${message.role === "assistant" ? renderMarkdown(message.text) : `<p>${escapeHtml(message.text)}</p>`}</div>
+      <div class="message-body">${renderMarkdown(message.text)}</div>
           ${
             message.role === "assistant"
               ? `<div class="message-actions"><button class="tiny-button" data-copy-message="${escapeHtml(message.text)}">Copy</button><button class="tiny-button" data-retry-last="1">Retry</button>${sources ? `<button class="tiny-button" data-show-sources="1">Sources</button>` : ""}</div>`

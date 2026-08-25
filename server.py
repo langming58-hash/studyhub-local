@@ -64,6 +64,7 @@ CACHE_DIR = APP_ROOT / "cache"
 TEXT_CACHE_DIR = CACHE_DIR / "text"
 LOG_DIR = APP_ROOT / "logs"
 STATIC_DIR = APP_ROOT / "static"
+KATEX_DIST_DIR = APP_ROOT / "node_modules" / "katex" / "dist"
 DEMO_MODE = os.environ.get("DEMO_MODE", "").strip().lower() in {"1", "true", "yes", "on"} or (
     not ENV_LOCAL_EXISTS
     and "DEMO_MODE" not in os.environ
@@ -2656,6 +2657,8 @@ def openai_responses_request(
         "Always include sources with Course, Week, Filename, and page/slide/question number when available. "
         "If an official solution is provided and the user asks for a solution, label it 'Official Teacher Solution'. "
         "Label your own explanation as 'GPT Explanation'. "
+        "When writing mathematics, use Markdown prose with $...$ for inline math and $$...$$ for display math. "
+        "Never expose LaTeX commands outside math delimiters, and do not wrap mathematical explanations in code blocks. "
     )
     if question_text and not wants_solution:
         instructions += "The user has not explicitly asked for a solution; explain the question or relevant concepts without giving a full worked answer. "
@@ -3495,6 +3498,9 @@ class StudyHubHandler(BaseHTTPRequestHandler):
     def serve_static(self, path: str) -> None:
         if path == "/":
             path = "/index.html"
+        if path.startswith("/vendor/katex/"):
+            self.serve_katex_asset(path)
+            return
         target = (STATIC_DIR / path.lstrip("/")).resolve()
         if not is_inside(target, STATIC_DIR) or not target.exists() or target.is_dir():
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -3504,6 +3510,21 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def serve_katex_asset(self, path: str) -> None:
+        rel = path.removeprefix("/vendor/katex/")
+        target = (KATEX_DIST_DIR / rel).resolve()
+        if not is_inside(target, KATEX_DIST_DIR) or not target.exists() or target.is_dir():
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        body = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
