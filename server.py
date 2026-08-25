@@ -152,6 +152,23 @@ ACADEMIC_EXTS = {
     ".jpeg",
     ".webp",
 }
+TEXT_EXTRACTABLE_EXTS = {
+    ".pdf",
+    ".docx",
+    ".pptx",
+    ".csv",
+    ".tsv",
+    ".txt",
+    ".md",
+    ".py",
+    ".r",
+    ".html",
+    ".htm",
+    ".xhtml",
+    ".xml",
+    ".svg",
+    ".ipynb",
+}
 ACTIVE_WEB_PREVIEW_EXTS = {".html", ".htm", ".xhtml", ".xml", ".svg"}
 OOXML_PREVIEW_EXTS = {".docx", ".pptx", ".xlsx"}
 INTERNAL_FILENAMES = {
@@ -314,11 +331,14 @@ def request_host_is_loopback(host_header: str) -> bool:
 
 
 def public_course(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    return {
+    payload = {
         key: row[key]
         for key in ("id", "code", "name", "folder_name", "created_at", "updated_at", "file_count", "latest_week")
         if key in row.keys()
     }
+    if "code" in payload:
+        payload["display_code"] = display_course_code(payload["code"])
+    return payload
 
 
 def public_week(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -363,6 +383,8 @@ def public_file(row: sqlite3.Row | dict[str, Any], include_text: str | None = No
         "rank",
     )
     data = {key: row[key] for key in allowed if key in row.keys()}
+    if "course_code" in data:
+        data["display_course_code"] = display_course_code(data["course_code"])
     if include_text is not None:
         data["extractedText"] = include_text
     return data
@@ -382,7 +404,10 @@ def public_solution(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         "filename",
         "rel_path",
     )
-    return {key: row[key] for key in allowed if key in row.keys()}
+    data = {key: row[key] for key in allowed if key in row.keys()}
+    if "course_code" in data:
+        data["display_course_code"] = display_course_code(data["course_code"])
+    return data
 
 
 def sha256_file(path: Path) -> str:
@@ -438,6 +463,16 @@ def parse_course_dir(path: Path) -> tuple[str, str]:
     if m:
         return m.group("code"), m.group("name")
     return path.name, path.name
+
+
+def display_course_code(code: str) -> str:
+    codes = re.findall(r"\b([A-Z]{3,5})(\d{4})\b", code or "")
+    if len(codes) <= 1:
+        return code
+    prefix = codes[0][0]
+    if all(course_prefix == prefix for course_prefix, _number in codes):
+        return f"{prefix}" + "/".join(number for _course_prefix, number in codes)
+    return " / ".join(f"{course_prefix}{number}" for course_prefix, number in codes)
 
 
 def guess_is_official(rel: str, source: str) -> int:
@@ -496,15 +531,60 @@ def run_text_command(args: list[str], timeout: int = 20) -> str:
     return res.stdout
 
 
+def configured_tool(name: str, env_name: str) -> str:
+    raw = os.environ.get(env_name, "").strip()
+    if raw:
+        candidate = Path(raw).expanduser()
+        if candidate.is_dir():
+            candidate = candidate / name
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    poppler_bin = os.environ.get("STUDYHUB_POPPLER_BIN", "").strip()
+    if poppler_bin:
+        candidate = Path(poppler_bin).expanduser() / name
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    found = shutil.which(name)
+    if found:
+        return found
+    candidates = [
+        Path("/opt/homebrew/bin") / name,
+        Path("/usr/local/bin") / name,
+        Path.home() / "scoop" / "apps" / "poppler" / "current" / "Library" / "bin" / f"{name}.exe",
+    ]
+    for candidate in candidates:
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return ""
+
+
+def pdf_extraction_dependency_error() -> str:
+    if configured_tool("pdftotext", "STUDYHUB_PDFTOTEXT"):
+        return ""
+    return "PDF text extraction unavailable: pdftotext was not found. Install Poppler and rescan the library."
+
+
+def extraction_error_for(path: Path, text: str) -> str:
+    if text:
+        return ""
+    if path.suffix.lower() == ".pdf":
+        dependency_error = pdf_extraction_dependency_error()
+        if dependency_error:
+            return dependency_error
+    if path.suffix.lower() in TEXT_EXTRACTABLE_EXTS:
+        return "No extracted text"
+    return ""
+
+
 def extract_text_from_pdf(path: Path) -> str:
-    pdftotext = shutil.which("pdftotext")
+    pdftotext = configured_tool("pdftotext", "STUDYHUB_PDFTOTEXT")
     if pdftotext:
         return run_text_command([pdftotext, "-layout", str(path), "-"], timeout=30)[:200_000]
     return ""
 
 
 def pdf_page_count(path: Path) -> int:
-    pdfinfo = shutil.which("pdfinfo")
+    pdfinfo = configured_tool("pdfinfo", "STUDYHUB_PDFINFO")
     if not pdfinfo:
         return 0
     out = run_text_command([pdfinfo, str(path)], timeout=10)
@@ -513,7 +593,7 @@ def pdf_page_count(path: Path) -> int:
 
 
 def extract_pdf_page_text(path: Path, page: int) -> str:
-    pdftotext = shutil.which("pdftotext")
+    pdftotext = configured_tool("pdftotext", "STUDYHUB_PDFTOTEXT")
     if not pdftotext:
         return ""
     return run_text_command([pdftotext, "-layout", "-f", str(page), "-l", str(page), str(path), "-"], timeout=15)
@@ -979,6 +1059,35 @@ def source_index_map(study_root: Path) -> dict[str, dict[str, str]]:
     return mapping
 
 
+def text_cache_available(text_cache: str) -> bool:
+    if not text_cache:
+        return False
+    try:
+        cache_path = safe_cache_path(text_cache)
+    except PermissionError:
+        return False
+    return bool(cache_path and cache_path.exists() and cache_path.stat().st_size > 0)
+
+
+def should_retry_incomplete_index(
+    existing: sqlite3.Row,
+    ext: str,
+    chunk_count: int,
+    local_ai_state: sqlite3.Row | None,
+) -> bool:
+    if ext not in TEXT_EXTRACTABLE_EXTS:
+        return False
+    status = local_ai_state["status"] if local_ai_state else ""
+    error = local_ai_state["error"] if local_ai_state and "error" in local_ai_state.keys() else ""
+    return (
+        not text_cache_available(existing["text_cache_path"] or "")
+        or chunk_count == 0
+        or status in {"not_indexed", "failed", "error", "missing"}
+        or bool(error)
+        or bool(existing["ai_index_error"])
+    )
+
+
 def upsert_file_version(conn: sqlite3.Connection, file_id: int, stable_id: str, digest: str, size: int, modified: str, text_cache: str) -> int:
     conn.execute(
         """
@@ -1096,7 +1205,12 @@ def rebuild_file_index(conn: sqlite3.Connection, file_id: int, text: str, chunks
             )
             solution_count += 1
     status = "indexed" if file_row["is_official"] and not file_row["suspicious"] and text else "not_indexed"
-    error = "" if status == "indexed" else ("No extracted text" if not text else file_row["suspicious"])
+    if status == "indexed":
+        error = ""
+    elif text:
+        error = file_row["suspicious"]
+    else:
+        error = file_row["ai_index_error"] or "No extracted text"
     conn.execute(
         """
         INSERT INTO ai_index_state(file_id, stable_id, sha256, provider, status, error, last_synced_at, metadata_json)
@@ -1238,9 +1352,9 @@ def scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
             if existing:
                 text_cache = existing["text_cache_path"] or ""
                 chunk_count = conn.execute("SELECT COUNT(*) AS c FROM document_chunks WHERE file_id=?", (existing["id"],)).fetchone()["c"]
-                ai_seen = conn.execute("SELECT id FROM ai_index_state WHERE file_id=? AND provider='local'", (existing["id"],)).fetchone()
+                ai_seen = conn.execute("SELECT status, error FROM ai_index_state WHERE file_id=? AND provider='local'", (existing["id"],)).fetchone()
                 same_file = existing["sha256"] == digest and existing["modified_at"] == modified
-                needs_reindex = not same_file or (chunk_count == 0 and ai_seen is None)
+                needs_reindex = not same_file or should_retry_incomplete_index(existing, ext, chunk_count, ai_seen)
                 if needs_reindex:
                     stats.updated_files += 1
                 else:
@@ -1249,14 +1363,21 @@ def scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
                 stats.new_files += 1
             if needs_reindex and not suspicious:
                 text = extract_text(path)
+                extraction_error = extraction_error_for(path, text)
                 if text:
                     text_cache_path = TEXT_CACHE_DIR / f"{digest}.txt"
                     text_cache_path.write_text(text, encoding="utf-8", errors="ignore")
                     text_cache = str(text_cache_path)
                     chunks = extract_document_chunks(path, text)
                     stats.indexed_text += 1
-            elif text_cache and Path(text_cache).exists():
-                text = Path(text_cache).read_text(encoding="utf-8", errors="ignore")
+                else:
+                    text_cache = ""
+            elif text_cache_available(text_cache):
+                cache_path = safe_cache_path(text_cache)
+                text = cache_path.read_text(encoding="utf-8", errors="ignore") if cache_path else ""
+                extraction_error = ""
+            else:
+                extraction_error = ""
             conn.execute(
                 """
                 INSERT INTO files(
@@ -1320,6 +1441,9 @@ def scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
             upsert_file_version(conn, file_id, stable_id, digest, stat.st_size, modified, text_cache)
             file_row = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
             if needs_reindex:
+                if extraction_error:
+                    conn.execute("UPDATE files SET ai_index_error=? WHERE id=?", (extraction_error, file_id))
+                    file_row = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
                 chunk_count, question_count, solution_count = rebuild_file_index(conn, file_id, text, chunks, file_row)
                 stats.questions_detected += question_count
                 stats.solutions_detected += solution_count
@@ -1452,6 +1576,8 @@ def api_health(conn: sqlite3.Connection) -> dict[str, Any]:
     last_scan = conn.execute("SELECT created_at FROM sync_events WHERE event_type='scan' ORDER BY id DESC LIMIT 1").fetchone()
     last_ai = conn.execute("SELECT MAX(last_synced_at) AS ts FROM ai_index_state").fetchone()
     vector_store_id = current_vector_store_id(conn)
+    pdf_dependency_error = pdf_extraction_dependency_error()
+    extraction_warnings = [pdf_dependency_error] if pdf_dependency_error else []
     return {
         "app": APP_NAME,
         "demoMode": DEMO_MODE,
@@ -1468,6 +1594,8 @@ def api_health(conn: sqlite3.Connection) -> dict[str, Any]:
         "lastAISync": last_ai["ts"] if last_ai else None,
         "openAI": "Configured" if bool(os.environ.get("OPENAI_API_KEY")) else "Not configured",
         "canvas": "Handled separately by an authenticated user-approved importer workflow",
+        "pdfTextExtraction": "Unavailable" if pdf_dependency_error else "Available",
+        "extractionWarnings": extraction_warnings,
     }
 
 
@@ -1542,6 +1670,10 @@ def search_local_context(conn: sqlite3.Connection, prompt: str, context: dict[st
             if score:
                 scored.append((score, row))
         scored.sort(key=lambda item: item[0], reverse=True)
+        if not scored and context.get("fileId"):
+            sql += " ORDER BY dc.chunk_index LIMIT ?"
+            params.append(limit)
+            return rows_to_dicts(conn.execute(sql, params).fetchall())
         return [dict(row) for _score, row in scored[:limit]]
     sql += " ORDER BY dc.id DESC LIMIT ?"
     params.append(limit)
@@ -2719,7 +2851,10 @@ class StudyHubHandler(BaseHTTPRequestHandler):
             sql += " AND lower(q.exercise_type)=lower(?)"
             params.append(exercise_type)
         sql += " ORDER BY q.course_code, q.week_label, q.exercise_type, q.question_number LIMIT 80"
-        return rows_to_dicts(conn.execute(sql, params).fetchall())
+        rows = rows_to_dicts(conn.execute(sql, params).fetchall())
+        for row in rows:
+            row["display_course_code"] = display_course_code(row.get("course_code", ""))
+        return rows
 
     def handle_prepare_context(self, conn: sqlite3.Connection, qs: dict[str, list[str]]) -> dict[str, Any]:
         course = qs.get("course", [""])[0]

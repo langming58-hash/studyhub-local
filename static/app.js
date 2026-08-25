@@ -104,19 +104,20 @@ function setAskContext(context = {}, options = {}) {
 
 function currentCourseContext(courseId) {
   const course = courseById(courseId);
-  return course ? { course: course.code, courseId: course.id } : {};
+  return course ? { course: course.code, courseId: course.id, displayCourse: courseLabel(course) } : {};
 }
 
 function currentWeekContext(courseId, weekLabel) {
   const course = courseById(courseId);
   const weekNumber = Number(String(weekLabel || "").match(/\d+/)?.[0] || 0) || undefined;
-  return { course: course?.code, courseId, week: weekLabel, weekNumber };
+  return { course: course?.code, courseId, displayCourse: courseLabel(course), week: weekLabel, weekNumber };
 }
 
 function fileAskContext(file) {
   return {
     fileId: file.id,
     course: file.course_code,
+    displayCourse: courseLabel(file),
     week: file.week_label,
     weekNumber: file.week_number,
     file: file.filename,
@@ -131,6 +132,7 @@ function questionAskContext(row) {
     questionId: row.id,
     fileId: row.source_file_id,
     course: row.course_code,
+    displayCourse: courseLabel(row),
     week: row.week_label,
     exerciseType: row.exercise_type,
     file: row.filename,
@@ -140,7 +142,7 @@ function questionAskContext(row) {
 
 function askContextLines(context = state.ask.context) {
   const lines = [];
-  if (context.course) lines.push(context.course);
+  if (context.course || context.displayCourse) lines.push(context.displayCourse || context.course);
   if (context.week) lines.push(context.week);
   if (context.exerciseType && context.exerciseType !== context.materialType) lines.push(context.exerciseType);
   if (context.materialType) lines.push(context.materialType);
@@ -152,15 +154,16 @@ function askContextLines(context = state.ask.context) {
 function contextForScope(context = state.ask.context, scope = state.ask.scope) {
   const base = { ...context };
   if (scope === "course") {
-    return { course: base.course, courseId: base.courseId };
+    return { course: base.course, courseId: base.courseId, displayCourse: base.displayCourse };
   }
   if (scope === "week") {
-    return { course: base.course, courseId: base.courseId, week: base.week, weekNumber: base.weekNumber };
+    return { course: base.course, courseId: base.courseId, displayCourse: base.displayCourse, week: base.week, weekNumber: base.weekNumber };
   }
   if (scope === "file") {
     return {
       course: base.course,
       courseId: base.courseId,
+      displayCourse: base.displayCourse,
       week: base.week,
       weekNumber: base.weekNumber,
       fileId: base.fileId,
@@ -200,6 +203,10 @@ function quickActionsForContext(context = state.ask.context) {
 
 function courseById(id) {
   return state.courses.find((course) => Number(course.id) === Number(id));
+}
+
+function courseLabel(item = {}) {
+  return item.display_code || item.display_course_code || item.code || item.course_code || "";
 }
 
 function weeksFor(courseId) {
@@ -279,7 +286,7 @@ function renderCourseList() {
       return `
         <div class="course-pill-row">
           <button class="course-pill" data-course="${course.id}">
-            <strong>${escapeHtml(course.code)}</strong>
+            <strong>${escapeHtml(courseLabel(course))}</strong>
             <span>${course.file_count || 0} files · ${escapeHtml(week?.week_label || "No week")}</span>
           </button>
           <button class="mini-ask" data-ask-course="${course.id}">Ask</button>
@@ -291,7 +298,7 @@ function renderCourseList() {
 
 function populateUploadCourses() {
   $("#uploadCourse").innerHTML = state.courses
-    .map((course) => `<option value="${course.id}">${escapeHtml(course.code)}</option>`)
+    .map((course) => `<option value="${course.id}">${escapeHtml(courseLabel(course))}</option>`)
     .join("");
   $("#uploadWeek").innerHTML = Array.from({ length: 12 }, (_, i) => {
     const label = `Week ${String(i + 1).padStart(2, "0")}`;
@@ -340,7 +347,7 @@ function focusCourseCard(course) {
   return `
     <article class="focus-card" data-course="${course.id}">
       <div>
-        <p class="muted">${escapeHtml(course.code)}</p>
+        <p class="muted">${escapeHtml(courseLabel(course))}</p>
         <h2>${escapeHtml(week?.week_label || "No week")}</h2>
       </div>
       <div class="progress-track"><span style="width:${pct}%"></span></div>
@@ -359,7 +366,7 @@ function courseSummary(course) {
     <article class="file-card">
       <header>
         <div>
-          <div class="file-name">${escapeHtml(course.code)}</div>
+          <div class="file-name">${escapeHtml(courseLabel(course))}</div>
           <p class="muted">${escapeHtml(course.name)}</p>
         </div>
       </header>
@@ -396,7 +403,7 @@ async function renderThisWeek() {
         <section class="section-block">
           <div class="section-head">
             <div>
-              <p class="muted">${escapeHtml(course.code)}</p>
+              <p class="muted">${escapeHtml(courseLabel(course))}</p>
               <h2>${escapeHtml(week.week_label)}</h2>
             </div>
             <button class="button secondary" data-course="${course.id}" data-week="${escapeHtml(week.week_label)}">Open Week</button>
@@ -412,14 +419,14 @@ async function renderThisWeek() {
 async function renderCourse(courseId) {
   const course = courseById(courseId);
   state.selectedCourseId = courseId;
-  setTitle(course ? course.code : "Course");
+  setTitle(course ? courseLabel(course) : "Course");
   const weeks = weeksFor(courseId);
   const files = await api(`/api/files?course_id=${courseId}`);
   const bySection = countBy(files, (file) => file.section || "Other");
   view.innerHTML = `
     <section class="course-hero">
       <div>
-        <p class="muted">${escapeHtml(course?.code || "")}</p>
+        <p class="muted">${escapeHtml(courseLabel(course))}</p>
         <h2>${escapeHtml(course?.name || "")}</h2>
       </div>
       <div class="mini-bars">
@@ -539,7 +546,7 @@ async function renderSearch() {
         <input id="searchInput" placeholder="Search filename or local extracted text" autofocus />
         <select id="searchCourse">
           <option value="">All courses</option>
-          ${state.courses.map((course) => `<option value="${course.id}">${escapeHtml(course.code)}</option>`).join("")}
+          ${state.courses.map((course) => `<option value="${course.id}">${escapeHtml(courseLabel(course))}</option>`).join("")}
         </select>
         <select id="searchScope">
           <option value="">All material</option>
@@ -645,7 +652,7 @@ function sourceCard(source) {
   return `
     <button class="source-card" data-preview="${source.source_file_id || source.file_id}">
       <span class="chip official">Official course source</span>
-      <strong>${escapeHtml(source.course_code || "")}</strong>
+      <strong>${escapeHtml(courseLabel(source))}</strong>
       <span>${escapeHtml(source.week_label || "")}</span>
       <span>${escapeHtml(source.filename || "")}</span>
       ${loc ? `<span>${escapeHtml(loc)}</span>` : ""}
@@ -715,7 +722,7 @@ async function renderPractice() {
       <div class="toolbar practice-toolbar">
         <select id="practiceCourse">
           <option value="">All courses</option>
-          ${state.courses.map((course) => `<option value="${escapeHtml(course.code)}">${escapeHtml(course.code)}</option>`).join("")}
+          ${state.courses.map((course) => `<option value="${escapeHtml(course.code)}">${escapeHtml(courseLabel(course))}</option>`).join("")}
         </select>
         <select id="practiceWeek">
           <option value="">All weeks</option>
@@ -758,7 +765,7 @@ async function renderExam() {
       <section class="section-block">
         <div class="section-head">
           <div>
-            <p class="muted">${escapeHtml(course.code)}</p>
+            <p class="muted">${escapeHtml(courseLabel(course))}</p>
             <h2>${escapeHtml(course.name)}</h2>
           </div>
           <button class="button secondary" data-course="${course.id}">Course</button>
@@ -800,7 +807,9 @@ async function renderSettings() {
         <section class="metric-card"><p class="muted">OpenAI</p><div class="metric small">${escapeHtml(ai.openAI)}</div></section>
         <section class="metric-card"><p class="muted">Vector Store</p><div class="metric small">${escapeHtml(ai.vectorStore)}</div></section>
         <section class="metric-card"><p class="muted">Ask GPT</p><div class="metric small">${escapeHtml(askReady)}</div></section>
+        <section class="metric-card"><p class="muted">PDF Text</p><div class="metric small">${escapeHtml(state.health.pdfTextExtraction || "Unknown")}</div></section>
       </div>
+      ${(state.health.extractionWarnings || []).length ? `<div class="notice">${state.health.extractionWarnings.map(escapeHtml).join("<br>")}</div>` : ""}
     </section>
     <section class="section-block">
       <h2>AI Bridge</h2>
@@ -836,9 +845,9 @@ async function route(viewName = state.view) {
 async function openFileDrawer(fileId) {
   const file = await api(`/api/file?id=${fileId}`);
   state.selectedFile = file;
-  $("#drawerMeta").textContent = `${file.course_code || ""} · ${file.week_label || ""} · ${file.category || ""}`;
+  $("#drawerMeta").textContent = `${courseLabel(file)} · ${file.week_label || ""} · ${file.category || ""}`;
   $("#drawerTitle").textContent = file.filename;
-  $("#contextIndicator").textContent = `${file.course_code || ""}\n${file.week_label || ""}\n${file.exercise_type || file.category || ""}\n${file.filename}`;
+  $("#contextIndicator").textContent = `${courseLabel(file)}\n${file.week_label || ""}\n${file.exercise_type || file.category || ""}\n${file.filename}`;
   $("#extractedText").textContent = file.extractedText || "No local text preview available. Open the original file for the authoritative version.";
   $("#previewFrame").innerHTML = `<iframe title="Preview" src="/preview/${file.id}"></iframe>`;
   $("#askResponse").textContent = "";
@@ -948,7 +957,7 @@ async function askAboutFile() {
 
 function formatSource(source) {
   const loc = source.page_start ? `p.${source.page_start}` : source.slide_start ? `Slide ${source.slide_start}` : source.source_location || "";
-  return `${source.course_code || ""} ${source.week_label || ""} — ${source.filename || ""} ${loc}`.trim();
+  return `${courseLabel(source)} ${source.week_label || ""} — ${source.filename || ""} ${loc}`.trim();
 }
 
 async function previewWeekWithGpt() {
@@ -972,7 +981,7 @@ function questionCard(row) {
     <article class="file-card">
       <header>
         <div>
-          <div class="file-name">${escapeHtml(row.course_code)} ${escapeHtml(row.week_label || "")} ${escapeHtml(row.question_number || "Question")}</div>
+          <div class="file-name">${escapeHtml(courseLabel(row))} ${escapeHtml(row.week_label || "")} ${escapeHtml(row.question_number || "Question")}</div>
           <p class="muted">${escapeHtml(row.filename || "")} · ${escapeHtml(row.source_location || "")}</p>
         </div>
       </header>
