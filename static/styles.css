@@ -1068,7 +1068,8 @@ textarea {
 .library-hero,
 .course-header,
 .week-header,
-.search-hero {
+.search-hero,
+.onboarding-card {
   border: 1px solid var(--line);
   background: var(--panel);
   border-radius: 8px;
@@ -1077,7 +1078,8 @@ textarea {
 
 .continue-panel,
 .library-hero,
-.course-header {
+.course-header,
+.onboarding-card {
   display: flex;
   justify-content: space-between;
   gap: 18px;
@@ -1096,11 +1098,76 @@ textarea {
 .course-actions,
 .settings-actions,
 .file-row-actions,
-.course-row-actions {
+.course-row-actions,
+.onboarding-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+
+.onboarding-card {
+  border-color: color-mix(in srgb, var(--accent-2) 28%, var(--line));
+  background: color-mix(in srgb, var(--panel) 88%, var(--accent-2) 12%);
+}
+
+.onboarding-card h2 {
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.recovery-list {
+  display: grid;
+  gap: 8px;
+}
+
+.recovery-card {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 0;
+}
+
+.recovery-card.warning {
+  border-color: color-mix(in srgb, var(--warn) 48%, var(--line));
+}
+
+.recovery-card.error {
+  border-color: color-mix(in srgb, #c62828 52%, var(--line));
+}
+
+.recovery-card summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  padding: 11px 12px;
+  cursor: pointer;
+}
+
+.recovery-card summary strong {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.recovery-card p,
+.recovery-card pre {
+  margin: 0 12px 10px;
+  line-height: 1.45;
+}
+
+.recovery-card p {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.library-setup-form {
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  padding-top: 12px;
+  display: grid;
+  gap: 10px;
 }
 
 .quiet-section {
@@ -1347,6 +1414,7 @@ label {
   .continue-panel,
   .library-hero,
   .course-header,
+  .onboarding-card,
   .course-row,
   .file-row,
   .settings-layout,

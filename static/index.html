@@ -57,7 +57,7 @@
           <button id="askFileFull" class="button secondary">Open AI Workspace</button>
           <button id="toggleAiExpanded" class="button secondary">Expand AI</button>
           <button id="starFile" class="button secondary">Star</button>
-          <button id="copyContext" class="button secondary">Prepare Context</button>
+          <button id="copyContext" class="button secondary">Copy Source Info</button>
         </div>
         <div class="drawer-body">
           <div class="preview-frame" id="previewFrame"></div>
@@ -65,7 +65,7 @@
           <aside class="context-panel">
             <div class="rail-tabs" role="tablist" aria-label="File side rail">
               <button class="rail-tab active" data-rail-tab="context">Context</button>
-              <button class="rail-tab" data-rail-tab="text">Extracted Text</button>
+              <button class="rail-tab" data-rail-tab="text">Readable Text</button>
               <button class="rail-tab" data-rail-tab="details">Details</button>
             </div>
             <div class="rail-panel active" id="rail-context">
@@ -73,7 +73,7 @@
               <div id="contextIndicator" class="context-lines"></div>
             </div>
             <div class="rail-panel" id="rail-text">
-              <h3>Extracted Preview</h3>
+              <h3>Text Preview</h3>
               <pre id="extractedText"></pre>
             </div>
             <div class="rail-panel" id="rail-details">
@@ -84,7 +84,7 @@
             <div id="fileNotes" class="notes-list"></div>
             <textarea id="noteBody" placeholder="Add a private note for this file."></textarea>
             <button id="saveNote" class="button secondary full">Save Note</button>
-            <h3>Ask GPT</h3>
+            <h3>Ask AI</h3>
             <textarea id="askPrompt" placeholder="Ask about this selected file."></textarea>
             <button id="askBtn" class="button secondary full">Ask</button>
             <div id="askResponse" class="notice"></div>

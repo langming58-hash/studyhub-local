@@ -2,6 +2,7 @@ const state = {
   courses: [],
   weeksByCourse: new Map(),
   health: null,
+  preflight: null,
   view: "home",
   selectedCourseId: null,
   selectedWeek: "",
@@ -415,6 +416,72 @@ function rememberFile(file) {
   localStorage.setItem("studyhub.lastFileMeta", fileMetaLine(file));
 }
 
+function actionPreflightItems() {
+  return (state.preflight?.items || []).filter((item) => item.severity !== "info");
+}
+
+function firstRunPanel() {
+  const dismissed = localStorage.getItem("studyhub.onboardingDismissed") === "true";
+  const preflight = state.preflight || {};
+  const needsAttention = actionPreflightItems().length > 0;
+  if (dismissed && !preflight.demoMode && !needsAttention) return "";
+  const mode = preflight.demoMode ? "Demo Mode" : "Local Library";
+  return `
+    <section class="onboarding-card" aria-labelledby="firstRunTitle">
+      <div>
+        <p class="eyebrow">${escapeHtml(mode)}</p>
+        <h2 id="firstRunTitle">Your private study hub</h2>
+        <p class="muted">${preflight.demoMode ? "These sample courses are synthetic. Your real files stay on your computer when you choose a study folder. OpenAI is optional." : "Your courses and files are read from your local study folder. OpenAI is optional."}</p>
+      </div>
+      <div class="onboarding-actions">
+        <button class="button primary" data-view="${preflight.fileCount ? "courses" : "settings"}">${preflight.fileCount ? "Start studying" : "Set up files"}</button>
+        <button class="button secondary" data-open-library-setup="1">Use my own files</button>
+        <button class="button ghost" data-dismiss-onboarding="1">Hide</button>
+      </div>
+    </section>
+  `;
+}
+
+function recoveryCards(limit = 3, expandProblems = false) {
+  const items = state.preflight?.items || [];
+  const visible = limit === "all" ? items : items.filter((item) => item.severity !== "info").slice(0, limit);
+  if (!visible.length) return "";
+  return `
+    <section class="recovery-list" aria-label="StudyHub setup notices">
+      ${visible.map((item) => recoveryCard(item, expandProblems)).join("")}
+    </section>
+  `;
+}
+
+function recoveryCard(item, expandProblems = false) {
+  const tone = item.severity || "info";
+  return `
+    <details class="recovery-card ${escapeHtml(tone)}" ${expandProblems && (tone === "error" || tone === "warning") ? "open" : ""}>
+      <summary>
+        <span>${escapeHtml(item.title)}</span>
+        <strong>${escapeHtml(tone)}</strong>
+      </summary>
+      <p><b>What happened:</b> ${escapeHtml(item.whatHappened)}</p>
+      <p><b>What it affects:</b> ${escapeHtml(item.impact)}</p>
+      <p><b>Next step:</b> ${escapeHtml(item.nextStep)}</p>
+      ${item.details ? `<pre>${escapeHtml(item.details)}</pre>` : ""}
+    </details>
+  `;
+}
+
+function librarySetupForm() {
+  return `
+    <form class="library-setup-form" id="librarySetupForm">
+      <label>Study folder
+        <input id="studyLibraryPathInput" placeholder="~/StudyLibrary" autocomplete="off" />
+      </label>
+      <button class="button primary" type="submit">Use this folder</button>
+      <p class="muted">StudyHub will save this in your local settings file and ask you to restart. It will not upload the folder.</p>
+      <div id="librarySetupResult" class="notice compact" hidden></div>
+    </form>
+  `;
+}
+
 function extensionIcon(ext = "") {
   const value = ext.toLowerCase();
   if (value === ".pdf") return "PDF";
@@ -485,6 +552,7 @@ async function loadBase() {
   const session = await api("/api/session");
   state.csrfToken = session.csrfToken || state.csrfToken || "";
   state.health = await api("/api/health");
+  state.preflight = await api("/api/preflight");
   state.courses = await api("/api/courses");
   await Promise.all(
     state.courses.map(async (course) => {
@@ -530,6 +598,8 @@ async function renderHome() {
   const continueFile = recent.find((file) => Number(file.id) === lastFileId) || recent[0];
   const activeCourses = state.courses.filter((course) => Number(course.file_count || 0) > 0);
   view.innerHTML = `
+    ${firstRunPanel()}
+    ${recoveryCards(2)}
     <section class="continue-panel">
       <div>
         <p class="eyebrow">Continue</p>
@@ -562,7 +632,7 @@ async function renderHome() {
         </div>
         <button class="button secondary" data-view="search">Search</button>
       </div>
-      <div class="file-list">${recent.length ? recent.slice(0, 8).map(fileCard).join("") : empty("No indexed files yet.")}</div>
+      <div class="file-list">${recent.length ? recent.slice(0, 8).map(fileCard).join("") : empty("No files ready yet.")}</div>
     </section>
     <section class="section-block quiet-section">
       <div class="section-head">
@@ -575,6 +645,30 @@ async function renderHome() {
       ${wrong.length ? `<div class="study-list">${wrong.slice(0, 4).map(wrongRow).join("")}</div>` : empty("No wrong-question records yet.")}
     </section>
   `;
+  bindLibrarySetupForm();
+}
+
+function bindLibrarySetupForm() {
+  const form = $("#librarySetupForm");
+  if (!form) return;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const result = $("#librarySetupResult");
+    const path = $("#studyLibraryPathInput").value.trim();
+    result.hidden = false;
+    result.textContent = "Checking this folder...";
+    try {
+      const data = await api("/api/config/study-library", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      result.textContent = data.message || "Saved. Restart StudyHub to use this folder.";
+      toast("Study folder saved");
+    } catch (error) {
+      result.textContent = error.message;
+    }
+  });
 }
 
 function focusCourseCard(course) {
@@ -673,7 +767,7 @@ async function renderThisWeek() {
             </div>
             <button class="button secondary" data-course="${course.id}" data-week="${escapeHtml(week.week_label)}">Open Week</button>
           </div>
-          <div class="grid">${files.length ? files.slice(0, 6).map(fileCard).join("") : empty("No files indexed for this week.")}</div>
+          <div class="grid">${files.length ? files.slice(0, 6).map(fileCard).join("") : empty("No files ready for this week.")}</div>
         </section>
       `;
     }),
@@ -716,7 +810,7 @@ async function renderCourse(courseId) {
     </section>
     <section class="section-block quiet-section">
       <h2>All Course Files</h2>
-      <div class="file-list">${files.length ? files.slice(0, 24).map(fileCard).join("") : empty("No files indexed for this course.")}</div>
+      <div class="file-list">${files.length ? files.slice(0, 24).map(fileCard).join("") : empty("No files ready for this course.")}</div>
     </section>
   `;
 }
@@ -836,7 +930,7 @@ async function renderSearch() {
   view.innerHTML = `
     <section class="search-hero">
       <div class="searchbar primary-search">
-        <input id="searchInput" placeholder="Search filenames or extracted text" autofocus />
+        <input id="searchInput" placeholder="Search filenames or readable text" autofocus />
         <button class="button secondary" id="toggleSearchFilters">${state.searchFiltersOpen ? "Hide filters" : "Filters"}</button>
       </div>
       <div class="search-filters ${state.searchFiltersOpen ? "open" : ""}">
@@ -879,7 +973,7 @@ async function runSearch() {
   const course = $("#searchCourse")?.value || "";
   const scope = $("#searchScope")?.value || "";
   if (!q.trim() && !course && !scope) {
-    $("#searchResults").innerHTML = empty("Search for a topic, filename, tutorial, lab, or phrase from extracted text.");
+    $("#searchResults").innerHTML = empty("Search for a topic, filename, tutorial, lab, or phrase from readable text.");
     return;
   }
   const results = await api(`/api/search?q=${encodeURIComponent(q)}&course_id=${course}&scope=${encodeURIComponent(scope)}`);
@@ -887,7 +981,7 @@ async function runSearch() {
 }
 
 async function renderAskGpt() {
-  setTitle("Ask GPT");
+  setTitle("Ask AI", "Ask about selected materials");
   if (!state.ask.context.course && state.selectedCourseId) {
     setAskContext(state.selectedWeek ? currentWeekContext(state.selectedCourseId, state.selectedWeek) : currentCourseContext(state.selectedCourseId));
   }
@@ -1262,6 +1356,8 @@ async function renderSettings() {
           <button class="button secondary" data-open-upload="1">Add Material</button>
           <button class="button secondary" data-view="courses">Browse Courses</button>
         </div>
+        ${librarySetupForm()}
+        ${recoveryCards("all", true)}
       </section>
       <section class="section-block quiet-section">
         <div class="section-head">
@@ -1272,8 +1368,8 @@ async function renderSettings() {
         </div>
         <div class="settings-list">
           <div><span>Study Library</span><strong>${state.health.studyLibraryConnected ? "Connected" : "Missing"}</strong></div>
-          <div><span>Indexed Files</span><strong>${escapeHtml(state.health.filesIndexed || 0)}</strong></div>
-          <div><span>PDF Text</span><strong>${escapeHtml(state.health.pdfTextExtraction || "Unknown")}</strong></div>
+          <div><span>Files ready</span><strong>${escapeHtml(state.health.filesIndexed || 0)}</strong></div>
+          <div><span>PDF reading support</span><strong>${escapeHtml(state.health.pdfTextExtraction || "Unknown")}</strong></div>
           <div><span>Suspicious Files</span><strong>${escapeHtml(state.health.suspiciousFiles || 0)}</strong></div>
         </div>
         ${(state.health.extractionWarnings || []).length ? `<div class="notice">${state.health.extractionWarnings.map(escapeHtml).join("<br>")}</div>` : ""}
@@ -1282,16 +1378,16 @@ async function renderSettings() {
         <div class="section-head">
           <div>
             <p class="eyebrow">AI</p>
-            <h2>Ask GPT</h2>
+            <h2>Ask AI</h2>
           </div>
         </div>
         <div class="settings-list">
           <div><span>OpenAI</span><strong>${escapeHtml(ai.openAI)}</strong></div>
-          <div><span>Vector Store</span><strong>${escapeHtml(ai.vectorStore)}</strong></div>
-          <div><span>Ask GPT</span><strong>${escapeHtml(askReady)}</strong></div>
+          <div><span>AI file search</span><strong>${escapeHtml(ai.vectorStore)}</strong></div>
+          <div><span>Ask AI</span><strong>${escapeHtml(askReady)}</strong></div>
           <div><span>Last AI Sync</span><strong>${escapeHtml(ai.lastAISync || "Never")}</strong></div>
-          <div><span>Indexed Files</span><strong>${escapeHtml(ai.indexedFiles || 0)}</strong></div>
-          <div><span>Vector Indexed Files</span><strong>${escapeHtml(ai.vectorIndexedFiles || 0)}</strong></div>
+          <div><span>Files ready for AI</span><strong>${escapeHtml(ai.indexedFiles || 0)}</strong></div>
+          <div><span>Files synced for AI search</span><strong>${escapeHtml(ai.vectorIndexedFiles || 0)}</strong></div>
         </div>
       </section>
       <section class="section-block quiet-section">
@@ -1361,10 +1457,10 @@ async function openFileDrawer(fileId, page = 0) {
   $("#fileDetails").innerHTML = `
     <div><span>Filename</span><strong>${escapeHtml(file.filename)}</strong></div>
     <div><span>Type</span><strong>${escapeHtml(file.mime_type || file.extension || "Unknown")}</strong></div>
-    <div><span>Index</span><strong>${escapeHtml(file.ai_index_status || "Unknown")}</strong></div>
+    <div><span>AI readiness</span><strong>${escapeHtml(file.ai_index_status || "Unknown")}</strong></div>
     <div><span>Source</span><strong>${escapeHtml(file.source_label || file.source || "Local file")}</strong></div>
   `;
-  $("#extractedText").textContent = file.extractedText || "No local text preview available. Open the original file for the authoritative version.";
+  $("#extractedText").textContent = file.extractedText || "No readable text preview available. Open the original file for the authoritative version.";
   const pageHash = page ? `#page=${page}` : "";
   $("#previewFrame").innerHTML = `<iframe title="Preview" src="/preview/${file.id}${pageHash}"></iframe>`;
   $("#askResponse").textContent = "";
@@ -1496,7 +1592,7 @@ async function loadPracticeQuestions() {
   const rows = await api(`/api/questions?course=${encodeURIComponent(course)}&week=${encodeURIComponent(week)}&type=${encodeURIComponent(type)}`);
   $("#practiceResults").innerHTML = rows.length
     ? rows.map(questionCard).join("")
-    : empty("No suitable teacher-provided question was found in the indexed official course materials.");
+    : empty("No suitable teacher-provided question was found in the official course materials that are ready.");
 }
 
 function questionCard(row) {
@@ -1511,9 +1607,9 @@ function questionCard(row) {
       <p>${escapeHtml(row.question_text)}</p>
       <div class="file-actions">
         <button class="button secondary" data-preview="${row.source_file_id}">Open Source File</button>
-        <button class="button secondary" data-ask-question="${row.id}" data-source-file="${row.source_file_id}" data-course-code="${escapeHtml(row.course_code)}" data-week-label="${escapeHtml(row.week_label || "")}" data-exercise-type="${escapeHtml(row.exercise_type || "")}" data-question-number="${escapeHtml(row.question_number || "")}" data-filename="${escapeHtml(row.filename || "")}">Ask GPT</button>
-        <button class="button secondary" data-ask-question="${row.id}" data-source-file="${row.source_file_id}" data-course-code="${escapeHtml(row.course_code)}" data-week-label="${escapeHtml(row.week_label || "")}" data-exercise-type="${escapeHtml(row.exercise_type || "")}" data-question-number="${escapeHtml(row.question_number || "")}" data-filename="${escapeHtml(row.filename || "")}" data-question-prompt="Check my answer">Check with GPT</button>
-        <button class="button secondary" data-context="${row.source_file_id}">Prepare Context</button>
+        <button class="button secondary" data-ask-question="${row.id}" data-source-file="${row.source_file_id}" data-course-code="${escapeHtml(row.course_code)}" data-week-label="${escapeHtml(row.week_label || "")}" data-exercise-type="${escapeHtml(row.exercise_type || "")}" data-question-number="${escapeHtml(row.question_number || "")}" data-filename="${escapeHtml(row.filename || "")}">Ask AI</button>
+        <button class="button secondary" data-ask-question="${row.id}" data-source-file="${row.source_file_id}" data-course-code="${escapeHtml(row.course_code)}" data-week-label="${escapeHtml(row.week_label || "")}" data-exercise-type="${escapeHtml(row.exercise_type || "")}" data-question-number="${escapeHtml(row.question_number || "")}" data-filename="${escapeHtml(row.filename || "")}" data-question-prompt="Check my answer">Check with AI</button>
+        <button class="button secondary" data-context="${row.source_file_id}">Copy Source Info</button>
       </div>
     </article>
   `;
@@ -1562,6 +1658,15 @@ document.addEventListener("click", async (event) => {
       state.ask.draft = target.dataset.quickPrompt;
       box.focus();
     }
+    return;
+  }
+  if (target.dataset.dismissOnboarding) {
+    localStorage.setItem("studyhub.onboardingDismissed", "true");
+    route("home");
+    return;
+  }
+  if (target.dataset.openLibrarySetup) {
+    route("settings").then(() => $("#studyLibraryPathInput")?.focus());
     return;
   }
   if (target.dataset.studyMode) {

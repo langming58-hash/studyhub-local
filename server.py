@@ -41,13 +41,14 @@ except ImportError:
 
 APP_NAME = "StudyHub Local"
 APP_ROOT = Path(__file__).resolve().parent
+ENV_LOCAL_PATH = APP_ROOT / ".env.local"
+ENV_LOCAL_EXISTS = ENV_LOCAL_PATH.exists()
 
 
 def load_local_env() -> None:
-    env_path = APP_ROOT / ".env.local"
-    if not env_path.exists():
+    if not ENV_LOCAL_PATH.exists():
         return
-    for raw_line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+    for raw_line in ENV_LOCAL_PATH.read_text(encoding="utf-8", errors="ignore").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -63,7 +64,11 @@ CACHE_DIR = APP_ROOT / "cache"
 TEXT_CACHE_DIR = CACHE_DIR / "text"
 LOG_DIR = APP_ROOT / "logs"
 STATIC_DIR = APP_ROOT / "static"
-DEMO_MODE = os.environ.get("DEMO_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
+DEMO_MODE = os.environ.get("DEMO_MODE", "").strip().lower() in {"1", "true", "yes", "on"} or (
+    not ENV_LOCAL_EXISTS
+    and "DEMO_MODE" not in os.environ
+    and "STUDY_LIBRARY_PATH" not in os.environ
+)
 
 
 def configured_path(env_name: str, fallback: Path) -> Path:
@@ -72,6 +77,72 @@ def configured_path(env_name: str, fallback: Path) -> Path:
     if not path.is_absolute():
         path = APP_ROOT / path
     return path
+
+
+def read_local_env_entries() -> dict[str, str]:
+    entries: dict[str, str] = {}
+    if not ENV_LOCAL_PATH.exists():
+        return entries
+    for raw_line in ENV_LOCAL_PATH.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        entries[key.strip()] = value.strip().strip('"').strip("'")
+    return entries
+
+
+def write_local_env_entries(entries: dict[str, str]) -> None:
+    ensure_dirs()
+    ordered = [
+        "DEMO_MODE",
+        "STUDY_LIBRARY_PATH",
+        "HOST",
+        "PORT",
+        "OPENAI_API_KEY",
+        "OPENAI_VECTOR_STORE_ID",
+        "OPENAI_MODEL",
+        "OPENAI_API_BASE",
+    ]
+    lines = ["# Local private StudyHub configuration. Do not commit this file."]
+    seen: set[str] = set()
+    for key in ordered:
+        if key in entries:
+            lines.append(f'{key}="{entries[key]}"')
+            seen.add(key)
+    for key in sorted(k for k in entries if k not in seen):
+        lines.append(f'{key}="{entries[key]}"')
+    ENV_LOCAL_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def validate_user_library_path(raw_path: str) -> Path:
+    value = (raw_path or "").strip()
+    if not value:
+        raise ValueError("Enter the folder where your study files live.")
+    if "\x00" in value:
+        raise ValueError("Choose a normal local folder path.")
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise ValueError("Use a full local path, or start with ~/ for your home folder.")
+    if not path.exists():
+        raise FileNotFoundError("That folder was not found. Create it or choose an existing study folder.")
+    if not path.is_dir():
+        raise ValueError("Choose a folder, not a single file.")
+    return path.resolve()
+
+
+def save_study_library_config(raw_path: str) -> dict[str, Any]:
+    validate_user_library_path(raw_path)
+    entries = read_local_env_entries()
+    entries["DEMO_MODE"] = "false"
+    entries["STUDY_LIBRARY_PATH"] = raw_path.strip()
+    entries.setdefault("HOST", "127.0.0.1")
+    write_local_env_entries(entries)
+    return {
+        "ok": True,
+        "restartRequired": True,
+        "message": "StudyHub will use this folder after you restart the local server.",
+    }
 
 
 DB_PATH = configured_path("DATABASE_PATH", DATA_DIR / "studyhub.sqlite")
@@ -1539,12 +1610,12 @@ def has_context_scope(context: dict[str, Any]) -> bool:
 def get_file(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
     if row is None:
-        raise FileNotFoundError("file not found")
+        raise FileNotFoundError("File was not found. Scan Library to refresh your file list.")
     path = Path(row["original_path"]).expanduser().resolve()
     if not is_inside(path, DEFAULT_STUDY_ROOT):
         raise PermissionError("file outside study root")
     if not path.exists():
-        raise FileNotFoundError("file not found")
+        raise FileNotFoundError("Original file is missing. Scan Library to refresh your file list.")
     return row
 
 
@@ -1626,6 +1697,137 @@ def api_health(conn: sqlite3.Connection) -> dict[str, Any]:
         "canvas": "Handled separately by an authenticated user-approved importer workflow",
         "pdfTextExtraction": "Unavailable" if pdf_dependency_error else "Available",
         "extractionWarnings": extraction_warnings,
+    }
+
+
+def preflight_item(code: str, severity: str, title: str, what: str, impact: str, next_step: str, details: str = "") -> dict[str, str]:
+    return {
+        "code": code,
+        "severity": severity,
+        "title": title,
+        "whatHappened": what,
+        "impact": impact,
+        "nextStep": next_step,
+        "details": details,
+    }
+
+
+def api_preflight(conn: sqlite3.Connection) -> dict[str, Any]:
+    health = api_health(conn)
+    items: list[dict[str, str]] = []
+    file_count = int(health["filesIndexed"] or 0)
+    root_exists = bool(health["studyLibraryConnected"])
+    openai_configured = bool(os.environ.get("OPENAI_API_KEY"))
+    database_parent = DB_PATH.expanduser().resolve().parent
+    database_writable = database_parent.exists() and os.access(database_parent, os.W_OK)
+
+    if DEMO_MODE:
+        items.append(
+            preflight_item(
+                "demo_mode",
+                "info",
+                "You are viewing demo materials",
+                "StudyHub is using small synthetic sample files.",
+                "You can try the product without adding private course files or an OpenAI key.",
+                "Open a course or switch to your own study folder from Settings.",
+            )
+        )
+    if not ENV_LOCAL_EXISTS:
+        items.append(
+            preflight_item(
+                "first_launch",
+                "info",
+                "First launch is ready",
+                "No local settings file was found, so StudyHub started in Demo Mode.",
+                "Nothing private has been scanned.",
+                "Use the demo now, or choose your own study folder from Settings when you are ready.",
+            )
+        )
+    if not root_exists:
+        items.append(
+            preflight_item(
+                "study_library_missing",
+                "warning",
+                "Study folder not found",
+                "The configured study folder could not be found.",
+                "Courses and files cannot appear until StudyHub can see a local folder.",
+                "Choose an existing local study folder in Settings, then restart StudyHub.",
+            )
+        )
+    elif not DEMO_MODE and file_count == 0:
+        items.append(
+            preflight_item(
+                "study_library_empty",
+                "warning",
+                "No study files found yet",
+                "StudyHub can see your study folder, but no supported course files are ready.",
+                "Home, Courses, Search, Practice, and AI will stay mostly empty.",
+                "Add PDF, Word, PowerPoint, text, CSV, notebook, Python, or R files, then scan again.",
+            )
+        )
+    if not database_writable:
+        items.append(
+            preflight_item(
+                "database_not_writable",
+                "error",
+                "Local save location is not writable",
+                "StudyHub cannot write its local app data.",
+                "Notes, stars, scan results, and AI history may not save.",
+                "Move the app to a writable folder or fix folder permissions, then restart.",
+            )
+        )
+    if health["pdfTextExtraction"] == "Unavailable":
+        items.append(
+            preflight_item(
+                "pdf_text_missing",
+                "warning",
+                "PDF text support is missing",
+                "StudyHub can list PDF files, but cannot read searchable text from many PDFs until Poppler is installed.",
+                "PDF preview still works. Ask AI may not understand PDFs whose text has not been read.",
+                "Install Poppler, then scan again.",
+                "Expected command-line tools: pdftotext and pdfinfo.",
+            )
+        )
+    if not openai_configured:
+        items.append(
+            preflight_item(
+                "openai_optional",
+                "info",
+                "AI is optional",
+                "No OpenAI API key is configured.",
+                "StudyHub can still browse, search, preview, star, and show local source excerpts.",
+                "Add an OpenAI API key later if you want full AI explanations.",
+            )
+        )
+    elif certifi is None:
+        items.append(
+            preflight_item(
+                "tls_ca_bundle_missing",
+                "warning",
+                "OpenAI may fail certificate checks",
+                "The Python CA bundle package was not found.",
+                "Ask AI may fall back to local excerpts if HTTPS certificate verification fails.",
+                "Install certifi for this Python environment, then restart StudyHub.",
+            )
+        )
+
+    return {
+        "readyToStudy": root_exists and file_count > 0 and database_writable,
+        "firstLaunch": not ENV_LOCAL_EXISTS,
+        "demoMode": DEMO_MODE,
+        "fileCount": file_count,
+        "courseCount": conn.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM (
+              SELECT c.id
+              FROM courses c
+              JOIN files f ON f.course_id=c.id AND f.active=1
+              GROUP BY c.id
+            )
+            """
+        ).fetchone()["c"],
+        "items": items,
     }
 
 
@@ -2720,7 +2922,7 @@ def local_bridge_response(
     for chunk in chunks[:3]:
         excerpt = re.sub(r"\s+", " ", chunk["text"]).strip()[:700]
         excerpts.append(f"{chunk['filename']} ({chunk.get('source_location') or 'source'}): {excerpt}")
-    heading = intro or "OpenAI is not configured, so this is a local source-backed preview rather than a GPT answer."
+    heading = intro or "OpenAI is not set up, so here are relevant excerpts from your local materials."
     return heading + "\n\n" + "\n\n".join(excerpts) + "\n\nSources\n" + format_sources(chunks)
 
 
@@ -2805,7 +3007,7 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         elif isinstance(exc, PermissionError):
             self.send_error_json(403, str(exc) if str(exc) else "Forbidden")
         elif isinstance(exc, FileNotFoundError):
-            self.send_error_json(404, "Not found")
+            self.send_error_json(404, str(exc) if str(exc) else "Not found")
         elif isinstance(exc, (ValueError, json.JSONDecodeError)):
             self.send_error_json(400, str(exc) if str(exc) else "Invalid request")
         else:
@@ -2879,10 +3081,16 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.handle_conversation_mutation()
             elif parsed.path == "/api/ai-sync":
                 self.send_json(sync_openai_vector_store())
+            elif parsed.path == "/api/config/study-library":
+                self.handle_study_library_config()
             else:
                 self.send_error_json(404, "Not found")
         except Exception as exc:
             self.handle_exception(exc)
+
+    def handle_study_library_config(self) -> None:
+        body = self.parse_body_json()
+        self.send_json(save_study_library_config(str(body.get("path") or "")))
 
     def handle_mcp_rpc(self) -> None:
         body = self.parse_body_json(MAX_MCP_BODY_SIZE)
@@ -2939,6 +3147,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.send_json(api_session())
             elif path == "/api/health":
                 self.send_json(api_health(conn))
+            elif path == "/api/preflight":
+                self.send_json(api_preflight(conn))
             elif path == "/api/courses":
                 rows = conn.execute(
                     """
@@ -3344,6 +3554,10 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         try:
             row = get_file(conn, file_id)
             path = Path(row["original_path"]).resolve()
+            if not is_inside(path, DEFAULT_STUDY_ROOT):
+                raise PermissionError("Original file is outside the configured study folder.")
+            if not path.exists():
+                raise FileNotFoundError("Original file is missing. Scan Library to refresh your file list.")
             subprocess.Popen(["open", str(path)])
             self.send_json({"ok": True})
         finally:
@@ -3548,6 +3762,8 @@ def serve(port: int, open_browser: bool = False, scan_first: bool = True) -> Non
     if scan_first:
         scan_library(DEFAULT_STUDY_ROOT)
     chosen_port = find_free_port(port)
+    if chosen_port != port:
+        print(f"Port {port} is already in use; StudyHub is using localhost port {chosen_port} instead.", flush=True)
     server = ThreadingHTTPServer((bind_host, chosen_port), StudyHubHandler)
     display_host = "localhost" if bind_host in {"127.0.0.1", "::1", "localhost"} else bind_host
     url = f"http://{display_host}:{chosen_port}"
