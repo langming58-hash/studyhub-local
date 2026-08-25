@@ -41,7 +41,7 @@ def main() -> int:
         "home_scan_not_primary": "Scan Library" not in home and "Add Material" not in home,
         "courses_own_library_actions": "Scan Library" in courses and "Add Material" in courses and "Active Courses" in courses,
         "stale_empty_courses_hidden_from_courses": "activeCourses" in courses and "inactive empty course" in courses,
-        "search_single_primary_input": "primary-search" in search and "Search filenames or extracted text" in search,
+        "search_single_primary_input": "primary-search" in search and "Search filenames or readable text" in search,
         "study_consolidates_modes": "function studyTabs()" in js
         and "Practice" in js
         and "Wrong Questions" in js

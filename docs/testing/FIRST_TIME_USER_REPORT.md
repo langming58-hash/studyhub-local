@@ -6,7 +6,7 @@ Release under test: v0.1.5
 
 ## Scope
 
-This was a true first-time-user retest against the public repository only.
+This report covers the public first-time-user retest plus the follow-up first-run polish pass.
 
 The test intentionally did not use:
 
@@ -18,6 +18,24 @@ The test intentionally did not use:
 - the default port used by a private local instance
 
 All user-library tests used synthetic temporary fixtures only.
+
+## First-Run Polish Update
+
+The follow-up pass focused on whether a new student can understand and begin using StudyHub without developer knowledge.
+
+| Area | Result | Notes |
+| --- | --- | --- |
+| Fresh first launch | PASS | With no `.env.local`, StudyHub starts in Demo Mode instead of failing on a missing local folder. |
+| 10-second comprehension | PASS | Home now explains that StudyHub is a private study hub, that demo files are synthetic, that real files stay local, and that OpenAI is optional. |
+| Demo Mode clarity | PASS | Demo Mode appears as contextual onboarding, not a blocking setup wizard. |
+| Own-library setup | PASS | Settings exposes a visible study-folder form and writes only local `.env.local` configuration. The API response does not echo absolute paths. |
+| Dependency preflight | PASS | StudyHub surfaces actionable notices for PDF text support, missing/empty study folders, local save problems, OpenAI optional setup, and CA-bundle readiness. |
+| Error recovery | PASS | Recovery cards explain what happened, what is affected, and what to do next. Technical details stay behind disclosure controls. |
+| Port conflict | PASS | Startup selects the next local port and prints an understandable localhost message. |
+| Missing original file | PASS | Open Original reports that the file is missing and suggests scanning again. |
+| Restart/continue | PASS | Last-file continuation and AI conversation state remain available after reload. |
+
+Normal student-facing UI was also checked for avoidable implementation language. Terms such as internal chunks, source file IDs, retrieval internals, and cache paths do not appear in the ordinary Home/Courses/Search/Study/AI journey.
 
 ## Retest Focus
 
@@ -117,6 +135,22 @@ Additional click-path checks covered:
 
 Result: PASS.
 
+## Accessibility Sanity
+
+This was not a full manual VoiceOver audit and should not be treated as a WCAG claim.
+
+Chrome's accessibility tree and keyboard focus behavior were checked for:
+
+- global navigation
+- first-run onboarding actions
+- file preview drawer controls
+- readable-text panel
+- notes controls
+- AI composer
+- AI history drawer
+
+Result: PARTIAL PASS. Controls had meaningful names and keyboard focus was reachable. A full human screen-reader pass remains recommended before claiming formal accessibility compliance.
+
 ## CI And Fresh Clone
 
 Local public checkout:
@@ -158,8 +192,11 @@ Notes persistence: PASS
 Plain-text solution parsing: PASS
 Solution metadata sanitization: PASS
 Security/privacy basics: PASS
+First-run onboarding: PASS
+Dependency preflight: PASS
+Error recovery: PASS
 Responsive sanity: PASS
-Accessibility sanity: PASS
+Accessibility sanity: PARTIAL PASS
 npm run ci: PASS
 Fresh clone: PASS
 Private repo unchanged: YES
