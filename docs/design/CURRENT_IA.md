@@ -1,27 +1,39 @@
-# Current IA Audit
+# Current IA
 
-StudyHub currently exposes too many peer-level destinations for a daily study workflow:
+StudyHub Local now uses six primary destinations:
 
 - Home
-- This Week
 - Courses
 - Search
-- Ask GPT
-- Starred
-- Practice
-- Wrong Questions
-- Exam Review
+- Study
+- AI
 - Settings
-- a persistent course list in the sidebar
-- file/course-level Ask actions
 
-This makes the product read like a library database console. The same capabilities remain useful, but the primary navigation overstates maintenance and secondary workflows.
+## Intent
 
-Primary issues:
+Home should feel like a daily study starting point: continue the last material,
+open a course, or find recent files.
 
-- Home emphasizes system state instead of study continuity.
-- Course navigation appears in multiple places.
-- Practice, Wrong Questions, and Exam Review compete as global destinations even though they are one study/review area.
-- Scan Library and Add Material are maintenance actions but appear as global header actions.
-- File cards expose too many badges and buttons by default.
-- AI is already a persistent workspace; the rest of the IA should converge into that single system rather than adding parallel chat entry points.
+Courses owns course/week browsing and normal material navigation.
+
+Search owns cross-library lookup by filename and readable indexed text.
+
+Study groups review workflows such as practice, wrong questions, exam review,
+and user notes.
+
+AI is a persistent study workspace with saved local conversations and source
+citations.
+
+Settings owns library setup, scan actions, AI status, privacy boundaries, and
+diagnostics.
+
+## UI Guidance
+
+- Do not add more global destinations unless a workflow truly needs one.
+- Prefer clicking a file row to open StudyHub preview.
+- Keep Open Original available but secondary to preview.
+- Keep AI entry points contextual, then converge them into the AI workspace.
+- Avoid exposing internal folder names such as `01 Course Materials`,
+  `02 Exercises`, or `My_Work` in normal UI copy.
+- Healthy infrastructure should be quiet; show warnings only when action is
+  needed.

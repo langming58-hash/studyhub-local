@@ -11,7 +11,7 @@
 - 默认没有 telemetry
 - 服务只监听 localhost，安装后在本机打开 http://127.0.0.1:8765
 - 支持本地搜索
-- Ask GPT 可选，回答要基于 indexed material，并显示来源
+- Ask AI 可选，回答要基于自己的资料，并显示来源
 - Practice 题不会凭空生成，只能来自真实/演示材料里的题
 - 有只读 MCP endpoint，限制在本地资料库范围内
 

@@ -9,12 +9,12 @@ Recommended path:
 ```bash
 git clone https://github.com/langming58-hash/studyhub-local.git
 cd studyhub-local
-cp .env.example .env.local
 npm install
+python3 -m pip install -r requirements.txt
 npm run dev
 ```
 
-Then install locally and open:
+Then open the localhost URL printed in Terminal. Default:
 
 ```text
 http://127.0.0.1:8765
@@ -30,8 +30,8 @@ Windows has not been fully polished yet. The expected path is:
 - install Python 3
 - install Node.js
 - clone the repository
-- copy `.env.example` to `.env.local`
 - run `npm install`
+- run `python3 -m pip install -r requirements.txt`, or `py -3 -m pip install -r requirements.txt`
 - run `npm run dev`
 
 If this fails, ask for the exact command output with any private paths redacted.
@@ -42,8 +42,8 @@ Expected path:
 
 - install Git, Python 3, and Node.js
 - clone the repository
-- copy `.env.example` to `.env.local`
 - run `npm install`
+- run `python3 -m pip install -r requirements.txt`
 - run `npm run dev`
 
 The app should bind to loopback only.
@@ -56,7 +56,7 @@ If `8765` is already occupied, use another loopback port:
 python3 server.py serve --port 8876
 ```
 
-Then install locally and open:
+Then open:
 
 ```text
 http://127.0.0.1:8876
@@ -86,7 +86,10 @@ StudyHub Local uses npm scripts as a simple task runner.
 
 ## Demo Mode Not Showing
 
-Check `.env.local`:
+For a clean first run, Demo Mode appears automatically when no local study folder
+has been configured.
+
+Advanced check: if `.env.local` exists, confirm:
 
 ```text
 DEMO_MODE=true
@@ -107,18 +110,14 @@ npm run dev
 
 ## Connect Your Own StudyLibrary
 
-Edit `.env.local`:
-
-```text
-DEMO_MODE=false
-STUDY_LIBRARY_PATH=~/StudyLibrary
-```
+Use the app UI: Settings -> Study folder -> enter the local folder path -> Use
+this folder -> restart -> Scan Library.
 
 Keep real course files outside the repository.
 
 ## OpenAI Not Configured
 
-This is normal. The app works without an OpenAI API key. OpenAI is only needed for optional Ask GPT/vector retrieval features.
+This is normal. The app works without an OpenAI API key. OpenAI is only needed for optional Ask AI/vector retrieval features.
 
 If enabled, keep the key server-side in `.env.local` and never paste it into issues, screenshots, or frontend code.
 

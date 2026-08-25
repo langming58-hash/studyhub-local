@@ -9,7 +9,7 @@ Course -> Week -> Materials / Exercises
 
 每周的 lecture、slides、tutorial、lab、quiz 都放在清楚的位置；需要复习时可以先本地搜索自己的资料。
 
-如果可选开启 OpenAI，Ask GPT 也会基于 indexed material 回答，并尽量给出 Course / Week / File 来源。练习题也不会让 AI 乱编，找不到真实材料就明确说找不到。
+如果可选开启 OpenAI，Ask AI 也会基于自己的资料回答，并尽量给出 Course / Week / File 来源。练习题也不会让 AI 乱编，找不到真实材料就明确说找不到。
 
 几个我很在意的点：
 

@@ -18,7 +18,7 @@ Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.5
 
 3. It includes synthetic Demo Mode, so you can try it without an OpenAI API key or private course material.
 
-4. OpenAI is optional and server-side. When enabled, Ask GPT is designed to answer with source citations from indexed material rather than free-floating guesses.
+4. OpenAI is optional and server-side. When enabled, Ask AI is designed to answer with source citations from your materials rather than free-floating guesses.
 
 5. Privacy/security defaults: no telemetry, localhost-only bind, Host-header protection, CSRF, filesystem containment, active-content preview isolation, and read-only MCP.
 

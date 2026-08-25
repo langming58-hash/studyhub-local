@@ -44,7 +44,7 @@ This retest rechecked the P2 findings from the previous public acceptance pass:
 | Finding | Result |
 | --- | --- |
 | Hide stale empty courses after switching StudyLibrary | PASS |
-| Tighten Ask GPT no-match behavior | PASS |
+| Tighten AI no-match behavior | PASS |
 | Make Notes discoverable and persistent in the UI | PASS |
 | Improve plain-text official solution parsing | PASS |
 | Sanitize solution metadata responses | PASS |
@@ -57,7 +57,7 @@ The privacy regression discovered during retest was fixed: internal text-cache p
 | --- | --- | --- |
 | Primary navigation | PASS | Reduced to Home, Courses, Search, Study, AI, Settings. |
 | Home | PASS | Study-first layout with Continue, latest courses, recent files, and study queue. System metrics and progress bars are no longer the main experience. |
-| Courses | PASS | Canonical library browser with active courses, week navigation, starred files, Scan Library, and Add Material. |
+| Courses | PASS | Canonical library browser with available courses, week navigation, starred files, Scan Library, and Add Material. |
 | Course -> Week navigation | PASS | Week-level files are grouped as Course Materials, Exercises, and My Work / Review. |
 | Search | PASS | Single prominent search input with progressive filters and clean file-row results. |
 | Study | PASS | Practice, Wrong Questions, and Exam Review are consolidated into one workspace. |
@@ -78,7 +78,7 @@ The privacy regression discovered during retest was fixed: internal text-cache p
 | Vector store status shown without exposing IDs | PASS |
 | No generated practice questions when sources are absent | PASS |
 
-## Ask GPT Behavior
+## AI Behavior
 
 No API key was configured for this first-time-user retest. Expected behavior is local source-backed preview mode plus strict no-source handling.
 
@@ -184,8 +184,8 @@ First run Demo Mode: PASS
 Course/week browsing: PASS
 File preview/open original: PASS
 Search: PASS
-Ask GPT no-key fallback: PASS
-Ask GPT no-match scoping: PASS
+AI no-key fallback: PASS
+AI no-match scoping: PASS
 No generated practice questions: PASS
 Notes discoverability: PASS
 Notes persistence: PASS

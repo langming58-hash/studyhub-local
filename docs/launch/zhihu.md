@@ -9,7 +9,7 @@ StudyHub Local 是一个早期开源项目，核心结构很简单：
 - SQLite metadata index
 - 本地搜索
 - 可选 OpenAI Responses API / vector retrieval
-- Ask GPT 回答时显示来源
+- Ask AI 回答时显示来源
 - Practice question safety：不生成新题，只从材料中找题
 - 只读 MCP endpoint，方便本地集成
 

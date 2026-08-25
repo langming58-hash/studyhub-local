@@ -8,7 +8,7 @@ If you try it, I would especially like feedback on:
 - course/week organization
 - search
 - document extraction
-- Ask GPT/source citations
+- Ask AI/source citations
 - privacy expectations
 - cross-platform support
 

@@ -9,7 +9,7 @@ The engineering focus has been privacy boundaries rather than cloud-first conven
 - server listens on localhost only
 - private course files stay outside the repository
 - OpenAI integration is optional and server-side
-- AI answers must cite indexed source material
+- AI answers must cite source material
 - practice questions are not generated
 - MCP access is read-only and scoped to the configured local library
 

@@ -1,6 +1,6 @@
 # StudyHub Local: an open-source local-first study material hub
 
-I wanted a cleaner way to manage course PDFs, slides, tutorials, labs, quizzes, and notes without putting the whole study folder into a cloud dashboard, so I built StudyHub Local and released it as an early-stage open-source project.
+I wanted a cleaner way to manage course PDFs, slides, tutorials, labs, quizzes, and notes without putting the whole study folder into a cloud app, so I built StudyHub Local and released it as an early-stage open-source project.
 
 What it does:
 

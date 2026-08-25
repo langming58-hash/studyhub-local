@@ -1,12 +1,12 @@
 # Xiaohongshu Carousel Plan
 
-Use only synthetic screenshots from `docs/assets/`. Do not use real academic screenshots, real course files, private paths, personal account UI, or API settings.
+Use only synthetic screenshots from `docs/assets/screenshots/`. Do not use real academic screenshots, real course files, private paths, personal account UI, or API settings.
 
 ## Slide 1
 
 Text: 大学课程资料太乱？我给自己做了一个本地 Study Hub
 
-Screenshot asset: none or `docs/assets/home-this-week.svg`
+Screenshot asset: `docs/assets/screenshots/home.png`
 
 Caption: PDF / slides / Tutorial / Lab / Quiz 越堆越乱，所以做了一个本地优先的小工具。
 
@@ -14,7 +14,7 @@ Caption: PDF / slides / Tutorial / Lab / Quiz 越堆越乱，所以做了一个�
 
 Text: 按 Course -> Week 整理
 
-Screenshot asset: `docs/assets/course-week-browsing.svg`
+Screenshot asset: `docs/assets/screenshots/course-detail.png`
 
 Caption: 每门课下面按 Week 放 Materials 和 Exercises，打开就知道这周有哪些东西。
 
@@ -22,7 +22,7 @@ Caption: 每门课下面按 Week 放 Materials 和 Exercises，打开就知道�
 
 Text: Materials / Exercises 分开看
 
-Screenshot asset: `docs/assets/materials-exercises.svg`
+Screenshot asset: `docs/assets/screenshots/course-week.png`
 
 Caption: Lecture、Slides、Tutorial、Workshop、Lab、Quiz 都有清楚的位置。
 
@@ -30,23 +30,23 @@ Caption: Lecture、Slides、Tutorial、Workshop、Lab、Quiz 都有清楚的位�
 
 Text: 本地搜索自己的资料
 
-Screenshot asset: `docs/assets/search.svg`
+Screenshot asset: `docs/assets/screenshots/search.png`
 
-Caption: 先从本机 indexed material 找，不需要把所有资料搬到云端 dashboard。
+Caption: 先从本机资料里找，不需要把所有资料搬到云端工具。
 
 ## Slide 5
 
-Text: Ask GPT 但要有来源
+Text: Ask AI 但要有来源
 
-Screenshot asset: `docs/assets/ask-gpt.svg`
+Screenshot asset: `docs/assets/screenshots/ai-workspace.png`
 
-Caption: OpenAI 是可选的；开启后回答要基于 indexed material，并显示 Course / Week / File。
+Caption: OpenAI 是可选的；开启后回答要基于自己的资料，并显示 Course / Week / File。
 
 ## Slide 6
 
 Text: Practice 不让 AI 乱编题
 
-Screenshot asset: `docs/assets/practice.svg`
+Screenshot asset: `docs/assets/screenshots/study.png`
 
 Caption: 练习题只能从材料里找；找不到就明确说找不到。
 
@@ -54,15 +54,15 @@ Caption: 练习题只能从材料里找；找不到就明确说找不到。
 
 Text: 错题和复习记录
 
-Screenshot asset: `docs/assets/wrong-questions.svg`
+Screenshot asset: `docs/assets/screenshots/study.png`
 
-Caption: 适合把复习关注点留在本地 runtime data 里，不进公开仓库。
+Caption: 适合把复习关注点留在本地记录里，不进公开仓库。
 
 ## Slide 8
 
 Text: 本地优先，开源早期版本
 
-Screenshot asset: `docs/assets/settings-privacy.svg`
+Screenshot asset: `docs/assets/screenshots/settings.png`
 
 Caption: localhost only、默认没有 telemetry、不开 API key 也能跑 Demo Mode。
 

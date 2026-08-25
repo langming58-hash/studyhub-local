@@ -4,7 +4,7 @@ StudyHub Local is a local-first study library.
 
 ## Components
 
-- `server.py`: localhost HTTP server, scanner, SQLite schema, search, Ask GPT, OpenAI sync, and read-only MCP endpoint.
+- `server.py`: localhost HTTP server, scanner, SQLite schema, search, AI request handling, OpenAI sync, and read-only MCP endpoint.
 - `static/`: static frontend served by the local backend.
 - `demo-data/`: synthetic fixtures for public demos and tests.
 - `data/`: runtime SQLite files, ignored by Git.
