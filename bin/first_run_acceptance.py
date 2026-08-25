@@ -22,6 +22,8 @@ def load_server(tmp: Path):
     assert spec and spec.loader
     sys.modules[spec.name] = server
     spec.loader.exec_module(server)
+    os.environ.pop("OPENAI_API_KEY", None)
+    os.environ.pop("OPENAI_VECTOR_STORE_ID", None)
     server.DATA_DIR = tmp / "data"
     server.CACHE_DIR = tmp / "cache"
     server.TEXT_CACHE_DIR = server.CACHE_DIR / "text"
@@ -30,7 +32,7 @@ def load_server(tmp: Path):
     server.ENV_LOCAL_PATH = tmp / ".env.local"
     server.ENV_LOCAL_EXISTS = False
     server.DEMO_MODE = True
-    server.DEFAULT_STUDY_ROOT = server.APP_ROOT / "demo-data"
+    server.DEFAULT_STUDY_ROOT = tmp / "DemoData"
     return server
 
 
@@ -43,6 +45,10 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
         server = load_server(tmp)
+        write_file(
+            server.DEFAULT_STUDY_ROOT / "DEMO1001 - Demo Course" / "Week 01" / "01 Course Materials" / "Lecture" / "Demo.txt",
+            "Synthetic demo lecture content.",
+        )
         server.scan_library(server.DEFAULT_STUDY_ROOT)
         conn = sqlite3.connect(server.DB_PATH)
         conn.row_factory = sqlite3.Row
@@ -72,12 +78,28 @@ def main() -> int:
         empty_preflight = server.api_preflight(conn)
         conn.close()
 
+        pdf_library = tmp / "PDF StudyLibrary"
+        write_file(
+            pdf_library / "DEMO1234 - PDF Course" / "Week 01" / "01 Course Materials" / "Lecture" / "Lecture.pdf",
+            "%PDF-1.4\n% Synthetic placeholder PDF for preflight only.\n",
+        )
         original_pdf_error = server.pdf_extraction_dependency_error
         server.pdf_extraction_dependency_error = lambda: "PDF text extraction unavailable: pdftotext was not found. Install Poppler and rescan the library."
+        server.DEMO_MODE = False
+        server.DEFAULT_STUDY_ROOT = pdf_library
+        server.DB_PATH = tmp / "pdf.sqlite"
+        server.scan_library(server.DEFAULT_STUDY_ROOT)
         conn = server.connect_db()
         pdf_preflight = server.api_preflight(conn)
         conn.close()
         server.pdf_extraction_dependency_error = original_pdf_error
+
+        original_katex_dir = server.KATEX_DIST_DIR
+        server.KATEX_DIST_DIR = tmp / "missing-katex-dist"
+        conn = server.connect_db()
+        math_preflight = server.api_preflight(conn)
+        conn.close()
+        server.KATEX_DIST_DIR = original_katex_dir
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind(("127.0.0.1", 0))
@@ -104,12 +126,14 @@ def main() -> int:
         checks = {
             "fresh_launch_defaults_to_demo": preflight["demoMode"] is True and preflight["firstLaunch"] is True,
             "demo_mode_is_explained": any(item["code"] == "demo_mode" and "synthetic" in item["whatHappened"].lower() for item in preflight["items"]),
+            "demo_without_pdfs_has_no_pdf_warning": not any(item["code"] == "pdf_text_missing" for item in preflight["items"]),
             "openai_optional_explained": any(item["code"] == "openai_optional" and "optional" in item["title"].lower() for item in preflight["items"]),
             "own_library_config_saved_locally": config_result["restartRequired"] is True and "STUDY_LIBRARY_PATH" in env_text and "DEMO_MODE=\"false\"" in env_text,
             "own_library_config_response_no_path": str(custom_library) not in str(config_result),
             "wrong_study_library_path_actionable": "folder was not found" in missing_error.lower(),
             "empty_library_recovery": any(item["code"] == "study_library_empty" and "add" in item["nextStep"].lower() for item in empty_preflight["items"]),
             "missing_pdftotext_recovery": any(item["code"] == "pdf_text_missing" and "poppler" in item["nextStep"].lower() for item in pdf_preflight["items"]),
+            "missing_math_renderer_recovery": any(item["code"] == "math_renderer_missing" and "npm install" in item["nextStep"].lower() for item in math_preflight["items"]),
             "port_conflict_uses_next_port": fallback_port != busy_port,
             "missing_original_file_actionable": "scan library" in missing_original.lower(),
         }

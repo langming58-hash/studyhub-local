@@ -85,6 +85,11 @@ textarea {
   font-size: 12px;
 }
 
+.brand span[hidden],
+.eyebrow[hidden] {
+  display: none;
+}
+
 .nav {
   display: grid;
   gap: 4px;
@@ -213,6 +218,57 @@ menu {
 
 .button.full {
   width: 100%;
+}
+
+.row-more,
+.toolbar-more {
+  position: relative;
+}
+
+.row-more summary,
+.toolbar-more summary {
+  list-style: none;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.row-more summary::-webkit-details-marker,
+.toolbar-more summary::-webkit-details-marker {
+  display: none;
+}
+
+.row-more[open] summary,
+.toolbar-more[open] summary,
+.row-more summary:hover,
+.toolbar-more summary:hover {
+  background: var(--panel-2);
+}
+
+.row-more div,
+.toolbar-more div {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 12;
+  min-width: 190px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  display: grid;
+  gap: 6px;
+}
+
+.row-more .button,
+.toolbar-more .button {
+  width: 100%;
+  text-align: left;
+  justify-content: flex-start;
 }
 
 .icon-button {
@@ -1239,6 +1295,10 @@ textarea {
   font-size: 12px;
 }
 
+.course-row-sub {
+  margin-top: 4px;
+}
+
 .course-row-main:hover strong,
 .file-row-main:hover .file-name {
   text-decoration: underline;
@@ -1292,6 +1352,11 @@ textarea {
 .week-row:hover,
 .week-row.has-materials {
   background: var(--panel-2);
+}
+
+.week-row.empty-week {
+  color: var(--muted);
+  background: transparent;
 }
 
 .week-list.compact {

@@ -14,7 +14,7 @@
           <div class="brand-mark">SH</div>
           <div>
             <strong>StudyHub Local</strong>
-            <span id="libraryState">Checking library</span>
+            <span id="libraryState" hidden></span>
           </div>
           <button class="icon-button sidebar-toggle" id="sidebarToggle" aria-label="Collapse sidebar" title="Collapse sidebar">‹</button>
         </div>
@@ -31,7 +31,7 @@
       <main class="main">
         <header class="topbar">
           <div>
-            <p class="eyebrow" id="pageEyebrow">Private localhost study manager</p>
+            <p class="eyebrow" id="pageEyebrow" hidden></p>
             <h1 id="pageTitle">Home</h1>
           </div>
           <div class="top-actions">
@@ -54,23 +54,28 @@
           <button class="icon-button" id="closeDrawer" aria-label="Close">×</button>
         </div>
         <div class="drawer-actions">
-          <button id="openOriginal" class="button primary">Open Original</button>
-          <button id="askFileFull" class="button secondary">Open AI Workspace</button>
-          <button id="toggleAiExpanded" class="button secondary">Expand AI</button>
+          <button id="askFileFull" class="button secondary">Open full AI workspace</button>
+          <button id="toggleAiExpanded" class="button secondary">Split preview + AI</button>
           <button id="starFile" class="button secondary">Star</button>
-          <button id="copyContext" class="button secondary">Copy Source Info</button>
+          <details class="toolbar-more">
+            <summary>More</summary>
+            <div>
+              <button id="openOriginal" class="button secondary">Open original file</button>
+              <button id="copyContext" class="button secondary">Copy source details</button>
+            </div>
+          </details>
         </div>
         <div class="drawer-body">
           <div class="preview-frame" id="previewFrame"></div>
           <div class="split-handle" id="drawerSplitHandle" title="Resize AI workspace"></div>
           <aside class="context-panel">
             <div class="rail-tabs" role="tablist" aria-label="File side rail">
-              <button class="rail-tab active" data-rail-tab="context">Context</button>
+              <button class="rail-tab active" data-rail-tab="context">Source</button>
               <button class="rail-tab" data-rail-tab="text">Readable Text</button>
               <button class="rail-tab" data-rail-tab="details">Details</button>
             </div>
             <div class="rail-panel active" id="rail-context">
-              <h3>Context</h3>
+              <h3>Source</h3>
               <div id="contextIndicator" class="context-lines"></div>
             </div>
             <div class="rail-panel" id="rail-text">
@@ -107,10 +112,10 @@
         <label>Week <select id="uploadWeek"></select></label>
         <label>Section
           <select id="uploadSection">
-            <option>01 Course Materials</option>
-            <option>02 Exercises</option>
-            <option>My_Work</option>
-            <option>Review</option>
+            <option value="01 Course Materials">Course materials</option>
+            <option value="02 Exercises">Exercises</option>
+            <option value="My_Work">My work</option>
+            <option value="Review">Review</option>
           </select>
         </label>
         <label>Category <input id="uploadCategory" value="Lecture" /></label>

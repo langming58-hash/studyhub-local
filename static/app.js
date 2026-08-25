@@ -31,6 +31,54 @@ const state = {
 
 const $ = (selector) => document.querySelector(selector);
 const view = $("#view");
+let restoringRoute = false;
+let appLoaded = false;
+
+function routeHash(routeState = {}) {
+  const viewName = routeState.view || "home";
+  if (viewName === "course" && routeState.courseId) return `#/course/${encodeURIComponent(routeState.courseId)}`;
+  if (viewName === "week" && routeState.courseId && routeState.week) {
+    return `#/week/${encodeURIComponent(routeState.courseId)}/${encodeURIComponent(routeState.week)}`;
+  }
+  if (viewName === "file" && routeState.fileId) {
+    const page = Number(routeState.page || 0);
+    return page ? `#/file/${encodeURIComponent(routeState.fileId)}/${encodeURIComponent(page)}` : `#/file/${encodeURIComponent(routeState.fileId)}`;
+  }
+  if (viewName === "study" && routeState.mode) return `#/study/${encodeURIComponent(routeState.mode)}`;
+  return `#/${encodeURIComponent(viewName)}`;
+}
+
+function recordRoute(routeState = {}, replace = false) {
+  if (restoringRoute || !appLoaded) return;
+  const hash = routeHash(routeState);
+  if (window.location.hash === hash) return;
+  history[replace ? "replaceState" : "pushState"]({ studyhub: true, ...routeState }, "", hash);
+}
+
+function routeFromLocation() {
+  const raw = window.location.hash.replace(/^#\/?/, "");
+  const parts = raw.split("/").map((part) => decodeURIComponent(part || ""));
+  if (parts[0] === "course" && parts[1]) return { view: "course", courseId: Number(parts[1]) };
+  if (parts[0] === "week" && parts[1] && parts[2]) return { view: "week", courseId: Number(parts[1]), week: parts[2] };
+  if (parts[0] === "file" && parts[1]) return { view: "file", fileId: Number(parts[1]), page: Number(parts[2] || 0) };
+  if (parts[0] === "study") return { view: "study", mode: parts[1] || "practice" };
+  if (["home", "courses", "search", "ai", "settings"].includes(parts[0])) return { view: parts[0] };
+  return { view: "home" };
+}
+
+async function restoreRouteFromLocation() {
+  const next = routeFromLocation();
+  restoringRoute = true;
+  try {
+    if (next.view === "course" && next.courseId) return await renderCourse(next.courseId);
+    if (next.view === "week" && next.courseId && next.week) return await renderWeek(next.courseId, next.week);
+    if (next.view === "file" && next.fileId) return await route("file", { fileId: next.fileId, page: next.page, history: false });
+    if (next.view === "study") return await renderStudy(next.mode || "practice");
+    return await route(next.view || "home", { history: false });
+  } finally {
+    restoringRoute = false;
+  }
+}
 
 async function api(path, options = {}) {
   const method = (options.method || "GET").toUpperCase();
@@ -52,10 +100,13 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-function setTitle(title, eyebrow = "Private localhost study manager") {
+function setTitle(title, eyebrow = "") {
   $("#pageTitle").textContent = title;
   const label = $("#pageEyebrow");
-  if (label) label.textContent = eyebrow;
+  if (label) {
+    label.textContent = eyebrow;
+    label.hidden = !eyebrow;
+  }
   setPageActions(false);
 }
 
@@ -303,7 +354,7 @@ async function reopenConversation(id) {
   localStorage.setItem("studyhub.currentConversationId", String(data.conversation.id));
   hydrateMessages(data.messages || []);
   state.ask.historyOpen = false;
-  route("askgpt");
+  route("ai");
 }
 
 async function createConversation(context = state.ask.context, scope = state.ask.scope) {
@@ -347,6 +398,12 @@ function fileMetaLine(file = {}) {
     .join(" · ");
 }
 
+function weeksWithMaterialLabel(course) {
+  const weeks = weeksFor(course.id);
+  const count = weeks.filter((week) => week.has_materials).length;
+  return `${count} week${count === 1 ? "" : "s"} with material`;
+}
+
 function rememberFile(file) {
   if (!file?.id) return;
   localStorage.setItem("studyhub.lastFileId", String(file.id));
@@ -362,7 +419,7 @@ function firstRunPanel() {
   const dismissed = localStorage.getItem("studyhub.onboardingDismissed") === "true";
   const preflight = state.preflight || {};
   const needsAttention = actionPreflightItems().length > 0;
-  if (dismissed && !preflight.demoMode && !needsAttention) return "";
+  if (dismissed && !needsAttention) return "";
   const mode = preflight.demoMode ? "Demo Mode" : "Local Library";
   return `
     <section class="onboarding-card" aria-labelledby="firstRunTitle">
@@ -372,7 +429,7 @@ function firstRunPanel() {
         <p class="muted">${preflight.demoMode ? "These sample courses are synthetic. Your real files stay on your computer when you choose a study folder. OpenAI is optional." : "Your courses and files are read from your local study folder. OpenAI is optional."}</p>
       </div>
       <div class="onboarding-actions">
-        <button class="button primary" data-view="${preflight.fileCount ? "courses" : "settings"}">${preflight.fileCount ? "Start studying" : "Set up files"}</button>
+        <button class="button primary" data-view="${preflight.fileCount ? "courses" : "settings"}">${preflight.fileCount ? "Start exploring" : "Set up files"}</button>
         <button class="button secondary" data-open-library-setup="1">Use my own files</button>
         <button class="button ghost" data-dismiss-onboarding="1">Hide</button>
       </div>
@@ -444,9 +501,14 @@ function fileCard(file) {
         </span>
       </button>
       <div class="file-row-actions">
-        <button class="button secondary" data-ask-file="${file.id}">Ask AI</button>
         <button class="icon-button" data-star="${file.id}" aria-label="Star file" title="Star">${star}</button>
-        <button class="button ghost" data-open="${file.id}">Open Original</button>
+        <details class="row-more">
+          <summary>More</summary>
+          <div>
+            <button class="button secondary" data-ask-file="${file.id}">Ask AI</button>
+            <button class="button secondary" data-open="${file.id}">Open original file</button>
+          </div>
+        </details>
       </div>
     </article>
   `;
@@ -497,9 +559,15 @@ async function loadBase() {
       state.weeksByCourse.set(Number(course.id), await api(`/api/weeks?course_id=${course.id}`));
     }),
   );
-  $("#libraryState").textContent = state.health.studyLibraryConnected
-    ? "Library ready"
-    : "Library missing";
+  const libraryState = $("#libraryState");
+  if (libraryState) {
+    const needsAttention = actionPreflightItems().length > 0 || !state.health.studyLibraryConnected;
+    libraryState.hidden = !needsAttention;
+    libraryState.textContent = state.health.studyLibraryConnected ? "Library needs attention" : "Library missing";
+  }
+  if (!state.preflight?.demoMode && Number(state.health.filesIndexed || 0) > 0 && actionPreflightItems().length === 0) {
+    localStorage.setItem("studyhub.onboardingDismissed", "true");
+  }
   applySidebarState();
   populateUploadCourses();
   if (state.ask.conversationId && !state.ask.messages.length) {
@@ -529,7 +597,7 @@ function populateUploadCourses() {
 }
 
 async function renderHome() {
-  setTitle("Home", "Study-first workspace");
+  setTitle("Home");
   const recent = await api("/api/recent");
   const wrong = await api("/api/wrong-questions");
   const lastFileId = Number(localStorage.getItem("studyhub.lastFileId") || 0);
@@ -547,7 +615,7 @@ async function renderHome() {
       <div class="continue-actions">
         ${
           continueFile
-            ? `<button class="button primary" data-preview="${continueFile.id}">Open latest</button><button class="button secondary" data-ask-file="${continueFile.id}">Ask AI</button>`
+            ? `<button class="button primary" data-preview="${continueFile.id}">Continue</button>`
             : `<button class="button primary" data-view="courses">Browse courses</button>`
         }
       </div>
@@ -555,12 +623,11 @@ async function renderHome() {
     <section class="section-block quiet-section">
       <div class="section-head">
         <div>
-          <p class="eyebrow">Latest Material</p>
           <h2>Courses</h2>
         </div>
         <button class="button secondary" data-view="courses">View all</button>
       </div>
-      <div class="course-list-main">${activeCourses.length ? activeCourses.slice(0, 8).map(courseSummary).join("") : empty("No active courses in this library.")}</div>
+      <div class="course-list-main">${activeCourses.length ? activeCourses.slice(0, 8).map(courseSummary).join("") : empty("No courses in this library yet.")}</div>
     </section>
     <section class="section-block quiet-section">
       <div class="section-head">
@@ -602,6 +669,7 @@ function bindLibrarySetupForm() {
         body: JSON.stringify({ path }),
       });
       result.textContent = data.message || "Saved. Restart StudyHub to use this folder.";
+      localStorage.setItem("studyhub.onboardingDismissed", "true");
       toast("Study folder saved");
     } catch (error) {
       result.textContent = error.message;
@@ -622,7 +690,7 @@ function focusCourseCard(course) {
       </div>
       <div class="progress-track"><span style="width:${pct}%"></span></div>
       <div class="focus-meta">
-        <span>${done}/${weeks.length} weeks</span>
+        <span>${done} week${done === 1 ? "" : "s"} with material</span>
         <button class="button secondary" data-course="${course.id}" data-week="${escapeHtml(week?.week_label || "")}">Open</button>
       </div>
     </article>
@@ -630,30 +698,24 @@ function focusCourseCard(course) {
 }
 
 function courseSummary(course) {
-  const weeks = weeksFor(course.id);
-  const done = weeks.filter((week) => week.has_materials).length;
   const week = latestWeek(course);
   return `
     <article class="course-row">
       <button class="course-row-main" data-course="${course.id}">
         <strong>${escapeHtml(courseLabel(course))}</strong>
         <span>${escapeHtml(course.name || "")}</span>
+        <span class="course-row-sub">${week ? `Latest material: ${escapeHtml(week.week_label)}` : "No files yet"}</span>
       </button>
       <div class="course-row-meta">
-        <span>${course.file_count || 0} files</span>
-        <span>${done}/${weeks.length} weeks</span>
-        <span>${escapeHtml(week?.week_label || "No week")}</span>
-      </div>
-      <div class="course-row-actions">
-        ${week ? `<button class="button secondary" data-course="${course.id}" data-week="${escapeHtml(week.week_label)}">Latest week</button>` : ""}
-        <button class="button ghost" data-ask-course="${course.id}">Ask AI</button>
+        <span>${escapeHtml(weeksWithMaterialLabel(course))}</span>
+        <span aria-hidden="true">→</span>
       </div>
     </article>
   `;
 }
 
 async function renderCourses() {
-  setTitle("Courses", "Canonical study library");
+  setTitle("Courses");
   setPageActions(true);
   const activeCourses = state.courses.filter((course) => Number(course.file_count || 0) > 0);
   const inactive = state.courses.length - activeCourses.length;
@@ -661,7 +723,6 @@ async function renderCourses() {
   view.innerHTML = `
     <section class="library-hero">
       <div>
-        <p class="eyebrow">Local source of truth</p>
         <h2>Courses and weeks</h2>
         <p class="muted">Browse official files by course, week, material type, and exercise type.</p>
       </div>
@@ -671,13 +732,13 @@ async function renderCourses() {
         <button class="button primary" data-run-scan="1">Scan Library</button>
       </div>
     </section>
-    ${inactive ? `<div class="notice compact">Hidden ${inactive} inactive empty course${inactive === 1 ? "" : "s"} from the active library view.</div>` : ""}
+    ${inactive ? `<div class="notice compact">Hiding ${inactive} course${inactive === 1 ? "" : "s"} with no files from this library view.</div>` : ""}
     <section class="section-block quiet-section">
       <div class="section-head">
-        <h2>Active Courses</h2>
+        <h2>Courses</h2>
         <span class="muted">${activeCourses.length} course${activeCourses.length === 1 ? "" : "s"}</span>
       </div>
-      <div class="course-list-main">${activeCourses.length ? activeCourses.map(courseSummary).join("") : empty("No active courses in this library.")}</div>
+      <div class="course-list-main">${activeCourses.length ? activeCourses.map(courseSummary).join("") : empty("No courses in this library yet.")}</div>
     </section>
     <section class="section-block quiet-section">
       <div class="section-head">
@@ -716,7 +777,8 @@ async function renderThisWeek() {
 async function renderCourse(courseId) {
   const course = courseById(courseId);
   state.selectedCourseId = courseId;
-  setTitle(course ? courseLabel(course) : "Course", "Course library");
+  recordRoute({ view: "course", courseId });
+  setTitle(course?.name || courseLabel(course) || "Course");
   const weeks = weeksFor(courseId);
   const files = await api(`/api/files?course_id=${courseId}`);
   const activeWeeks = weeks.filter((week) => week.has_materials);
@@ -724,24 +786,22 @@ async function renderCourse(courseId) {
     <section class="course-header">
       <div>
         <p class="eyebrow">${escapeHtml(courseLabel(course))}</p>
-        <h2>${escapeHtml(course?.name || "")}</h2>
-        <p class="muted">${files.length} files · ${activeWeeks.length}/${weeks.length} weeks with material</p>
+        <p class="muted">${files.length} file${files.length === 1 ? "" : "s"} · ${activeWeeks.length} week${activeWeeks.length === 1 ? "" : "s"} with material</p>
       </div>
       <div class="course-actions">
-        <button class="button secondary" data-ask-course="${courseId}">Ask AI about course</button>
-        <button class="button secondary" data-view="courses">All courses</button>
+        <button class="button secondary" data-ask-course="${courseId}">Ask AI</button>
       </div>
     </section>
     <section class="section-block quiet-section">
       <div class="section-head">
         <h2>Weeks</h2>
-        <span class="muted">${activeWeeks.length} active</span>
+        <span class="muted">${activeWeeks.length} week${activeWeeks.length === 1 ? "" : "s"} with material</span>
       </div>
       <div class="week-list">
         ${weeks.map((week) => `
-          <button class="week-row ${week.has_materials ? "has-materials" : ""}" data-week="${week.week_label}" data-course="${courseId}">
+          <button class="week-row ${week.has_materials ? "has-materials" : "empty-week"}" data-week="${week.week_label}" data-course="${courseId}">
             <strong>${escapeHtml(week.week_label)}</strong>
-            <span class="muted">${week.file_count || 0} files</span>
+            ${week.has_materials ? `<span class="muted">${week.file_count || 0} file${Number(week.file_count || 0) === 1 ? "" : "s"}</span>` : ""}
           </button>
         `).join("")}
       </div>
@@ -757,6 +817,7 @@ async function renderWeek(courseId, weekLabel) {
   const course = courseById(courseId);
   state.selectedCourseId = courseId;
   state.selectedWeek = weekLabel;
+  recordRoute({ view: "week", courseId, week: weekLabel });
   state.weekFiles = await api(`/api/files?course_id=${courseId}&week=${encodeURIComponent(weekLabel)}`);
   state.weekFilter = "all";
   state.weekSort = "section";
@@ -864,7 +925,7 @@ function countBy(items, fn) {
 }
 
 async function renderSearch() {
-  setTitle("Search", "Find source material");
+  setTitle("Search");
   view.innerHTML = `
     <section class="search-hero">
       <div class="searchbar primary-search">
@@ -878,8 +939,8 @@ async function renderSearch() {
         </select>
         <select id="searchScope">
           <option value="">All material</option>
-          <option>01 Course Materials</option>
-          <option>02 Exercises</option>
+          <option value="01 Course Materials">Course materials</option>
+          <option value="02 Exercises">Exercises</option>
           <option>Lecture</option>
           <option>Tutorial</option>
           <option>Workshop</option>
@@ -919,7 +980,7 @@ async function runSearch() {
 }
 
 async function renderAskGpt() {
-  setTitle("Ask AI", "Ask about selected materials");
+  setTitle("AI");
   if (!state.ask.context.course && state.selectedCourseId) {
     setAskContext(state.selectedWeek ? currentWeekContext(state.selectedCourseId, state.selectedWeek) : currentCourseContext(state.selectedCourseId));
   }
@@ -941,12 +1002,12 @@ async function renderAskGpt() {
         <div class="ask-tools">
           <button class="button secondary" id="historyButton">History</button>
           <button class="button secondary" id="newAskChat">New Chat</button>
-          <button class="button secondary" id="toggleFocusMode">${state.ask.mode === "focus" ? "Exit Focus" : "Open AI Workspace"}</button>
+          <button class="button secondary" id="toggleFocusMode">${state.ask.mode === "focus" ? "Exit focus" : "Open full AI workspace"}</button>
         </div>
       </div>
       <div class="ask-context">
         <div>
-          <h3>Asking about</h3>
+          <h3>Answering from</h3>
           <div class="context-lines">${askContextLines().map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>
         </div>
         <label>Scope
@@ -961,7 +1022,7 @@ async function renderAskGpt() {
       <div class="conversation" id="askConversation">${renderAskMessages()}</div>
       <div class="ask-compose">
         <div class="composer-stack">
-          <div class="composer-context">Effective scope: ${escapeHtml(scopeLabel())}${state.ask.context.file ? ` · ${escapeHtml(state.ask.context.file)}` : ""}</div>
+          <div class="composer-context">Answering from: ${escapeHtml(scopeLabel())}${state.ask.context.file ? ` · ${escapeHtml(state.ask.context.file)}` : ""}</div>
           <textarea id="askPagePrompt" placeholder="Ask about these materials...">${escapeHtml(state.ask.draft)}</textarea>
         </div>
         <button class="button primary" id="sendAskPage">Send</button>
@@ -1003,13 +1064,13 @@ async function renderAskGpt() {
 
 function renderAskMessages() {
   if (!state.ask.messages.length) {
-    return `<div class="notice">Ask about the selected official course materials. GPT answers must cite sources.</div>`;
+    return `<div class="notice">Ask about selected course materials. AI answers should cite sources.</div>`;
   }
   return state.ask.messages
     .map((message) => {
       if (message.role === "system") return `<div class="context-change">${escapeHtml(message.text)}</div>`;
       const sources = message.sources?.length ? `<div class="source-list"><h3>Sources</h3>${message.sources.map(sourceCard).join("")}</div>` : "";
-      const badge = message.role === "assistant" ? `<span class="chip">GPT explanation</span>` : `<span class="chip">My prompt</span>`;
+      const badge = message.role === "assistant" ? `<span class="chip">AI explanation</span>` : `<span class="chip">My prompt</span>`;
       return `
         <article class="chat-message ${message.role}">
           <div class="message-head">${badge}${message.status ? `<span class="chip">${escapeHtml(message.status)}</span>` : ""}</div>
@@ -1084,7 +1145,7 @@ async function sendAskPagePrompt() {
   if (!prompt) return;
   const context = contextForScope();
   if (!context.course) {
-    state.ask.messages.push({ role: "assistant", text: "Select a course, week, file, or teacher question before asking GPT.", status: "no_context", sources: [] });
+    state.ask.messages.push({ role: "assistant", text: "Select a course, week, file, or teacher question before asking AI.", status: "no_context", sources: [] });
     renderAskGpt();
     return;
   }
@@ -1113,11 +1174,11 @@ async function sendAskPagePrompt() {
     ]);
     saveAskDraft("");
     await loadConversationList();
-    renderAskGpt();
+    if (state.view === "ai") renderAskGpt();
   } catch (error) {
     state.ask.messages.pop();
     state.ask.messages.push({ role: "assistant", text: error.message, status: "error", sources: [] });
-    renderAskGpt();
+    if (state.view === "ai") renderAskGpt();
   } finally {
     const sendButton = $("#sendAskPage");
     const promptBox = $("#askPagePrompt");
@@ -1306,7 +1367,7 @@ async function renderSettings() {
         </div>
         <div class="settings-list">
           <div><span>Study Library</span><strong>${state.health.studyLibraryConnected ? "Connected" : "Missing"}</strong></div>
-          <div><span>Files ready</span><strong>${escapeHtml(state.health.filesIndexed || 0)}</strong></div>
+          <div><span>Files in library</span><strong>${escapeHtml(state.health.filesIndexed || 0)}</strong></div>
           <div><span>PDF reading support</span><strong>${escapeHtml(state.health.pdfTextExtraction || "Unknown")}</strong></div>
           <div><span>Suspicious Files</span><strong>${escapeHtml(state.health.suspiciousFiles || 0)}</strong></div>
         </div>
@@ -1322,7 +1383,7 @@ async function renderSettings() {
         <div class="settings-list">
           <div><span>OpenAI</span><strong>${escapeHtml(ai.openAI)}</strong></div>
           <div><span>AI file search</span><strong>${escapeHtml(ai.vectorStore)}</strong></div>
-          <div><span>Ask AI</span><strong>${escapeHtml(askReady)}</strong></div>
+          <div><span>AI answers</span><strong>${escapeHtml(askReady)}</strong></div>
           <div><span>Last AI Sync</span><strong>${escapeHtml(ai.lastAISync || "Never")}</strong></div>
           <div><span>Files ready for AI</span><strong>${escapeHtml(ai.indexedFiles || 0)}</strong></div>
           <div><span>Files synced for AI search</span><strong>${escapeHtml(ai.vectorIndexedFiles || 0)}</strong></div>
@@ -1358,13 +1419,14 @@ async function renderSettings() {
       </section>
     </section>
   `;
+  bindLibrarySetupForm();
 }
 
 function empty(text) {
   return `<div class="notice">${escapeHtml(text)}</div>`;
 }
 
-async function route(viewName = state.view) {
+async function route(viewName = state.view, options = {}) {
   if (viewName === "askgpt") viewName = "ai";
   if (["practice", "wrong", "exam"].includes(viewName)) {
     state.studyMode = viewName === "exam" ? "exam" : viewName;
@@ -1372,7 +1434,27 @@ async function route(viewName = state.view) {
   }
   if (viewName === "thisWeek") viewName = "home";
   if (viewName === "starred") viewName = "courses";
+  if (viewName === "file") {
+    const fileId = Number(options.fileId || 0);
+    if (!fileId) return route("home", { history: options.history, replace: options.replace });
+    state.view = "file";
+    const file = await api(`/api/file?id=${fileId}`);
+    const wasRestoring = restoringRoute;
+    restoringRoute = true;
+    try {
+      if (file.course_id && file.week_label) await renderWeek(Number(file.course_id), file.week_label);
+      else await route("home", { history: false });
+    } finally {
+      restoringRoute = wasRestoring;
+    }
+    document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", false));
+    if (options.history !== false) recordRoute({ view: "file", fileId, page: Number(options.page || 0) }, options.replace);
+    return openFileDrawer(fileId, Number(options.page || 0), { history: false });
+  }
+  if ($("#fileDrawer")) $("#fileDrawer").hidden = true;
   state.view = viewName;
+  if (viewName === "study" && options.mode) state.studyMode = options.mode;
+  if (options.history !== false) recordRoute({ view: viewName, mode: viewName === "study" ? state.studyMode : undefined }, options.replace);
   document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === viewName));
   if (viewName === "home") return renderHome();
   if (viewName === "courses") return renderCourses();
@@ -1382,7 +1464,7 @@ async function route(viewName = state.view) {
   if (viewName === "settings") return renderSettings();
 }
 
-async function openFileDrawer(fileId, page = 0) {
+async function openFileDrawer(fileId, page = 0, options = {}) {
   const file = await api(`/api/file?id=${fileId}`);
   state.selectedFile = file;
   rememberFile(file);
@@ -1408,6 +1490,7 @@ async function openFileDrawer(fileId, page = 0) {
   $("#fileDrawer").hidden = false;
   const savedWidth = localStorage.getItem("studyhub.previewWidth");
   if (savedWidth) document.querySelector(".drawer-panel").style.setProperty("--studyhub-preview-width", savedWidth);
+  if (options.history !== false) recordRoute({ view: "file", fileId, page: Number(page || 0) }, options.replace);
 }
 
 async function loadFileNotes(fileId) {
@@ -1454,7 +1537,7 @@ async function openAskForFile(fileId, prompt = "") {
   state.selectedFile = file;
   setAskContext(fileAskContext(file), { prompt });
   $("#fileDrawer").hidden = true;
-  route("askgpt");
+  route("ai");
 }
 
 async function openOriginal(fileId) {
@@ -1477,7 +1560,7 @@ async function toggleStar(fileId) {
 async function copyContext(fileId) {
   const context = await api(`/api/prepare-context?file_id=${fileId}&q=${encodeURIComponent($("#askPrompt")?.value || "")}`);
   await navigator.clipboard.writeText(JSON.stringify(context, null, 2));
-  toast("Context copied");
+  toast("Source details copied");
 }
 
 async function askAboutFile() {
@@ -1520,7 +1603,7 @@ function formatSource(source) {
 async function previewWeekWithGpt() {
   const course = courseById(state.selectedCourseId);
   setAskContext({ course: course?.code, courseId: course?.id, week: state.selectedWeek }, { prompt: "帮我预习这一周的内容。", scope: "week" });
-  route("askgpt");
+  route("ai");
 }
 
 async function loadPracticeQuestions() {
@@ -1547,7 +1630,12 @@ function questionCard(row) {
         <button class="button secondary" data-preview="${row.source_file_id}">Open Source File</button>
         <button class="button secondary" data-ask-question="${row.id}" data-source-file="${row.source_file_id}" data-course-code="${escapeHtml(row.course_code)}" data-week-label="${escapeHtml(row.week_label || "")}" data-exercise-type="${escapeHtml(row.exercise_type || "")}" data-question-number="${escapeHtml(row.question_number || "")}" data-filename="${escapeHtml(row.filename || "")}">Ask AI</button>
         <button class="button secondary" data-ask-question="${row.id}" data-source-file="${row.source_file_id}" data-course-code="${escapeHtml(row.course_code)}" data-week-label="${escapeHtml(row.week_label || "")}" data-exercise-type="${escapeHtml(row.exercise_type || "")}" data-question-number="${escapeHtml(row.question_number || "")}" data-filename="${escapeHtml(row.filename || "")}" data-question-prompt="Check my answer">Check with AI</button>
-        <button class="button secondary" data-context="${row.source_file_id}">Copy Source Info</button>
+        <details class="row-more">
+          <summary>More</summary>
+          <div>
+            <button class="button secondary" data-context="${row.source_file_id}">Copy source details</button>
+          </div>
+        </details>
       </div>
     </article>
   `;
@@ -1626,12 +1714,12 @@ document.addEventListener("click", async (event) => {
   }
   if (target.dataset.askCourse) {
     setAskContext(currentCourseContext(Number(target.dataset.askCourse)), { scope: "course" });
-    route("askgpt");
+    route("ai");
     return;
   }
   if (target.dataset.askWeek) {
     setAskContext(currentWeekContext(Number(target.dataset.askWeek), target.dataset.weekLabel), { scope: "week" });
-    route("askgpt");
+    route("ai");
     return;
   }
   if (target.dataset.askFile) {
@@ -1651,7 +1739,7 @@ document.addEventListener("click", async (event) => {
       },
       { scope: "question", prompt: target.dataset.questionPrompt || "Explain the question" },
     );
-    route("askgpt");
+    route("ai");
     return;
   }
   if (target.dataset.openConversation) {
@@ -1713,7 +1801,7 @@ document.addEventListener("click", async (event) => {
   if (target.dataset.view) return route(target.dataset.view);
   if (target.dataset.course && !target.dataset.week) return renderCourse(Number(target.dataset.course));
   if (target.dataset.week) return renderWeek(Number(target.dataset.course), target.dataset.week);
-  if (target.dataset.preview) return openFileDrawer(Number(target.dataset.preview), Number(target.dataset.page || 0));
+  if (target.dataset.preview) return route("file", { fileId: Number(target.dataset.preview), page: Number(target.dataset.page || 0) });
   if (target.dataset.open) return openOriginal(Number(target.dataset.open));
   if (target.dataset.star) return toggleStar(Number(target.dataset.star));
   if (target.dataset.context) return copyContext(Number(target.dataset.context));
@@ -1721,6 +1809,9 @@ document.addEventListener("click", async (event) => {
 
 $("#closeDrawer").addEventListener("click", () => {
   $("#fileDrawer").hidden = true;
+  if (window.location.hash.startsWith("#/file/") && state.selectedFile?.course_id && state.selectedFile?.week_label) {
+    recordRoute({ view: "week", courseId: Number(state.selectedFile.course_id), week: state.selectedFile.week_label }, true);
+  }
 });
 $("#closeHistory").addEventListener("click", () => {
   $("#historyDrawer").hidden = true;
@@ -1744,7 +1835,7 @@ $("#askFileFull").addEventListener("click", () => state.selectedFile && openAskF
 $("#toggleAiExpanded").addEventListener("click", () => {
   const panel = document.querySelector(".drawer-panel");
   panel.classList.toggle("ai-expanded");
-  $("#toggleAiExpanded").textContent = panel.classList.contains("ai-expanded") ? "Compact AI" : "Expand AI";
+  $("#toggleAiExpanded").textContent = panel.classList.contains("ai-expanded") ? "Compact view" : "Split preview + AI";
 });
 $("#starFile").addEventListener("click", () => state.selectedFile && toggleStar(state.selectedFile.id));
 $("#copyContext").addEventListener("click", () => state.selectedFile && copyContext(state.selectedFile.id));
@@ -1787,19 +1878,28 @@ document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "a") {
     event.preventDefault();
     setAiMode(state.ask.mode === "focus" ? "compact" : "focus");
-    route("askgpt");
+    route("ai");
   }
   if (event.key === "Escape") {
     if (!$("#historyDrawer").hidden) $("#historyDrawer").hidden = true;
     else if (state.ask.mode === "focus") {
       setAiMode("compact");
-      route("askgpt");
+      route("ai");
     }
   }
 });
 
 loadBase()
-  .then(() => route("home"))
+  .then(async () => {
+    appLoaded = true;
+    if (!window.location.hash) history.replaceState({ studyhub: true, view: "home" }, "", routeHash({ view: "home" }));
+    await restoreRouteFromLocation();
+  })
   .catch((error) => {
     view.innerHTML = empty(error.message);
   });
+
+window.addEventListener("popstate", () => {
+  if (!appLoaded) return;
+  restoreRouteFromLocation();
+});

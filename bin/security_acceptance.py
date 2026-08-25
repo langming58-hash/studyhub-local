@@ -323,6 +323,13 @@ def main() -> int:
         def nosniff(headers: dict[str, str]) -> bool:
             return headers.get("x-content-type-options", "").lower() == "nosniff"
 
+        def same_origin_frame_only(headers: dict[str, str]) -> bool:
+            return (
+                headers.get("x-frame-options", "").lower() == "sameorigin"
+                and "frame-ancestors 'self'" in headers.get("content-security-policy", "").lower()
+                and "script-src 'none'" in headers.get("content-security-policy", "").lower()
+            )
+
         def not_active_inline(headers: dict[str, str]) -> bool:
             content_type = headers.get("content-type", "").lower()
             disposition = headers.get("content-disposition", "").lower()
@@ -349,6 +356,7 @@ def main() -> int:
             "htm_preview_isolation": htm_status == 200 and text_plain(htm_headers) and b"&lt;img" in htm_body and b"<img" not in htm_body,
             "svg_active_content_isolation": svg_status == 200 and text_plain(svg_headers) and "image/svg+xml" not in svg_headers.get("content-type", "").lower() and b"&lt;svg" in svg_body,
             "preview_mime_sniffing_protection": nosniff(html_headers) and nosniff(htm_headers) and nosniff(svg_headers),
+            "preview_same_origin_frame_only": same_origin_frame_only(html_headers) and same_origin_frame_only(htm_headers) and same_origin_frame_only(svg_headers),
             "active_preview_content_disposition_safe": not_active_inline(html_headers) and not_active_inline(htm_headers) and not_active_inline(svg_headers),
             "universal_host_validation_rejects_hostile_host": all(not server.request_host_is_loopback(host) for host in hostile_hosts),
             "get_hostile_host_rejection": hostile_get_rejected,

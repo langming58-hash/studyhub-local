@@ -8,5 +8,8 @@ The derivative of a function at a point measures the instantaneous rate of chang
 Power rule:
 If f(x) = x^n, then f'(x) = n x^(n-1) for constant n.
 
+Rendered math example:
+$f'(x)=n x^{n-1}$ and $$\frac{d}{dx}x^4 = 4x^3$$.
+
 Source note:
 This is synthetic demo content created for software testing.

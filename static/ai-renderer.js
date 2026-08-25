@@ -236,6 +236,24 @@
           continue;
         }
       }
+      if (text.startsWith("\\[", i)) {
+        const end = text.indexOf("\\]", i + 2);
+        if (end !== -1) {
+          flushText();
+          pieces.push(renderMath(text.slice(i + 2, end), false));
+          i = end + 2;
+          continue;
+        }
+      }
+      if (text.startsWith("$$", i) && !isEscaped(text, i)) {
+        const end = text.indexOf("$$", i + 2);
+        if (end !== -1) {
+          flushText();
+          pieces.push(renderMath(text.slice(i + 2, end), false));
+          i = end + 2;
+          continue;
+        }
+      }
       if (text[i] === "$" && canOpenDollarMath(text, i)) {
         const end = findClosingDollar(text, i);
         if (end !== -1) {

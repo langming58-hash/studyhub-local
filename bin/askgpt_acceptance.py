@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synthetic Ask GPT acceptance checks. Uses no real course material or OpenAI calls."""
+"""Synthetic Ask AI acceptance checks. Uses no real course material or OpenAI calls."""
 
 from __future__ import annotations
 

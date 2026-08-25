@@ -20,6 +20,8 @@ def load_server(tmp: Path):
     assert spec and spec.loader
     sys.modules[spec.name] = server
     spec.loader.exec_module(server)
+    os.environ.pop("OPENAI_API_KEY", None)
+    os.environ.pop("OPENAI_VECTOR_STORE_ID", None)
     server.DATA_DIR = tmp / "data"
     server.CACHE_DIR = tmp / "cache"
     server.TEXT_CACHE_DIR = server.CACHE_DIR / "text"

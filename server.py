@@ -1717,6 +1717,7 @@ def api_preflight(conn: sqlite3.Connection) -> dict[str, Any]:
     health = api_health(conn)
     items: list[dict[str, str]] = []
     file_count = int(health["filesIndexed"] or 0)
+    pdf_count = conn.execute("SELECT COUNT(*) AS c FROM files WHERE active=1 AND lower(extension)='.pdf'").fetchone()["c"]
     root_exists = bool(health["studyLibraryConnected"])
     openai_configured = bool(os.environ.get("OPENAI_API_KEY"))
     database_parent = DB_PATH.expanduser().resolve().parent
@@ -1777,7 +1778,7 @@ def api_preflight(conn: sqlite3.Connection) -> dict[str, Any]:
                 "Move the app to a writable folder or fix folder permissions, then restart.",
             )
         )
-    if health["pdfTextExtraction"] == "Unavailable":
+    if health["pdfTextExtraction"] == "Unavailable" and pdf_count:
         items.append(
             preflight_item(
                 "pdf_text_missing",
@@ -1787,6 +1788,17 @@ def api_preflight(conn: sqlite3.Connection) -> dict[str, Any]:
                 "PDF preview still works. Ask AI may not understand PDFs whose text has not been read.",
                 "Install Poppler, then scan again.",
                 "Expected command-line tools: pdftotext and pdfinfo.",
+            )
+        )
+    if not (KATEX_DIST_DIR / "katex.min.js").exists():
+        items.append(
+            preflight_item(
+                "math_renderer_missing",
+                "warning",
+                "Math rendering files are missing",
+                "The local JavaScript math renderer dependency was not found.",
+                "AI explanations can still load, but formulas may appear as raw LaTeX text.",
+                "Run npm install, then restart StudyHub.",
             )
         )
     if not openai_configured:
@@ -2946,14 +2958,21 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         log_event("http", "request handled")
 
     def end_headers(self) -> None:
+        request_path = urllib.parse.urlparse(getattr(self, "path", "")).path
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("X-Frame-Options", "DENY")
-        self.send_header(
-            "Content-Security-Policy",
-            "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none';",
-        )
-        request_path = urllib.parse.urlparse(getattr(self, "path", "")).path
+        if request_path.startswith("/preview/"):
+            self.send_header("X-Frame-Options", "SAMEORIGIN")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'self';",
+            )
+        else:
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none';",
+            )
         if request_path.startswith("/api/") or request_path == "/mcp":
             self.send_header("Cache-Control", "no-store")
         super().end_headers()
@@ -3535,7 +3554,11 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Disposition", f"inline; filename*=UTF-8''{urllib.parse.quote(path.name + '.txt')}")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; frame-ancestors 'self'",
+        )
         self.end_headers()
         self.wfile.write(body)
 
