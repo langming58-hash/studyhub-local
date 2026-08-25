@@ -53,6 +53,7 @@ git clone https://github.com/langming58-hash/studyhub-local.git
 cd studyhub-local
 cp .env.example .env.local
 npm install
+python3 -m pip install -r requirements.txt
 npm run dev
 ```
 
@@ -60,7 +61,7 @@ Open [http://127.0.0.1:8765](http://127.0.0.1:8765).
 
 Demo Mode is enabled by default. No OpenAI API key is required. You can browse the synthetic demo courses, search materials, inspect practice records, and explore the interface before connecting your own local study folder.
 
-`npm install` is intentionally lightweight. The app currently uses Python standard-library backend code and static frontend files.
+`npm install` is intentionally lightweight. The app uses Python standard-library backend code and static frontend files; `requirements.txt` adds the CA bundle used for verified OpenAI HTTPS requests.
 
 ## Demo Mode
 

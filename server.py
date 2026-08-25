@@ -16,10 +16,12 @@ import shutil
 import secrets
 import socket
 import sqlite3
+import ssl
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -31,6 +33,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
+
+try:
+    import certifi
+except ImportError:
+    certifi = None
 
 APP_NAME = "StudyHub Local"
 APP_ROOT = Path(__file__).resolve().parent
@@ -2210,6 +2217,40 @@ def wants_generated_question(prompt: str) -> bool:
     return bool(re.search(r"\b(practice question|new question|give me .*question|generate .*question|出.*题|练习题)\b", prompt, re.IGNORECASE))
 
 
+def openai_ssl_context() -> ssl.SSLContext:
+    if certifi is not None:
+        return ssl.create_default_context(cafile=certifi.where())
+    return ssl.create_default_context()
+
+
+def openai_urlopen(req: urllib.request.Request, timeout: int = 60):
+    return urllib.request.urlopen(req, timeout=timeout, context=openai_ssl_context())
+
+
+def openai_error_kind(exc: BaseException) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        return "api_error"
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    text = f"{type(reason).__name__}: {reason}"
+    if isinstance(reason, ssl.SSLCertVerificationError) or "CERTIFICATE_VERIFY_FAILED" in text or "certificate verify failed" in text:
+        return "ssl_certificate"
+    if isinstance(exc, urllib.error.URLError):
+        return "network"
+    return "unknown"
+
+
+def openai_error_summary(exc: BaseException) -> str:
+    kind = openai_error_kind(exc)
+    if kind == "ssl_certificate":
+        return "OpenAI is configured, but the HTTPS request failed certificate verification."
+    if kind == "network":
+        return "OpenAI is configured, but the HTTPS request failed due to a network error."
+    if kind == "api_error":
+        status = getattr(exc, "code", "unknown")
+        return f"OpenAI is configured, but the API returned HTTP {status}."
+    return "OpenAI is configured, but the request failed."
+
+
 def openai_responses_request(
     prompt: str,
     chunks: list[dict[str, Any]],
@@ -2287,7 +2328,7 @@ def openai_responses_request(
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with openai_urlopen(req, timeout=60) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     pieces: list[str] = []
     for item in data.get("output", []):
@@ -2309,7 +2350,7 @@ def openai_json_request(method: str, path: str, payload: dict[str, Any] | None =
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method=method,
     )
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with openai_urlopen(req, timeout=60) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -2344,7 +2385,7 @@ def openai_delete(path: str) -> dict[str, Any]:
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="DELETE",
     )
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with openai_urlopen(req, timeout=60) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -2370,7 +2411,7 @@ def openai_upload_file(path: Path) -> dict[str, Any]:
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with openai_urlopen(req, timeout=120) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -2484,7 +2525,12 @@ def sync_openai_vector_store(limit: int = 20) -> dict[str, Any]:
     }
 
 
-def local_bridge_response(prompt: str, chunks: list[dict[str, Any]], questions: list[dict[str, Any]] | None = None) -> str:
+def local_bridge_response(
+    prompt: str,
+    chunks: list[dict[str, Any]],
+    questions: list[dict[str, Any]] | None = None,
+    intro: str | None = None,
+) -> str:
     excerpts = []
     for question in (questions or [])[:2]:
         excerpts.append(
@@ -2502,12 +2548,8 @@ def local_bridge_response(prompt: str, chunks: list[dict[str, Any]], questions: 
     for chunk in chunks[:3]:
         excerpt = re.sub(r"\s+", " ", chunk["text"]).strip()[:700]
         excerpts.append(f"{chunk['filename']} ({chunk.get('source_location') or 'source'}): {excerpt}")
-    return (
-        "OpenAI is not configured, so this is a local source-backed preview rather than a GPT answer.\n\n"
-        + "\n\n".join(excerpts)
-        + "\n\nSources\n"
-        + format_sources(chunks)
-    )
+    heading = intro or "OpenAI is not configured, so this is a local source-backed preview rather than a GPT answer."
+    return heading + "\n\n" + "\n\n".join(excerpts) + "\n\nSources\n" + format_sources(chunks)
 
 
 class StudyHubHandler(BaseHTTPRequestHandler):
@@ -3053,11 +3095,12 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 response = openai_responses_request(prompt, chunks, context, questions=questions, solutions=solutions)
                 status = "openai"
             except Exception as exc:
+                intro = f"{openai_error_summary(exc)} Falling back to local indexed excerpts."
                 response = (
-                    "OpenAI request failed, so I am falling back to local indexed excerpts.\n\n"
-                    f"{local_bridge_response(prompt, chunks, questions)}"
+                    f"{local_bridge_response(prompt, chunks, questions, intro=intro)}\n\n"
+                    f"OpenAI error category: {openai_error_kind(exc)}"
                 )
-                log_event("openai_error", type(exc).__name__)
+                log_event("openai_error", f"{openai_error_kind(exc)}:{type(exc).__name__}")
                 status = "openai_error_local_fallback"
         else:
             response = local_bridge_response(prompt, chunks, questions)

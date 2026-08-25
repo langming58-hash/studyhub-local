@@ -6,14 +6,18 @@ from __future__ import annotations
 import importlib.util
 import os
 import sqlite3
+import ssl
 import sys
 import tempfile
+import urllib.error
 from pathlib import Path
 
 
 def load_server(tmp: Path):
     os.environ["STUDY_LIBRARY_PATH"] = str(tmp / "StudyLibrary")
     os.environ["DATABASE_PATH"] = str(tmp / "studyhub.sqlite")
+    os.environ["OPENAI_API_KEY"] = ""
+    os.environ["OPENAI_VECTOR_STORE_ID"] = ""
     server_path = Path(__file__).resolve().parents[1] / "server.py"
     spec = importlib.util.spec_from_file_location("studyhub_server_askgpt_test", server_path)
     server = importlib.util.module_from_spec(spec)
@@ -123,6 +127,15 @@ def main() -> int:
         else:
             os.environ["OPENAI_VECTOR_STORE_ID"] = old_vs
 
+        ssl_error = urllib.error.URLError(ssl.SSLCertVerificationError("certificate verify failed: unable to get local issuer certificate"))
+        network_error = urllib.error.URLError("temporary name resolution failure")
+        api_error = urllib.error.HTTPError("https://api.openai.com/v1/responses", 401, "Unauthorized", hdrs=None, fp=None)
+        ssl_fallback = server.local_bridge_response(
+            "Explain",
+            [{"filename": "Lecture_1.txt", "source_location": "p.1", "text": "Synthetic excerpt", "course_code": "TEST1001", "week_label": "Week 01"}],
+            intro=f"{server.openai_error_summary(ssl_error)} Falling back to local indexed excerpts.",
+        )
+
         checks = {
             "test_a_lecture_answer": "synthetic multiplier equals 2" in test_a["response"] and test_a["sources"][0]["course_code"] == "TEST1001",
             "test_b_real_teacher_question": q_count >= 1 and test_b["questions"][0]["question_number"] == "Q1" and "Teacher-provided question" in test_b["response"],
@@ -130,6 +143,12 @@ def main() -> int:
             "test_d_new_files_synced": stats.new_files == 3 and sync1["synced"] == 3,
             "test_d_unchanged_not_resynced": sync2["synced"] == 0 and sync2["unchanged"] == 3,
             "test_d_changed_stale_removed": sync3["synced"] == 1 and sync3["staleRemoved"] == 1 and bool(calls["deleted"]),
+            "openai_error_ssl_classified": server.openai_error_kind(ssl_error) == "ssl_certificate"
+            and "certificate verification" in server.openai_error_summary(ssl_error),
+            "openai_error_network_classified": server.openai_error_kind(network_error) == "network",
+            "openai_error_api_classified": server.openai_error_kind(api_error) == "api_error",
+            "configured_openai_fallback_not_misreported": "OpenAI is not configured" not in ssl_fallback
+            and "OpenAI is configured" in ssl_fallback,
         }
         for name, ok in checks.items():
             print(f"{name}: {'PASS' if ok else 'FAIL'}")
