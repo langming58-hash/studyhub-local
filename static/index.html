@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <div class="app-shell">
+    <div class="app-shell" id="appShell">
       <aside class="sidebar">
         <div class="brand">
           <div class="brand-mark">SH</div>
@@ -15,31 +15,27 @@
             <strong>StudyHub Local</strong>
             <span id="libraryState">Checking library</span>
           </div>
+          <button class="icon-button sidebar-toggle" id="sidebarToggle" aria-label="Collapse sidebar" title="Collapse sidebar">‹</button>
         </div>
-        <nav class="nav">
-          <button class="nav-item active" data-view="home">⌂ <span>Home</span></button>
-          <button class="nav-item" data-view="thisWeek">◷ <span>This Week</span></button>
-          <button class="nav-item" data-view="courses">▦ <span>Courses</span></button>
-          <button class="nav-item" data-view="search">⌕ <span>Search</span></button>
-          <button class="nav-item" data-view="askgpt">? <span>Ask GPT</span></button>
-          <button class="nav-item" data-view="starred">★ <span>Starred</span></button>
-          <button class="nav-item" data-view="practice">✓ <span>Practice</span></button>
-          <button class="nav-item" data-view="wrong">! <span>Wrong Questions</span></button>
-          <button class="nav-item" data-view="exam">◇ <span>Exam Review</span></button>
-          <button class="nav-item" data-view="settings">⚙ <span>Settings</span></button>
+        <nav class="nav" aria-label="Primary">
+          <button class="nav-item active" data-view="home" title="Home">⌂ <span>Home</span></button>
+          <button class="nav-item" data-view="courses" title="Courses">▦ <span>Courses</span></button>
+          <button class="nav-item" data-view="search" title="Search">⌕ <span>Search</span></button>
+          <button class="nav-item" data-view="study" title="Study">✓ <span>Study</span></button>
+          <button class="nav-item" data-view="ai" title="AI">✦ <span>AI</span></button>
+          <button class="nav-item nav-settings" data-view="settings" title="Settings">⚙ <span>Settings</span></button>
         </nav>
-        <div class="course-list" id="courseList"></div>
       </aside>
 
       <main class="main">
         <header class="topbar">
           <div>
-            <p class="eyebrow">Private localhost study manager</p>
+            <p class="eyebrow" id="pageEyebrow">Private localhost study manager</p>
             <h1 id="pageTitle">Home</h1>
           </div>
           <div class="top-actions">
-            <button id="uploadBtn" class="button secondary">＋ Add Material</button>
-            <button id="scanBtn" class="button primary">↻ Scan Library</button>
+            <button id="uploadBtn" class="button secondary" hidden>＋ Add Material</button>
+            <button id="scanBtn" class="button secondary" hidden>↻ Scan Library</button>
           </div>
         </header>
 

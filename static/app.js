@@ -10,6 +10,9 @@ const state = {
   weekFiles: [],
   weekFilter: "all",
   weekSort: "section",
+  studyMode: "practice",
+  searchFiltersOpen: false,
+  sidebarCollapsed: localStorage.getItem("studyhub.sidebarCollapsed") === "true",
   ask: {
     context: {},
     scope: "course",
@@ -48,8 +51,34 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-function setTitle(title) {
+function setTitle(title, eyebrow = "Private localhost study manager") {
   $("#pageTitle").textContent = title;
+  const label = $("#pageEyebrow");
+  if (label) label.textContent = eyebrow;
+  setPageActions(false);
+}
+
+function setPageActions(visible) {
+  const upload = $("#uploadBtn");
+  const scan = $("#scanBtn");
+  if (upload) upload.hidden = !visible;
+  if (scan) scan.hidden = !visible;
+}
+
+function applySidebarState() {
+  $("#appShell")?.classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
+  const toggle = $("#sidebarToggle");
+  if (toggle) {
+    toggle.textContent = state.sidebarCollapsed ? "›" : "‹";
+    toggle.setAttribute("aria-label", state.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar");
+    toggle.title = state.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar";
+  }
+}
+
+function setSidebarCollapsed(collapsed) {
+  state.sidebarCollapsed = collapsed;
+  localStorage.setItem("studyhub.sidebarCollapsed", collapsed ? "true" : "false");
+  applySidebarState();
 }
 
 function toast(message) {
@@ -373,6 +402,19 @@ function latestWeek(course) {
   return weeks.at(-1) || weeksFor(course.id)[0];
 }
 
+function fileMetaLine(file = {}) {
+  return [courseLabel(file), file.week_label, file.category || file.exercise_type, file.source_label || file.source, formatSize(file.size)]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function rememberFile(file) {
+  if (!file?.id) return;
+  localStorage.setItem("studyhub.lastFileId", String(file.id));
+  localStorage.setItem("studyhub.lastFileName", file.filename || "");
+  localStorage.setItem("studyhub.lastFileMeta", fileMetaLine(file));
+}
+
 function extensionIcon(ext = "") {
   const value = ext.toLowerCase();
   if (value === ".pdf") return "PDF";
@@ -384,6 +426,28 @@ function extensionIcon(ext = "") {
 }
 
 function fileCard(file) {
+  const suspicious = file.suspicious ? `<span class="chip warn">${escapeHtml(file.suspicious)}</span>` : "";
+  const star = file.star_id ? "★" : "☆";
+  return `
+    <article class="file-row">
+      <button class="file-row-main" data-preview="${file.id}" title="${escapeHtml(file.filename)}">
+        <span class="file-badge">${extensionIcon(file.extension)}</span>
+        <span class="file-row-text">
+          <strong class="file-name">${escapeHtml(file.filename)}</strong>
+          <span class="muted">${escapeHtml(fileMetaLine(file))}</span>
+          ${suspicious}
+        </span>
+      </button>
+      <div class="file-row-actions">
+        <button class="button secondary" data-ask-file="${file.id}">Ask AI</button>
+        <button class="icon-button" data-star="${file.id}" aria-label="Star file" title="Star">${star}</button>
+        <button class="button ghost" data-open="${file.id}">Open Original</button>
+      </div>
+    </article>
+  `;
+}
+
+function legacyFileCard(file) {
   const officialClass = file.is_official ? "official" : "";
   const suspicious = file.suspicious ? `<span class="chip warn">${escapeHtml(file.suspicious)}</span>` : "";
   const star = file.star_id ? "★" : "☆";
@@ -409,8 +473,8 @@ function fileCard(file) {
       </div>
       <div class="file-actions">
         <button class="button secondary" data-preview="${file.id}">Preview</button>
-        <button class="button secondary" data-ask-file="${file.id}">Ask GPT</button>
-        <button class="button secondary" data-open="${file.id}">Open</button>
+        <button class="button secondary" data-ask-file="${file.id}">Ask AI</button>
+        <button class="button secondary" data-open="${file.id}">Open Original</button>
         <button class="button secondary" data-context="${file.id}">Context</button>
       </div>
     </article>
@@ -428,9 +492,9 @@ async function loadBase() {
     }),
   );
   $("#libraryState").textContent = state.health.studyLibraryConnected
-    ? `${state.health.filesIndexed} indexed files`
+    ? "Library ready"
     : "Library missing";
-  renderCourseList();
+  applySidebarState();
   populateUploadCourses();
   if (state.ask.conversationId && !state.ask.messages.length) {
     try {
@@ -446,22 +510,7 @@ async function loadBase() {
   }
 }
 
-function renderCourseList() {
-  $("#courseList").innerHTML = state.courses
-    .map((course) => {
-      const week = latestWeek(course);
-      return `
-        <div class="course-pill-row">
-          <button class="course-pill" data-course="${course.id}">
-            <strong>${escapeHtml(courseLabel(course))}</strong>
-            <span>${course.file_count || 0} files · ${escapeHtml(week?.week_label || "No week")}</span>
-          </button>
-          <button class="mini-ask" data-ask-course="${course.id}">Ask</button>
-        </div>
-      `;
-    })
-    .join("");
-}
+function renderCourseList() {}
 
 function populateUploadCourses() {
   $("#uploadCourse").innerHTML = state.courses
@@ -474,34 +523,56 @@ function populateUploadCourses() {
 }
 
 async function renderHome() {
-  setTitle("Home");
+  setTitle("Home", "Study-first workspace");
   const recent = await api("/api/recent");
   const wrong = await api("/api/wrong-questions");
-  const totalCourses = state.courses.length;
-  const totalFiles = state.health?.filesIndexed || 0;
-  const suspicious = state.health?.suspiciousFiles || 0;
+  const lastFileId = Number(localStorage.getItem("studyhub.lastFileId") || 0);
+  const continueFile = recent.find((file) => Number(file.id) === lastFileId) || recent[0];
+  const activeCourses = state.courses.filter((course) => Number(course.file_count || 0) > 0);
   view.innerHTML = `
-    <section class="focus-strip">
-      ${state.courses.map(focusCourseCard).join("")}
-    </section>
-    <div class="grid cols-3">
-      <section class="metric-card"><p class="muted">Courses</p><div class="metric">${totalCourses}</div></section>
-      <section class="metric-card"><p class="muted">Indexed files</p><div class="metric">${totalFiles}</div></section>
-      <section class="metric-card"><p class="muted">Needs review</p><div class="metric">${suspicious}</div></section>
-    </div>
-    <section class="section-block">
-      <div class="section-head">
-        <h2>Recent Files</h2>
-        <button class="button secondary" data-view="search">Search Library</button>
+    <section class="continue-panel">
+      <div>
+        <p class="eyebrow">Continue</p>
+        <h2>${escapeHtml(continueFile?.filename || "Choose a study material")}</h2>
+        <p class="muted">${escapeHtml(continueFile ? fileMetaLine(continueFile) : "Open a recent file, course, or week to start.")}</p>
       </div>
-      <div class="grid">${recent.length ? recent.map(fileCard).join("") : empty("No indexed files yet.")}</div>
-    </section>
-    <section class="section-block">
-      <div class="section-head">
-        <h2>Review Queue</h2>
-        <button class="button secondary" data-view="wrong">Open Queue</button>
+      <div class="continue-actions">
+        ${
+          continueFile
+            ? `<button class="button primary" data-preview="${continueFile.id}">Open latest</button><button class="button secondary" data-ask-file="${continueFile.id}">Ask AI</button>`
+            : `<button class="button primary" data-view="courses">Browse courses</button>`
+        }
       </div>
-      ${wrong.length ? `<div class="grid">${wrong.map(wrongRow).join("")}</div>` : empty("No wrong-question records yet.")}
+    </section>
+    <section class="section-block quiet-section">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Latest Material</p>
+          <h2>Courses</h2>
+        </div>
+        <button class="button secondary" data-view="courses">View all</button>
+      </div>
+      <div class="course-list-main">${activeCourses.length ? activeCourses.slice(0, 8).map(courseSummary).join("") : empty("No active courses in this library.")}</div>
+    </section>
+    <section class="section-block quiet-section">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Recent</p>
+          <h2>Files</h2>
+        </div>
+        <button class="button secondary" data-view="search">Search</button>
+      </div>
+      <div class="file-list">${recent.length ? recent.slice(0, 8).map(fileCard).join("") : empty("No indexed files yet.")}</div>
+    </section>
+    <section class="section-block quiet-section">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Review</p>
+          <h2>Study queue</h2>
+        </div>
+        <button class="button secondary" data-view="study" data-study-mode="wrong">Open Study</button>
+      </div>
+      ${wrong.length ? `<div class="study-list">${wrong.slice(0, 4).map(wrongRow).join("")}</div>` : empty("No wrong-question records yet.")}
     </section>
   `;
 }
@@ -529,32 +600,59 @@ function focusCourseCard(course) {
 function courseSummary(course) {
   const weeks = weeksFor(course.id);
   const done = weeks.filter((week) => week.has_materials).length;
+  const week = latestWeek(course);
   return `
-    <article class="file-card">
-      <header>
-        <div>
-          <div class="file-name">${escapeHtml(courseLabel(course))}</div>
-          <p class="muted">${escapeHtml(course.name)}</p>
-        </div>
-      </header>
-      <div class="chips">
-        <span class="chip">${course.file_count || 0} files</span>
-        <span class="chip">${done}/${weeks.length} weeks with files</span>
-        <span class="chip">latest Week ${String(course.latest_week || "--").padStart(2, "0")}</span>
+    <article class="course-row">
+      <button class="course-row-main" data-course="${course.id}">
+        <strong>${escapeHtml(courseLabel(course))}</strong>
+        <span>${escapeHtml(course.name || "")}</span>
+      </button>
+      <div class="course-row-meta">
+        <span>${course.file_count || 0} files</span>
+        <span>${done}/${weeks.length} weeks</span>
+        <span>${escapeHtml(week?.week_label || "No week")}</span>
       </div>
-      <div class="file-actions">
-        <button class="button secondary" data-course="${course.id}">Open Course</button>
-        <button class="button secondary" data-ask-course="${course.id}">Ask GPT</button>
+      <div class="course-row-actions">
+        ${week ? `<button class="button secondary" data-course="${course.id}" data-week="${escapeHtml(week.week_label)}">Latest week</button>` : ""}
+        <button class="button ghost" data-ask-course="${course.id}">Ask AI</button>
       </div>
     </article>
   `;
 }
 
 async function renderCourses() {
-  setTitle("Courses");
+  setTitle("Courses", "Canonical study library");
+  setPageActions(true);
+  const activeCourses = state.courses.filter((course) => Number(course.file_count || 0) > 0);
+  const inactive = state.courses.length - activeCourses.length;
+  const starred = await api("/api/starred");
   view.innerHTML = `
-    <section class="section-block">
-      <div class="grid cols-2">${state.courses.map(courseSummary).join("")}</div>
+    <section class="library-hero">
+      <div>
+        <p class="eyebrow">Local source of truth</p>
+        <h2>Courses and weeks</h2>
+        <p class="muted">Browse official files by course, week, material type, and exercise type.</p>
+      </div>
+      <div class="library-actions">
+        <button class="button secondary" data-view="search">Search library</button>
+        <button class="button secondary" data-open-upload="1">Add Material</button>
+        <button class="button primary" data-run-scan="1">Scan Library</button>
+      </div>
+    </section>
+    ${inactive ? `<div class="notice compact">Hidden ${inactive} inactive empty course${inactive === 1 ? "" : "s"} from the active library view.</div>` : ""}
+    <section class="section-block quiet-section">
+      <div class="section-head">
+        <h2>Active Courses</h2>
+        <span class="muted">${activeCourses.length} course${activeCourses.length === 1 ? "" : "s"}</span>
+      </div>
+      <div class="course-list-main">${activeCourses.length ? activeCourses.map(courseSummary).join("") : empty("No active courses in this library.")}</div>
+    </section>
+    <section class="section-block quiet-section">
+      <div class="section-head">
+        <h2>Starred Files</h2>
+        <button class="button secondary" data-view="search" data-show-starred="1">Find more</button>
+      </div>
+      <div class="file-list">${starred.length ? starred.slice(0, 8).map(fileCard).join("") : empty("No starred files yet.")}</div>
     </section>
   `;
 }
@@ -586,37 +684,39 @@ async function renderThisWeek() {
 async function renderCourse(courseId) {
   const course = courseById(courseId);
   state.selectedCourseId = courseId;
-  setTitle(course ? courseLabel(course) : "Course");
+  setTitle(course ? courseLabel(course) : "Course", "Course library");
   const weeks = weeksFor(courseId);
   const files = await api(`/api/files?course_id=${courseId}`);
-  const bySection = countBy(files, (file) => file.section || "Other");
+  const activeWeeks = weeks.filter((week) => week.has_materials);
   view.innerHTML = `
-    <section class="course-hero">
+    <section class="course-header">
       <div>
-        <p class="muted">${escapeHtml(courseLabel(course))}</p>
+        <p class="eyebrow">${escapeHtml(courseLabel(course))}</p>
         <h2>${escapeHtml(course?.name || "")}</h2>
-      </div>
-      <div class="mini-bars">
-        ${Object.entries(bySection).map(([label, count]) => `<span><b>${count}</b>${escapeHtml(label)}</span>`).join("")}
+        <p class="muted">${files.length} files · ${activeWeeks.length}/${weeks.length} weeks with material</p>
       </div>
       <div class="course-actions">
-        <button class="button secondary" data-ask-course="${courseId}">Ask GPT about this course</button>
+        <button class="button secondary" data-ask-course="${courseId}">Ask AI about course</button>
+        <button class="button secondary" data-view="courses">All courses</button>
       </div>
     </section>
-    <section class="section-block">
-      <h2>Weeks</h2>
-      <div class="week-grid">
+    <section class="section-block quiet-section">
+      <div class="section-head">
+        <h2>Weeks</h2>
+        <span class="muted">${activeWeeks.length} active</span>
+      </div>
+      <div class="week-list">
         ${weeks.map((week) => `
-          <button class="week-tile ${week.has_materials ? "has-materials" : ""}" data-week="${week.week_label}" data-course="${courseId}">
+          <button class="week-row ${week.has_materials ? "has-materials" : ""}" data-week="${week.week_label}" data-course="${courseId}">
             <strong>${escapeHtml(week.week_label)}</strong>
             <span class="muted">${week.file_count || 0} files</span>
           </button>
         `).join("")}
       </div>
     </section>
-    <section class="section-block">
+    <section class="section-block quiet-section">
       <h2>All Course Files</h2>
-      <div class="grid">${files.length ? files.slice(0, 18).map(fileCard).join("") : empty("No files indexed for this course.")}</div>
+      <div class="file-list">${files.length ? files.slice(0, 24).map(fileCard).join("") : empty("No files indexed for this course.")}</div>
     </section>
   `;
 }
@@ -628,17 +728,17 @@ async function renderWeek(courseId, weekLabel) {
   state.weekFiles = await api(`/api/files?course_id=${courseId}&week=${encodeURIComponent(weekLabel)}`);
   state.weekFilter = "all";
   state.weekSort = "section";
-  setTitle(`${course?.code || "Course"} · ${weekLabel}`);
+  setTitle(`${courseLabel(course) || "Course"} · ${weekLabel}`, "Week workspace");
   view.innerHTML = `
-    <section class="section-block">
+    <section class="week-header">
       <div class="section-head">
         <div>
-          <p class="muted">${escapeHtml(course?.name || "")}</p>
+          <p class="eyebrow">${escapeHtml(course?.name || "")}</p>
           <h2>${escapeHtml(weekLabel)}</h2>
         </div>
         <div class="top-actions">
-          <button class="button secondary" id="weekPreviewGpt">Preview with GPT</button>
-          <button class="button secondary" data-ask-week="${courseId}" data-week-label="${escapeHtml(weekLabel)}">Ask GPT</button>
+          <button class="button secondary" id="weekPreviewGpt">Prepare with AI</button>
+          <button class="button secondary" data-ask-week="${courseId}" data-week-label="${escapeHtml(weekLabel)}">Ask AI</button>
           <button class="button secondary" data-course="${courseId}">Back to Course</button>
         </div>
       </div>
@@ -666,7 +766,7 @@ async function renderWeek(courseId, weekLabel) {
       </div>
     </section>
     <section id="weekBridgePreview" class="notice" hidden></section>
-    <section id="weekFiles" class="grid"></section>
+    <section id="weekFiles" class="week-file-groups"></section>
   `;
   $("#weekFilter").addEventListener("change", () => {
     state.weekFilter = $("#weekFilter").value;
@@ -694,7 +794,33 @@ function renderWeekFiles() {
     return `${a.section || ""}${a.category || ""}${a.filename}`.localeCompare(`${b.section || ""}${b.category || ""}${b.filename}`);
   });
 
-  $("#weekFiles").innerHTML = files.length ? files.map(fileCard).join("") : empty("No files match this filter.");
+  if (!files.length) {
+    $("#weekFiles").innerHTML = empty("No files match this filter.");
+    return;
+  }
+  const isExercise = (file) => file.section === "02 Exercises" || /exercise|tutorial|workshop|lab|quiz|practice/i.test(`${file.section || ""} ${file.category || ""} ${file.exercise_type || ""}`);
+  const isPersonal = (file) => /my_work|review/i.test(`${file.section || ""}`);
+  const groups = [
+    ["Course Materials", files.filter((file) => !isPersonal(file) && (file.section === "01 Course Materials" || !isExercise(file)))],
+    ["Exercises", files.filter((file) => !isPersonal(file) && isExercise(file))],
+    ["My Work / Review", files.filter(isPersonal)],
+  ];
+  $("#weekFiles").innerHTML = groups
+    .filter(([, rows]) => rows.length)
+    .map((group) => fileGroup(group[0], group[1]))
+    .join("");
+}
+
+function fileGroup(title, rows) {
+  return `
+    <section class="section-block quiet-section">
+      <div class="section-head">
+        <h2>${escapeHtml(title)}</h2>
+        <span class="muted">${rows.length} file${rows.length === 1 ? "" : "s"}</span>
+      </div>
+      <div class="file-list">${rows.map(fileCard).join("")}</div>
+    </section>
+  `;
 }
 
 function countBy(items, fn) {
@@ -706,11 +832,14 @@ function countBy(items, fn) {
 }
 
 async function renderSearch() {
-  setTitle("Search");
+  setTitle("Search", "Find source material");
   view.innerHTML = `
-    <section class="section-block sticky-tools">
-      <div class="searchbar">
-        <input id="searchInput" placeholder="Search filename or local extracted text" autofocus />
+    <section class="search-hero">
+      <div class="searchbar primary-search">
+        <input id="searchInput" placeholder="Search filenames or extracted text" autofocus />
+        <button class="button secondary" id="toggleSearchFilters">${state.searchFiltersOpen ? "Hide filters" : "Filters"}</button>
+      </div>
+      <div class="search-filters ${state.searchFiltersOpen ? "open" : ""}">
         <select id="searchCourse">
           <option value="">All courses</option>
           ${state.courses.map((course) => `<option value="${course.id}">${escapeHtml(courseLabel(course))}</option>`).join("")}
@@ -722,14 +851,26 @@ async function renderSearch() {
           <option>Lecture</option>
           <option>Tutorial</option>
           <option>Workshop</option>
+          <option>Lab</option>
+          <option>Quiz</option>
         </select>
+        <button class="button ghost" id="clearSearchFilters">Clear</button>
       </div>
     </section>
-    <section id="searchResults" class="grid"></section>
+    <section id="searchResults" class="file-list search-results"></section>
   `;
   $("#searchInput").addEventListener("input", debounce(runSearch, 220));
   $("#searchCourse").addEventListener("change", runSearch);
   $("#searchScope").addEventListener("change", runSearch);
+  $("#toggleSearchFilters").addEventListener("click", () => {
+    state.searchFiltersOpen = !state.searchFiltersOpen;
+    renderSearch();
+  });
+  $("#clearSearchFilters").addEventListener("click", () => {
+    $("#searchCourse").value = "";
+    $("#searchScope").value = "";
+    runSearch();
+  });
   await runSearch();
 }
 
@@ -737,6 +878,10 @@ async function runSearch() {
   const q = $("#searchInput")?.value || "";
   const course = $("#searchCourse")?.value || "";
   const scope = $("#searchScope")?.value || "";
+  if (!q.trim() && !course && !scope) {
+    $("#searchResults").innerHTML = empty("Search for a topic, filename, tutorial, lab, or phrase from extracted text.");
+    return;
+  }
   const results = await api(`/api/search?q=${encodeURIComponent(q)}&course_id=${course}&scope=${encodeURIComponent(scope)}`);
   $("#searchResults").innerHTML = results.length ? results.map(fileCard).join("") : empty("No matching files.");
 }
@@ -958,15 +1103,55 @@ function debounce(fn, wait) {
 }
 
 async function renderStarred() {
-  setTitle("Starred");
+  setTitle("Starred", "Saved study material");
   const rows = await api("/api/starred");
-  view.innerHTML = `<section class="section-block"><div class="grid">${rows.length ? rows.map(fileCard).join("") : empty("No starred files yet.")}</div></section>`;
+  view.innerHTML = `<section class="section-block quiet-section"><div class="file-list">${rows.length ? rows.map(fileCard).join("") : empty("No starred files yet.")}</div></section>`;
 }
 
-async function renderPractice() {
-  setTitle("Practice");
+function studyTabs() {
+  const tabs = [
+    ["practice", "Practice"],
+    ["wrong", "Wrong Questions"],
+    ["exam", "Exam Review"],
+  ];
+  return `
+    <div class="segmented-tabs" role="tablist" aria-label="Study mode">
+      ${tabs.map(([mode, label]) => `<button class="${state.studyMode === mode ? "active" : ""}" data-study-mode="${mode}" role="tab" aria-selected="${state.studyMode === mode ? "true" : "false"}">${label}</button>`).join("")}
+    </div>
+  `;
+}
+
+async function renderStudy(mode = state.studyMode) {
+  state.studyMode = mode;
+  setTitle("Study", "Practice, wrong questions, and review");
+  let body = "";
+  if (mode === "wrong") body = await studyWrongPanel();
+  else if (mode === "exam") body = studyExamPanel();
+  else body = studyPracticePanel();
   view.innerHTML = `
-    <section class="section-block sticky-tools">
+    <section class="study-shell">
+      ${studyTabs()}
+      ${body}
+    </section>
+  `;
+  if (mode === "practice") {
+    $("#practiceCourse").addEventListener("change", loadPracticeQuestions);
+    $("#practiceWeek").addEventListener("change", loadPracticeQuestions);
+    $("#practiceType").addEventListener("change", loadPracticeQuestions);
+    await loadPracticeQuestions();
+  }
+}
+
+function studyPracticePanel() {
+  return `
+    <section class="section-block quiet-section">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Teacher-provided only</p>
+          <h2>Practice</h2>
+        </div>
+        <span class="muted">No generated practice questions</span>
+      </div>
       <div class="toolbar practice-toolbar">
         <select id="practiceCourse">
           <option value="">All courses</option>
@@ -987,30 +1172,30 @@ async function renderPractice() {
         </select>
       </div>
     </section>
-    <section id="practiceResults" class="grid"></section>
+    <section id="practiceResults" class="study-list"></section>
   `;
-  $("#practiceCourse").addEventListener("change", loadPracticeQuestions);
-  $("#practiceWeek").addEventListener("change", loadPracticeQuestions);
-  $("#practiceType").addEventListener("change", loadPracticeQuestions);
-  await loadPracticeQuestions();
 }
 
-async function renderWrong() {
-  setTitle("Wrong Questions");
+async function studyWrongPanel() {
   const rows = await api("/api/wrong-questions");
-  view.innerHTML = `
-    <section class="section-block">
-      ${rows.length ? `<div class="grid">${rows.map(wrongRow).join("")}</div>` : empty("No wrong-question records yet.")}
+  return `
+    <section class="section-block quiet-section">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">User records</p>
+          <h2>Wrong Questions</h2>
+        </div>
+      </div>
+      ${rows.length ? `<div class="study-list">${rows.map(wrongRow).join("")}</div>` : empty("No wrong-question records yet.")}
     </section>
   `;
 }
 
-async function renderExam() {
-  setTitle("Exam Review");
+function studyExamPanel() {
   const blocks = state.courses.map((course) => {
     const weeks = weeksFor(course.id);
     return `
-      <section class="section-block">
+      <section class="section-block quiet-section">
         <div class="section-head">
           <div>
             <p class="muted">${escapeHtml(courseLabel(course))}</p>
@@ -1018,9 +1203,9 @@ async function renderExam() {
           </div>
           <button class="button secondary" data-course="${course.id}">Course</button>
         </div>
-        <div class="week-grid compact">
+        <div class="week-list compact">
           ${weeks.map((week) => `
-            <button class="week-tile ${week.has_materials ? "has-materials" : ""}" data-week="${week.week_label}" data-course="${course.id}">
+            <button class="week-row ${week.has_materials ? "has-materials" : ""}" data-week="${week.week_label}" data-course="${course.id}">
               <strong>${escapeHtml(week.week_label.replace("Week ", "W"))}</strong>
               <span class="muted">${week.file_count || 0}</span>
             </button>
@@ -1029,7 +1214,22 @@ async function renderExam() {
       </section>
     `;
   });
-  view.innerHTML = blocks.join("");
+  return blocks.join("");
+}
+
+async function renderPractice() {
+  state.studyMode = "practice";
+  await renderStudy("practice");
+}
+
+async function renderWrong() {
+  state.studyMode = "wrong";
+  await renderStudy("wrong");
+}
+
+async function renderExam() {
+  state.studyMode = "exam";
+  await renderStudy("exam");
 }
 
 function wrongRow(row) {
@@ -1043,30 +1243,85 @@ function wrongRow(row) {
 }
 
 async function renderSettings() {
-  setTitle("Settings");
+  setTitle("Settings", "Local configuration and health");
+  setPageActions(true);
   state.health = await api("/api/health");
   const ai = await api("/api/ai-status");
   const askReady = ai.openAI === "Configured" && ai.vectorStore === "Configured" ? "Ready" : "Not ready";
   view.innerHTML = `
-    <section class="section-block">
-      <h2>Study Library</h2>
-      <div class="grid cols-3">
-        <section class="metric-card"><p class="muted">Indexed Files</p><div class="metric">${escapeHtml(state.health.filesIndexed || 0)}</div></section>
-        <section class="metric-card"><p class="muted">OpenAI</p><div class="metric small">${escapeHtml(ai.openAI)}</div></section>
-        <section class="metric-card"><p class="muted">Vector Store</p><div class="metric small">${escapeHtml(ai.vectorStore)}</div></section>
-        <section class="metric-card"><p class="muted">Ask GPT</p><div class="metric small">${escapeHtml(askReady)}</div></section>
-        <section class="metric-card"><p class="muted">PDF Text</p><div class="metric small">${escapeHtml(state.health.pdfTextExtraction || "Unknown")}</div></section>
-      </div>
-      ${(state.health.extractionWarnings || []).length ? `<div class="notice">${state.health.extractionWarnings.map(escapeHtml).join("<br>")}</div>` : ""}
-    </section>
-    <section class="section-block">
-      <h2>AI Bridge</h2>
-      <div class="settings-list">
-        <div><span>Last AI Sync</span><strong>${escapeHtml(ai.lastAISync || "Never")}</strong></div>
-        <div><span>Local Indexed Files</span><strong>${escapeHtml(ai.indexedFiles || 0)}</strong></div>
-        <div><span>Vector Indexed Files</span><strong>${escapeHtml(ai.vectorIndexedFiles || 0)}</strong></div>
-        <div><span>Vector Store Status</span><strong>${escapeHtml(ai.vectorStoreLabel || ai.vectorStore || "Not configured")}</strong></div>
-      </div>
+    <section class="settings-layout">
+      <section class="section-block quiet-section">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">General</p>
+            <h2>Library actions</h2>
+          </div>
+        </div>
+        <div class="settings-actions">
+          <button class="button primary" data-run-scan="1">Scan Library</button>
+          <button class="button secondary" data-open-upload="1">Add Material</button>
+          <button class="button secondary" data-view="courses">Browse Courses</button>
+        </div>
+      </section>
+      <section class="section-block quiet-section">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Library Health</p>
+            <h2>Index status</h2>
+          </div>
+        </div>
+        <div class="settings-list">
+          <div><span>Study Library</span><strong>${state.health.studyLibraryConnected ? "Connected" : "Missing"}</strong></div>
+          <div><span>Indexed Files</span><strong>${escapeHtml(state.health.filesIndexed || 0)}</strong></div>
+          <div><span>PDF Text</span><strong>${escapeHtml(state.health.pdfTextExtraction || "Unknown")}</strong></div>
+          <div><span>Suspicious Files</span><strong>${escapeHtml(state.health.suspiciousFiles || 0)}</strong></div>
+        </div>
+        ${(state.health.extractionWarnings || []).length ? `<div class="notice">${state.health.extractionWarnings.map(escapeHtml).join("<br>")}</div>` : ""}
+      </section>
+      <section class="section-block quiet-section">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">AI</p>
+            <h2>Ask GPT</h2>
+          </div>
+        </div>
+        <div class="settings-list">
+          <div><span>OpenAI</span><strong>${escapeHtml(ai.openAI)}</strong></div>
+          <div><span>Vector Store</span><strong>${escapeHtml(ai.vectorStore)}</strong></div>
+          <div><span>Ask GPT</span><strong>${escapeHtml(askReady)}</strong></div>
+          <div><span>Last AI Sync</span><strong>${escapeHtml(ai.lastAISync || "Never")}</strong></div>
+          <div><span>Indexed Files</span><strong>${escapeHtml(ai.indexedFiles || 0)}</strong></div>
+          <div><span>Vector Indexed Files</span><strong>${escapeHtml(ai.vectorIndexedFiles || 0)}</strong></div>
+        </div>
+      </section>
+      <section class="section-block quiet-section">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Privacy</p>
+            <h2>Local-first boundaries</h2>
+          </div>
+        </div>
+        <div class="settings-list">
+          <div><span>Server Bind</span><strong>127.0.0.1</strong></div>
+          <div><span>Telemetry</span><strong>Off by default</strong></div>
+          <div><span>Original Files</span><strong>Local source of truth</strong></div>
+          <div><span>AI History</span><strong>Stored locally</strong></div>
+        </div>
+        <button class="button secondary" data-open-history="1">Manage AI History</button>
+      </section>
+      <section class="section-block quiet-section">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Advanced</p>
+            <h2>Diagnostics</h2>
+          </div>
+        </div>
+        <div class="settings-list compact">
+          <div><span>Release</span><strong>${escapeHtml(state.health.version || "Local build")}</strong></div>
+          <div><span>Mode</span><strong>${escapeHtml(state.health.demoMode ? "Demo Mode" : "Local Library")}</strong></div>
+          <div><span>Vector Store Status</span><strong>${escapeHtml(ai.vectorStoreLabel || ai.vectorStore || "Not configured")}</strong></div>
+        </div>
+      </section>
     </section>
   `;
 }
@@ -1076,23 +1331,27 @@ function empty(text) {
 }
 
 async function route(viewName = state.view) {
+  if (viewName === "askgpt") viewName = "ai";
+  if (["practice", "wrong", "exam"].includes(viewName)) {
+    state.studyMode = viewName === "exam" ? "exam" : viewName;
+    viewName = "study";
+  }
+  if (viewName === "thisWeek") viewName = "home";
+  if (viewName === "starred") viewName = "courses";
   state.view = viewName;
   document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === viewName));
   if (viewName === "home") return renderHome();
-  if (viewName === "thisWeek") return renderThisWeek();
   if (viewName === "courses") return renderCourses();
   if (viewName === "search") return renderSearch();
-  if (viewName === "askgpt") return renderAskGpt();
-  if (viewName === "starred") return renderStarred();
-  if (viewName === "practice") return renderPractice();
-  if (viewName === "wrong") return renderWrong();
-  if (viewName === "exam") return renderExam();
+  if (viewName === "ai") return renderAskGpt();
+  if (viewName === "study") return renderStudy();
   if (viewName === "settings") return renderSettings();
 }
 
 async function openFileDrawer(fileId, page = 0) {
   const file = await api(`/api/file?id=${fileId}`);
   state.selectedFile = file;
+  rememberFile(file);
   $("#drawerMeta").textContent = `${courseLabel(file)} · ${file.week_label || ""} · ${file.category || ""}`;
   $("#drawerTitle").textContent = file.filename;
   $("#contextIndicator").innerHTML = [courseLabel(file), file.week_label, file.exercise_type || file.category, file.filename]
@@ -1103,6 +1362,7 @@ async function openFileDrawer(fileId, page = 0) {
     <div><span>Filename</span><strong>${escapeHtml(file.filename)}</strong></div>
     <div><span>Type</span><strong>${escapeHtml(file.mime_type || file.extension || "Unknown")}</strong></div>
     <div><span>Index</span><strong>${escapeHtml(file.ai_index_status || "Unknown")}</strong></div>
+    <div><span>Source</span><strong>${escapeHtml(file.source_label || file.source || "Local file")}</strong></div>
   `;
   $("#extractedText").textContent = file.extractedText || "No local text preview available. Open the original file for the authoritative version.";
   const pageHash = page ? `#page=${page}` : "";
@@ -1304,6 +1564,23 @@ document.addEventListener("click", async (event) => {
     }
     return;
   }
+  if (target.dataset.studyMode) {
+    state.studyMode = target.dataset.studyMode;
+    route("study");
+    return;
+  }
+  if (target.dataset.runScan) {
+    await scanLibrary();
+    return;
+  }
+  if (target.dataset.openUpload) {
+    $("#uploadDialog").showModal();
+    return;
+  }
+  if (target.dataset.openHistory) {
+    await openHistoryDrawer();
+    return;
+  }
   if (target.dataset.askCourse) {
     setAskContext(currentCourseContext(Number(target.dataset.askCourse)), { scope: "course" });
     route("askgpt");
@@ -1390,13 +1667,13 @@ document.addEventListener("click", async (event) => {
     }
     return;
   }
-  if (target.dataset.view) route(target.dataset.view);
-  if (target.dataset.course && !target.dataset.week) renderCourse(Number(target.dataset.course));
-  if (target.dataset.week) renderWeek(Number(target.dataset.course), target.dataset.week);
-  if (target.dataset.preview) openFileDrawer(Number(target.dataset.preview), Number(target.dataset.page || 0));
-  if (target.dataset.open) openOriginal(Number(target.dataset.open));
-  if (target.dataset.star) toggleStar(Number(target.dataset.star));
-  if (target.dataset.context) copyContext(Number(target.dataset.context));
+  if (target.dataset.view) return route(target.dataset.view);
+  if (target.dataset.course && !target.dataset.week) return renderCourse(Number(target.dataset.course));
+  if (target.dataset.week) return renderWeek(Number(target.dataset.course), target.dataset.week);
+  if (target.dataset.preview) return openFileDrawer(Number(target.dataset.preview), Number(target.dataset.page || 0));
+  if (target.dataset.open) return openOriginal(Number(target.dataset.open));
+  if (target.dataset.star) return toggleStar(Number(target.dataset.star));
+  if (target.dataset.context) return copyContext(Number(target.dataset.context));
 });
 
 $("#closeDrawer").addEventListener("click", () => {
@@ -1430,6 +1707,7 @@ $("#starFile").addEventListener("click", () => state.selectedFile && toggleStar(
 $("#copyContext").addEventListener("click", () => state.selectedFile && copyContext(state.selectedFile.id));
 $("#askBtn").addEventListener("click", askAboutFile);
 $("#saveNote").addEventListener("click", saveNote);
+$("#sidebarToggle").addEventListener("click", () => setSidebarCollapsed(!state.sidebarCollapsed));
 $("#scanBtn").addEventListener("click", scanLibrary);
 $("#uploadBtn").addEventListener("click", () => $("#uploadDialog").showModal());
 $("#uploadSubmit").addEventListener("click", uploadMaterial);
