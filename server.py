@@ -974,6 +974,29 @@ def init_db(conn: sqlite3.Connection) -> None:
           status TEXT NOT NULL,
           created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS ai_conversations (
+          id INTEGER PRIMARY KEY,
+          title TEXT NOT NULL,
+          scope TEXT,
+          context_json TEXT NOT NULL DEFAULT '{}',
+          course_code TEXT,
+          week_label TEXT,
+          file_id INTEGER REFERENCES files(id) ON DELETE SET NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          deleted_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS ai_messages (
+          id INTEGER PRIMARY KEY,
+          conversation_id INTEGER NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
+          role TEXT NOT NULL,
+          body TEXT NOT NULL,
+          status TEXT,
+          sources_json TEXT NOT NULL DEFAULT '[]',
+          questions_json TEXT NOT NULL DEFAULT '[]',
+          solutions_json TEXT NOT NULL DEFAULT '[]',
+          created_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS sync_events (
           id INTEGER PRIMARY KEY,
           event_type TEXT NOT NULL,
@@ -2251,6 +2274,155 @@ def openai_error_summary(exc: BaseException) -> str:
     return "OpenAI is configured, but the request failed."
 
 
+def conversation_title(prompt: str, context: dict[str, Any]) -> str:
+    cleaned = re.sub(r"\s+", " ", prompt).strip()
+    base = cleaned[:54].rstrip(" .,;:") or "Study conversation"
+    file_name = str(context.get("file") or "")
+    if file_name and len(base) < 42:
+        base = f"{base} — {Path(file_name).stem[:28]}"
+    return base
+
+
+def safe_json_loads(raw: str | None, fallback: Any) -> Any:
+    if not raw:
+        return fallback
+    try:
+        return json.loads(raw)
+    except Exception:
+        return fallback
+
+
+def source_history_projection(source: dict[str, Any]) -> dict[str, Any]:
+    allowed = (
+        "id",
+        "file_id",
+        "source_file_id",
+        "course_code",
+        "display_course_code",
+        "week_label",
+        "category",
+        "exercise_type",
+        "filename",
+        "source_location",
+        "page_start",
+        "page_end",
+        "slide_start",
+        "slide_end",
+        "heading",
+    )
+    out = {key: source.get(key) for key in allowed if key in source}
+    if "course_code" in out:
+        out["display_course_code"] = display_course_code(str(out["course_code"]))
+    return out
+
+
+def public_conversation(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    data = dict(row)
+    context = safe_json_loads(data.get("context_json"), {})
+    return {
+        "id": data["id"],
+        "title": data["title"],
+        "scope": data.get("scope") or context.get("scope") or "",
+        "course_code": data.get("course_code") or context.get("course") or "",
+        "display_course_code": display_course_code(data.get("course_code") or context.get("course") or ""),
+        "week_label": data.get("week_label") or context.get("week") or "",
+        "file_id": data.get("file_id") or context.get("fileId"),
+        "filename": context.get("file") or "",
+        "context": context,
+        "created_at": data["created_at"],
+        "updated_at": data["updated_at"],
+    }
+
+
+def public_ai_message(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    data = dict(row)
+    return {
+        "id": data["id"],
+        "conversation_id": data["conversation_id"],
+        "role": data["role"],
+        "body": data["body"],
+        "text": data["body"],
+        "status": data.get("status") or "",
+        "sources": safe_json_loads(data.get("sources_json"), []),
+        "questions": safe_json_loads(data.get("questions_json"), []),
+        "solutions": safe_json_loads(data.get("solutions_json"), []),
+        "created_at": data["created_at"],
+    }
+
+
+def ensure_conversation(conn: sqlite3.Connection, conversation_id: int | None, context: dict[str, Any], prompt: str, scope: str) -> sqlite3.Row:
+    now = now_iso()
+    if conversation_id:
+        row = conn.execute("SELECT * FROM ai_conversations WHERE id=? AND deleted_at IS NULL", (conversation_id,)).fetchone()
+        if row:
+            return row
+    title = conversation_title(prompt, context)
+    conn.execute(
+        """
+        INSERT INTO ai_conversations(title, scope, context_json, course_code, week_label, file_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            title,
+            scope,
+            json.dumps(context, ensure_ascii=False),
+            context.get("course") or "",
+            context.get("week") or "",
+            int(context["fileId"]) if context.get("fileId") else None,
+            now,
+            now,
+        ),
+    )
+    return conn.execute("SELECT * FROM ai_conversations WHERE id=last_insert_rowid()").fetchone()
+
+
+def append_ai_message(
+    conn: sqlite3.Connection,
+    conversation_id: int,
+    role: str,
+    body: str,
+    status: str = "",
+    sources: list[dict[str, Any]] | None = None,
+    questions: list[dict[str, Any]] | None = None,
+    solutions: list[dict[str, Any]] | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO ai_messages(conversation_id, role, body, status, sources_json, questions_json, solutions_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            conversation_id,
+            role,
+            body[:80_000],
+            status,
+            json.dumps([source_history_projection(source) for source in (sources or [])], ensure_ascii=False),
+            json.dumps(questions or [], ensure_ascii=False),
+            json.dumps(solutions or [], ensure_ascii=False),
+            now_iso(),
+        ),
+    )
+
+
+def update_conversation_context(conn: sqlite3.Connection, conversation_id: int, context: dict[str, Any], scope: str) -> None:
+    conn.execute(
+        """
+        UPDATE ai_conversations
+        SET scope=?, context_json=?, course_code=?, week_label=?, file_id=?, updated_at=?
+        WHERE id=? AND deleted_at IS NULL
+        """,
+        (
+            scope,
+            json.dumps(context, ensure_ascii=False),
+            context.get("course") or "",
+            context.get("week") or "",
+            int(context["fileId"]) if context.get("fileId") else None,
+            now_iso(),
+            conversation_id,
+        ),
+    )
+
+
 def openai_responses_request(
     prompt: str,
     chunks: list[dict[str, Any]],
@@ -2703,6 +2875,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.handle_note()
             elif parsed.path == "/api/ask":
                 self.handle_ask()
+            elif parsed.path == "/api/conversations":
+                self.handle_conversation_mutation()
             elif parsed.path == "/api/ai-sync":
                 self.send_json(sync_openai_vector_store())
             else:
@@ -2802,6 +2976,10 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.send_json(public_file(row, include_text=read_cached_text(row, 8000)))
             elif path == "/api/notes":
                 self.send_json(self.handle_notes_get(conn, qs))
+            elif path == "/api/conversations":
+                self.send_json(self.handle_conversations_get(conn, qs))
+            elif path == "/api/conversation":
+                self.send_json(self.handle_conversation_get(conn, qs))
             elif path == "/api/search":
                 query = qs.get("q", [""])[0].strip()
                 course_id = qs.get("course_id", [""])[0]
@@ -2871,6 +3049,162 @@ class StudyHubHandler(BaseHTTPRequestHandler):
             (target_id,),
         ).fetchall()
         return rows_to_dicts(rows)
+
+    def handle_conversations_get(self, conn: sqlite3.Connection, qs: dict[str, list[str]]) -> list[dict[str, Any]]:
+        params: list[Any] = []
+        sql = """
+        SELECT c.*, COUNT(m.id) AS message_count
+        FROM ai_conversations c
+        LEFT JOIN ai_messages m ON m.conversation_id=c.id
+        WHERE c.deleted_at IS NULL
+        """
+        file_id = int(qs.get("file_id", ["0"])[0] or 0)
+        course = qs.get("course", [""])[0]
+        query = qs.get("q", [""])[0].strip()
+        if file_id:
+            sql += " AND c.file_id=?"
+            params.append(file_id)
+        if course:
+            sql += " AND c.course_code=?"
+            params.append(course)
+        if query:
+            sql += " AND (c.title LIKE ? OR EXISTS (SELECT 1 FROM ai_messages mx WHERE mx.conversation_id=c.id AND mx.body LIKE ?))"
+            params.extend([f"%{query}%", f"%{query}%"])
+        sql += " GROUP BY c.id ORDER BY c.updated_at DESC LIMIT 100"
+        rows = conn.execute(sql, params).fetchall()
+        out = []
+        for row in rows:
+            item = public_conversation(row)
+            item["message_count"] = row["message_count"]
+            item["source_available"] = True
+            if item.get("file_id"):
+                file_row = conn.execute("SELECT active FROM files WHERE id=?", (item["file_id"],)).fetchone()
+                item["source_available"] = bool(file_row and file_row["active"])
+            out.append(item)
+        return out
+
+    def handle_conversation_get(self, conn: sqlite3.Connection, qs: dict[str, list[str]]) -> dict[str, Any]:
+        conversation_id = int(qs.get("id", ["0"])[0] or 0)
+        row = conn.execute("SELECT * FROM ai_conversations WHERE id=? AND deleted_at IS NULL", (conversation_id,)).fetchone()
+        if not row:
+            raise FileNotFoundError("conversation not found")
+        convo = public_conversation(row)
+        if convo.get("file_id"):
+            file_row = conn.execute("SELECT active FROM files WHERE id=?", (convo["file_id"],)).fetchone()
+            convo["source_available"] = bool(file_row and file_row["active"])
+        messages = conn.execute(
+            """
+            SELECT *
+            FROM ai_messages
+            WHERE conversation_id=?
+            ORDER BY id
+            """,
+            (conversation_id,),
+        ).fetchall()
+        return {"conversation": convo, "messages": [public_ai_message(message) for message in messages]}
+
+    def handle_conversation_mutation(self) -> None:
+        body = self.parse_body_json()
+        action = body.get("action", "create")
+        conn = connect_db()
+        init_db(conn)
+        try:
+            if action == "create":
+                context = normalize_ask_context(conn, body.get("context", {}) or {}, "")
+                scope = body.get("scope") or context.get("scope") or "course"
+                title = str(body.get("title") or "New study conversation").strip()[:120]
+                now = now_iso()
+                conn.execute(
+                    """
+                    INSERT INTO ai_conversations(title, scope, context_json, course_code, week_label, file_id, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        title,
+                        scope,
+                        json.dumps(context, ensure_ascii=False),
+                        context.get("course") or "",
+                        context.get("week") or "",
+                        int(context["fileId"]) if context.get("fileId") else None,
+                        now,
+                        now,
+                    ),
+                )
+                row = conn.execute("SELECT * FROM ai_conversations WHERE id=last_insert_rowid()").fetchone()
+                conn.commit()
+                self.send_json({"conversation": public_conversation(row), "messages": []})
+                return
+            if action == "clear":
+                conn.execute("UPDATE ai_conversations SET deleted_at=?, updated_at=? WHERE deleted_at IS NULL", (now_iso(), now_iso()))
+                conn.commit()
+                self.send_json({"ok": True})
+                return
+            conversation_id = int(body.get("id") or 0)
+            if not conversation_id:
+                raise ValueError("conversation id is required")
+            row = conn.execute("SELECT * FROM ai_conversations WHERE id=? AND deleted_at IS NULL", (conversation_id,)).fetchone()
+            if not row:
+                raise FileNotFoundError("conversation not found")
+            if action == "rename":
+                title = str(body.get("title") or "").strip()[:120]
+                if not title:
+                    raise ValueError("title is required")
+                conn.execute("UPDATE ai_conversations SET title=?, updated_at=? WHERE id=?", (title, now_iso(), conversation_id))
+                conn.commit()
+                row = conn.execute("SELECT * FROM ai_conversations WHERE id=?", (conversation_id,)).fetchone()
+                self.send_json({"conversation": public_conversation(row)})
+                return
+            if action == "delete":
+                conn.execute("UPDATE ai_conversations SET deleted_at=?, updated_at=? WHERE id=?", (now_iso(), now_iso(), conversation_id))
+                conn.commit()
+                self.send_json({"ok": True})
+                return
+            if action in {"duplicate", "fork"}:
+                now = now_iso()
+                original = dict(row)
+                new_title = str(body.get("title") or f"{original['title']} copy").strip()[:120]
+                conn.execute(
+                    """
+                    INSERT INTO ai_conversations(title, scope, context_json, course_code, week_label, file_id, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        new_title,
+                        original.get("scope") or "",
+                        original.get("context_json") or "{}",
+                        original.get("course_code") or "",
+                        original.get("week_label") or "",
+                        original.get("file_id"),
+                        now,
+                        now,
+                    ),
+                )
+                new_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+                messages = conn.execute("SELECT * FROM ai_messages WHERE conversation_id=? ORDER BY id", (conversation_id,)).fetchall()
+                for message in messages:
+                    conn.execute(
+                        """
+                        INSERT INTO ai_messages(conversation_id, role, body, status, sources_json, questions_json, solutions_json, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            new_id,
+                            message["role"],
+                            message["body"],
+                            message["status"],
+                            message["sources_json"],
+                            message["questions_json"],
+                            message["solutions_json"],
+                            now_iso(),
+                        ),
+                    )
+                conn.commit()
+                new_row = conn.execute("SELECT * FROM ai_conversations WHERE id=?", (new_id,)).fetchone()
+                self.send_json({"conversation": public_conversation(new_row)})
+                return
+            raise ValueError("unknown conversation action")
+        finally:
+            conn.close()
 
     def handle_questions(self, conn: sqlite3.Connection, qs: dict[str, list[str]]) -> list[dict[str, Any]]:
         params: list[Any] = []
@@ -3066,6 +3400,12 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         conn = connect_db()
         prompt = body.get("prompt", "").strip()
         context = normalize_ask_context(conn, body.get("context", {}) or {}, prompt)
+        scope = str(body.get("scope") or context.get("scope") or "").strip() or ("question" if context.get("questionId") else "file" if context.get("fileId") else "week" if context.get("week") else "course")
+        conversation_id = int(body.get("conversationId") or body.get("conversation_id") or 0) or None
+        conversation = ensure_conversation(conn, conversation_id, context, prompt, scope)
+        conversation_id = int(conversation["id"])
+        update_conversation_context(conn, conversation_id, context, scope)
+        append_ai_message(conn, conversation_id, "user", prompt, sources=[], questions=[], solutions=[])
         question_scope = has_specific_teacher_question_scope(context, prompt)
         questions = teacher_questions_for_context(conn, context, prompt, limit=5) if question_scope else []
         solutions = official_solutions_for_context(conn, context, limit=5)
@@ -3078,9 +3418,24 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 "INSERT INTO ai_interactions(context_json, prompt, response, status, created_at) VALUES (?, ?, ?, ?, ?)",
                 (context_json, prompt, response, status, now_iso()),
             )
+            append_ai_message(conn, conversation_id, "assistant", response, status, sources=[], questions=questions, solutions=solutions)
+            conn.execute("UPDATE ai_conversations SET updated_at=? WHERE id=?", (now_iso(), conversation_id))
             conn.commit()
+            messages = conn.execute("SELECT * FROM ai_messages WHERE conversation_id=? ORDER BY id", (conversation_id,)).fetchall()
+            convo = conn.execute("SELECT * FROM ai_conversations WHERE id=?", (conversation_id,)).fetchone()
             conn.close()
-            self.send_json({"status": status, "response": response, "sources": [], "questions": questions, "solutions": solutions})
+            self.send_json(
+                {
+                    "status": status,
+                    "response": response,
+                    "sources": [],
+                    "questions": questions,
+                    "solutions": solutions,
+                    "conversation": public_conversation(convo),
+                    "conversationId": conversation_id,
+                    "messages": [public_ai_message(message) for message in messages],
+                }
+            )
             return
         chunks = search_local_context(conn, prompt, context, limit=8)
         if chunks and not questions and QUESTION_INTENT_RE.search(prompt):
@@ -3109,9 +3464,24 @@ class StudyHubHandler(BaseHTTPRequestHandler):
             "INSERT INTO ai_interactions(context_json, prompt, response, status, created_at) VALUES (?, ?, ?, ?, ?)",
             (context_json, prompt, response, status, now_iso()),
         )
+        append_ai_message(conn, conversation_id, "assistant", response, status, sources=chunks[:8], questions=questions, solutions=solutions)
+        conn.execute("UPDATE ai_conversations SET updated_at=? WHERE id=?", (now_iso(), conversation_id))
         conn.commit()
+        messages = conn.execute("SELECT * FROM ai_messages WHERE conversation_id=? ORDER BY id", (conversation_id,)).fetchall()
+        convo = conn.execute("SELECT * FROM ai_conversations WHERE id=?", (conversation_id,)).fetchone()
         conn.close()
-        self.send_json({"status": status, "response": response, "sources": chunks[:8], "questions": questions, "solutions": solutions})
+        self.send_json(
+            {
+                "status": status,
+                "response": response,
+                "sources": chunks[:8],
+                "questions": questions,
+                "solutions": solutions,
+                "conversation": public_conversation(convo),
+                "conversationId": conversation_id,
+                "messages": [public_ai_message(message) for message in messages],
+            }
+        )
 
     def handle_upload(self) -> None:
         ctype = self.headers.get("Content-Type", "")

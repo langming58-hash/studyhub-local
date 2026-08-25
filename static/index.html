@@ -58,17 +58,32 @@
         </div>
         <div class="drawer-actions">
           <button id="openOriginal" class="button primary">Open Original</button>
-          <button id="askFileFull" class="button secondary">Ask GPT</button>
+          <button id="askFileFull" class="button secondary">Open AI Workspace</button>
+          <button id="toggleAiExpanded" class="button secondary">Expand AI</button>
           <button id="starFile" class="button secondary">Star</button>
           <button id="copyContext" class="button secondary">Prepare Context</button>
         </div>
         <div class="drawer-body">
           <div class="preview-frame" id="previewFrame"></div>
+          <div class="split-handle" id="drawerSplitHandle" title="Resize AI workspace"></div>
           <aside class="context-panel">
-            <h3>Context</h3>
-            <div id="contextIndicator" class="notice compact"></div>
-            <h3>Extracted Preview</h3>
-            <pre id="extractedText"></pre>
+            <div class="rail-tabs" role="tablist" aria-label="File side rail">
+              <button class="rail-tab active" data-rail-tab="context">Context</button>
+              <button class="rail-tab" data-rail-tab="text">Extracted Text</button>
+              <button class="rail-tab" data-rail-tab="details">Details</button>
+            </div>
+            <div class="rail-panel active" id="rail-context">
+              <h3>Context</h3>
+              <div id="contextIndicator" class="context-lines"></div>
+            </div>
+            <div class="rail-panel" id="rail-text">
+              <h3>Extracted Preview</h3>
+              <pre id="extractedText"></pre>
+            </div>
+            <div class="rail-panel" id="rail-details">
+              <h3>Details</h3>
+              <div id="fileDetails" class="settings-list compact"></div>
+            </div>
             <h3>User Notes</h3>
             <div id="fileNotes" class="notes-list"></div>
             <textarea id="noteBody" placeholder="Add a private note for this file."></textarea>
@@ -112,6 +127,23 @@
         </menu>
       </form>
     </dialog>
+
+    <div id="historyDrawer" class="history-drawer" hidden>
+      <div class="history-panel">
+        <div class="drawer-head">
+          <div>
+            <p class="eyebrow">Local AI history</p>
+            <h2>Conversations</h2>
+          </div>
+          <div class="history-head-actions">
+            <button class="button secondary" id="clearHistory">Clear all</button>
+            <button class="icon-button" id="closeHistory" aria-label="Close history">×</button>
+          </div>
+        </div>
+        <input id="historySearch" placeholder="Search conversations" />
+        <div id="historyList" class="history-list"></div>
+      </div>
+    </div>
 
     <div id="toast" class="toast" hidden></div>
     <script src="/app.js"></script>

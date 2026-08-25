@@ -14,8 +14,14 @@ const state = {
     context: {},
     scope: "course",
     messages: [],
+    conversationId: Number(localStorage.getItem("studyhub.currentConversationId") || 0) || null,
+    conversationTitle: "",
+    history: [],
+    historyOpen: false,
+    mode: localStorage.getItem("studyhub.aiMode") || "compact",
+    railTab: "context",
     lastContextKey: "",
-    draft: "",
+    draft: localStorage.getItem("studyhub.askDraft") || "",
   },
 };
 
@@ -95,6 +101,11 @@ function setAskContext(context = {}, options = {}) {
       text: "Context changed",
       context: { ...nextContext },
     });
+    if (!options.keepConversation) {
+      state.ask.conversationId = null;
+      state.ask.conversationTitle = "";
+      localStorage.removeItem("studyhub.currentConversationId");
+    }
   }
   state.ask.context = nextContext;
   state.ask.scope = options.scope || defaultScopeForContext(nextContext);
@@ -209,6 +220,150 @@ function courseLabel(item = {}) {
   return item.display_code || item.display_course_code || item.code || item.course_code || "";
 }
 
+function scopeLabel(scope = state.ask.scope) {
+  return {
+    question: "This question",
+    file: "This file",
+    week: "This week",
+    course: "This course",
+    selected: "Selected sources",
+  }[scope] || "This course";
+}
+
+function saveAskDraft(value) {
+  state.ask.draft = value;
+  localStorage.setItem("studyhub.askDraft", value);
+}
+
+function setAiMode(mode) {
+  state.ask.mode = mode;
+  localStorage.setItem("studyhub.aiMode", mode);
+}
+
+function renderInlineMarkdown(text) {
+  return escapeHtml(text)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+    .replace(/\\\((.+?)\\\)|\$([^$\n]+)\$/g, (_m, a, b) => `<span class="math-inline">${a || b}</span>`);
+}
+
+function renderMarkdown(text = "") {
+  const blocks = String(text).replace(/\r\n/g, "\n").split(/\n{2,}/);
+  const html = [];
+  let inCode = false;
+  let code = [];
+  let codeLang = "";
+  const flushCode = () => {
+    if (!inCode) return;
+    html.push(`<pre><code data-lang="${escapeHtml(codeLang)}">${escapeHtml(code.join("\n"))}</code></pre>`);
+    inCode = false;
+    code = [];
+    codeLang = "";
+  };
+  for (const block of blocks) {
+    const lines = block.split("\n");
+    if (lines[0].startsWith("```")) {
+      inCode = true;
+      codeLang = lines[0].slice(3).trim();
+      code.push(...lines.slice(1));
+      if (lines.at(-1).startsWith("```") && lines.length > 1) {
+        code.pop();
+        flushCode();
+      }
+      continue;
+    }
+    if (inCode) {
+      code.push("", ...lines);
+      if (lines.at(-1).startsWith("```")) {
+        code.pop();
+        flushCode();
+      }
+      continue;
+    }
+    const trimmed = block.trim();
+    if (/^#{1,3}\s/.test(trimmed)) {
+      const level = Math.min(trimmed.match(/^#+/)[0].length, 3);
+      html.push(`<h${level}>${renderInlineMarkdown(trimmed.replace(/^#{1,3}\s*/, ""))}</h${level}>`);
+    } else if (/^(\*|-)\s+/m.test(trimmed)) {
+      html.push(`<ul>${lines.map((line) => `<li>${renderInlineMarkdown(line.replace(/^(\*|-)\s+/, ""))}</li>`).join("")}</ul>`);
+    } else if (/^\d+\.\s+/m.test(trimmed)) {
+      html.push(`<ol>${lines.map((line) => `<li>${renderInlineMarkdown(line.replace(/^\d+\.\s+/, ""))}</li>`).join("")}</ol>`);
+    } else if (/^\|.+\|\n\|[-:\s|]+\|/.test(trimmed)) {
+      const rows = lines.filter((line) => /^\|.*\|$/.test(line)).map((line) => line.split("|").slice(1, -1).map((cell) => cell.trim()));
+      const head = rows[0] || [];
+      const body = rows.slice(2);
+      html.push(`<div class="table-wrap"><table><thead><tr>${head.map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`).join("")}</tr></thead><tbody>${body.map((row) => `<tr>${row.map((cell) => `<td>${renderInlineMarkdown(cell)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+    } else if (/^\\\[([\s\S]+)\\\]$/.test(trimmed) || /^\$\$([\s\S]+)\$\$$/.test(trimmed)) {
+      html.push(`<div class="math-block">${escapeHtml(trimmed.replace(/^\\\[|\\\]$|^\$\$|\$\$$/g, ""))}</div>`);
+    } else if (/^>\s+/m.test(trimmed)) {
+      html.push(`<blockquote>${lines.map((line) => renderInlineMarkdown(line.replace(/^>\s?/, ""))).join("<br>")}</blockquote>`);
+    } else if (/^---+$/.test(trimmed)) {
+      html.push("<hr>");
+    } else {
+      html.push(`<p>${lines.map(renderInlineMarkdown).join("<br>")}</p>`);
+    }
+  }
+  flushCode();
+  return html.join("");
+}
+
+function hydrateMessages(messages = []) {
+  state.ask.messages = messages.map((message) => ({
+    role: message.role,
+    text: message.body || message.text || "",
+    status: message.status || "",
+    sources: message.sources || [],
+    questions: message.questions || [],
+    solutions: message.solutions || [],
+    createdAt: message.created_at || "",
+  }));
+}
+
+async function loadConversationList(query = "") {
+  state.ask.history = await api(`/api/conversations?q=${encodeURIComponent(query)}`);
+  return state.ask.history;
+}
+
+async function reopenConversation(id) {
+  const data = await api(`/api/conversation?id=${id}`);
+  state.ask.conversationId = data.conversation.id;
+  state.ask.conversationTitle = data.conversation.title;
+  state.ask.context = data.conversation.context || {};
+  state.ask.scope = data.conversation.scope || defaultScopeForContext(state.ask.context);
+  state.ask.lastContextKey = contextKey(state.ask.context);
+  localStorage.setItem("studyhub.currentConversationId", String(data.conversation.id));
+  hydrateMessages(data.messages || []);
+  state.ask.historyOpen = false;
+  route("askgpt");
+}
+
+async function createConversation(context = state.ask.context, scope = state.ask.scope) {
+  const data = await api("/api/conversations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "create", context, scope, title: "New study conversation" }),
+  });
+  state.ask.conversationId = data.conversation.id;
+  state.ask.conversationTitle = data.conversation.title;
+  hydrateMessages([]);
+  localStorage.setItem("studyhub.currentConversationId", String(data.conversation.id));
+  await loadConversationList();
+}
+
+function groupConversations(rows = []) {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const day = 24 * 60 * 60 * 1000;
+  return rows.reduce((groups, row) => {
+    const time = new Date(row.updated_at || row.created_at).getTime();
+    const label = time >= startOfToday ? "Today" : time >= startOfToday - day ? "Yesterday" : time >= startOfToday - 7 * day ? "Previous 7 days" : "Older";
+    groups[label] ||= [];
+    groups[label].push(row);
+    return groups;
+  }, {});
+}
+
 function weeksFor(courseId) {
   return state.weeksByCourse.get(Number(courseId)) || [];
 }
@@ -277,6 +432,18 @@ async function loadBase() {
     : "Library missing";
   renderCourseList();
   populateUploadCourses();
+  if (state.ask.conversationId && !state.ask.messages.length) {
+    try {
+      const data = await api(`/api/conversation?id=${state.ask.conversationId}`);
+      state.ask.conversationTitle = data.conversation.title;
+      state.ask.context = data.conversation.context || state.ask.context;
+      state.ask.scope = data.conversation.scope || state.ask.scope;
+      hydrateMessages(data.messages || []);
+    } catch (_error) {
+      state.ask.conversationId = null;
+      localStorage.removeItem("studyhub.currentConversationId");
+    }
+  }
 }
 
 function renderCourseList() {
@@ -579,27 +746,35 @@ async function renderAskGpt() {
   if (!state.ask.context.course && state.selectedCourseId) {
     setAskContext(state.selectedWeek ? currentWeekContext(state.selectedCourseId, state.selectedWeek) : currentCourseContext(state.selectedCourseId));
   }
+  await loadConversationList();
   const scopes = availableScopes();
   if (!scopes.some((scope) => scope.value === state.ask.scope && scope.enabled)) {
     state.ask.scope = defaultScopeForContext(state.ask.context);
   }
   view.innerHTML = `
-    <section class="ask-shell">
+    <section class="ask-shell ${state.ask.mode === "focus" ? "focus" : ""}">
       <div class="ask-head">
         <div>
           <p class="eyebrow">Course learning assistant</p>
-          <h2>Ask GPT</h2>
+          <div class="ask-title-row">
+            <h2>${escapeHtml(state.ask.conversationTitle || "AI Study Workspace")}</h2>
+            ${state.ask.conversationId ? `<span class="chip">Saved locally</span>` : `<span class="chip">New chat</span>`}
+          </div>
         </div>
-        <button class="button secondary" id="newAskChat">New Chat</button>
+        <div class="ask-tools">
+          <button class="button secondary" id="historyButton">History</button>
+          <button class="button secondary" id="newAskChat">New Chat</button>
+          <button class="button secondary" id="toggleFocusMode">${state.ask.mode === "focus" ? "Exit Focus" : "Open AI Workspace"}</button>
+        </div>
       </div>
       <div class="ask-context">
         <div>
-          <h3>Context</h3>
+          <h3>Asking about</h3>
           <div class="context-lines">${askContextLines().map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>
         </div>
         <label>Scope
           <select id="askScope">
-            ${scopes.map((scope) => `<option value="${scope.value}" ${scope.value === state.ask.scope ? "selected" : ""} ${scope.enabled ? "" : "disabled"}>${scope.label}</option>`).join("")}
+            ${scopes.map((scope) => `<option value="${scope.value}" ${scope.value === state.ask.scope ? "selected" : ""} ${scope.enabled ? "" : "disabled"}>${scopeLabel(scope.value)}</option>`).join("")}
           </select>
         </label>
       </div>
@@ -608,7 +783,10 @@ async function renderAskGpt() {
       </div>
       <div class="conversation" id="askConversation">${renderAskMessages()}</div>
       <div class="ask-compose">
-        <textarea id="askPagePrompt" placeholder="Ask about these materials...">${escapeHtml(state.ask.draft)}</textarea>
+        <div class="composer-stack">
+          <div class="composer-context">Effective scope: ${escapeHtml(scopeLabel())}${state.ask.context.file ? ` · ${escapeHtml(state.ask.context.file)}` : ""}</div>
+          <textarea id="askPagePrompt" placeholder="Ask about these materials...">${escapeHtml(state.ask.draft)}</textarea>
+        </div>
         <button class="button primary" id="sendAskPage">Send</button>
       </div>
     </section>
@@ -616,14 +794,33 @@ async function renderAskGpt() {
   $("#askScope").addEventListener("change", () => {
     state.ask.scope = $("#askScope").value;
   });
-  $("#newAskChat").addEventListener("click", () => {
+  $("#historyButton").addEventListener("click", async () => {
+    await openHistoryDrawer();
+  });
+  $("#toggleFocusMode").addEventListener("click", () => {
+    setAiMode(state.ask.mode === "focus" ? "compact" : "focus");
+    renderAskGpt();
+  });
+  $("#newAskChat").addEventListener("click", async () => {
     state.ask.messages = [];
-    state.ask.draft = "";
+    saveAskDraft("");
+    state.ask.conversationId = null;
+    state.ask.conversationTitle = "";
+    localStorage.removeItem("studyhub.currentConversationId");
+    await createConversation(state.ask.context, state.ask.scope);
     renderAskGpt();
   });
   $("#sendAskPage").addEventListener("click", sendAskPagePrompt);
+  $("#askPagePrompt").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendAskPagePrompt();
+    }
+  });
   $("#askPagePrompt").addEventListener("input", () => {
-    state.ask.draft = $("#askPagePrompt").value;
+    saveAskDraft($("#askPagePrompt").value);
+    $("#askPagePrompt").style.height = "auto";
+    $("#askPagePrompt").style.height = `${Math.min($("#askPagePrompt").scrollHeight, 180)}px`;
   });
 }
 
@@ -639,7 +836,12 @@ function renderAskMessages() {
       return `
         <article class="chat-message ${message.role}">
           <div class="message-head">${badge}${message.status ? `<span class="chip">${escapeHtml(message.status)}</span>` : ""}</div>
-          <p>${escapeHtml(message.text)}</p>
+          <div class="message-body">${message.role === "assistant" ? renderMarkdown(message.text) : `<p>${escapeHtml(message.text)}</p>`}</div>
+          ${
+            message.role === "assistant"
+              ? `<div class="message-actions"><button class="tiny-button" data-copy-message="${escapeHtml(message.text)}">Copy</button><button class="tiny-button" data-retry-last="1">Retry</button>${sources ? `<button class="tiny-button" data-show-sources="1">Sources</button>` : ""}</div>`
+              : ""
+          }
           ${sources}
         </article>
       `;
@@ -650,13 +852,53 @@ function renderAskMessages() {
 function sourceCard(source) {
   const loc = source.page_start ? `p.${source.page_start}` : source.slide_start ? `Slide ${source.slide_start}` : source.source_location || "";
   return `
-    <button class="source-card" data-preview="${source.source_file_id || source.file_id}">
+    <button class="source-card" data-preview="${source.source_file_id || source.file_id}" data-page="${source.page_start || ""}">
       <span class="chip official">Official course source</span>
       <strong>${escapeHtml(courseLabel(source))}</strong>
       <span>${escapeHtml(source.week_label || "")}</span>
       <span>${escapeHtml(source.filename || "")}</span>
       ${loc ? `<span>${escapeHtml(loc)}</span>` : ""}
     </button>
+  `;
+}
+
+async function openHistoryDrawer(query = "") {
+  await loadConversationList(query);
+  $("#historyDrawer").hidden = false;
+  $("#historySearch").value = query;
+  renderHistoryList();
+  $("#historySearch").focus();
+}
+
+function renderHistoryList() {
+  const groups = groupConversations(state.ask.history);
+  const html = ["Today", "Yesterday", "Previous 7 days", "Older"]
+    .filter((label) => groups[label]?.length)
+    .map(
+      (label) => `
+        <section class="history-group">
+          <h3>${label}</h3>
+          ${groups[label].map(historyItem).join("")}
+        </section>
+      `,
+    )
+    .join("");
+  $("#historyList").innerHTML = html || empty("No saved AI conversations yet.");
+}
+
+function historyItem(row) {
+  const active = Number(row.id) === Number(state.ask.conversationId) ? "active" : "";
+  const source = row.source_available === false ? "Source unavailable" : [courseLabel(row), row.week_label, row.filename].filter(Boolean).join(" · ");
+  return `
+    <article class="history-item ${active}">
+      <button class="button secondary" data-open-conversation="${row.id}">${escapeHtml(row.title)}</button>
+      <div class="history-meta">${escapeHtml(source || "General study chat")} · ${row.message_count || 0} messages</div>
+      <div class="history-actions">
+        <button class="tiny-button" data-rename-conversation="${row.id}">Rename</button>
+        <button class="tiny-button" data-duplicate-conversation="${row.id}">Duplicate</button>
+        <button class="tiny-button" data-delete-conversation="${row.id}">Delete</button>
+      </div>
+    </article>
   `;
 }
 
@@ -671,33 +913,39 @@ async function sendAskPagePrompt() {
   }
   const qn = detectQuestionNumber(prompt);
   if (qn && state.ask.scope === "question") context.questionNumber = qn;
+  context.scope = state.ask.scope;
   state.ask.messages.push({ role: "user", text: prompt, context: { ...context } });
-  state.ask.messages.push({ role: "system", text: "Searching official course materials..." });
+  state.ask.messages.push({ role: "system", text: "Searching your materials..." });
   $("#askConversation").innerHTML = renderAskMessages();
   $("#sendAskPage").disabled = true;
   $("#askPagePrompt").disabled = true;
   try {
-    state.ask.messages[state.ask.messages.length - 1].text = "Generating explanation...";
+    state.ask.messages[state.ask.messages.length - 1].text = "Preparing sources… Asking OpenAI…";
     $("#askConversation").innerHTML = renderAskMessages();
     const result = await api("/api/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ context, prompt }),
+      body: JSON.stringify({ context, prompt, scope: state.ask.scope, conversationId: state.ask.conversationId }),
     });
-    state.ask.messages.pop();
-    state.ask.messages.push({
-      role: "assistant",
-      text: result.response,
-      status: result.status,
-      sources: result.sources || [],
-      questions: result.questions || [],
-    });
-    state.ask.draft = "";
+    state.ask.conversationId = result.conversationId || result.conversation?.id || state.ask.conversationId;
+    state.ask.conversationTitle = result.conversation?.title || state.ask.conversationTitle;
+    if (state.ask.conversationId) localStorage.setItem("studyhub.currentConversationId", String(state.ask.conversationId));
+    hydrateMessages(result.messages || [
+      ...state.ask.messages.filter((message) => message.role !== "system"),
+      { role: "assistant", body: result.response, status: result.status, sources: result.sources || [], questions: result.questions || [] },
+    ]);
+    saveAskDraft("");
+    await loadConversationList();
     renderAskGpt();
   } catch (error) {
     state.ask.messages.pop();
     state.ask.messages.push({ role: "assistant", text: error.message, status: "error", sources: [] });
     renderAskGpt();
+  } finally {
+    const sendButton = $("#sendAskPage");
+    const promptBox = $("#askPagePrompt");
+    if (sendButton) sendButton.disabled = false;
+    if (promptBox) promptBox.disabled = false;
   }
 }
 
@@ -842,19 +1090,30 @@ async function route(viewName = state.view) {
   if (viewName === "settings") return renderSettings();
 }
 
-async function openFileDrawer(fileId) {
+async function openFileDrawer(fileId, page = 0) {
   const file = await api(`/api/file?id=${fileId}`);
   state.selectedFile = file;
   $("#drawerMeta").textContent = `${courseLabel(file)} · ${file.week_label || ""} · ${file.category || ""}`;
   $("#drawerTitle").textContent = file.filename;
-  $("#contextIndicator").textContent = `${courseLabel(file)}\n${file.week_label || ""}\n${file.exercise_type || file.category || ""}\n${file.filename}`;
+  $("#contextIndicator").innerHTML = [courseLabel(file), file.week_label, file.exercise_type || file.category, file.filename]
+    .filter(Boolean)
+    .map((line) => `<span>${escapeHtml(line)}</span>`)
+    .join("");
+  $("#fileDetails").innerHTML = `
+    <div><span>Filename</span><strong>${escapeHtml(file.filename)}</strong></div>
+    <div><span>Type</span><strong>${escapeHtml(file.mime_type || file.extension || "Unknown")}</strong></div>
+    <div><span>Index</span><strong>${escapeHtml(file.ai_index_status || "Unknown")}</strong></div>
+  `;
   $("#extractedText").textContent = file.extractedText || "No local text preview available. Open the original file for the authoritative version.";
-  $("#previewFrame").innerHTML = `<iframe title="Preview" src="/preview/${file.id}"></iframe>`;
+  const pageHash = page ? `#page=${page}` : "";
+  $("#previewFrame").innerHTML = `<iframe title="Preview" src="/preview/${file.id}${pageHash}"></iframe>`;
   $("#askResponse").textContent = "";
   $("#askPrompt").value = "";
   $("#noteBody").value = "";
   await loadFileNotes(file.id);
   $("#fileDrawer").hidden = false;
+  const savedWidth = localStorage.getItem("studyhub.previewWidth");
+  if (savedWidth) document.querySelector(".drawer-panel").style.setProperty("--studyhub-preview-width", savedWidth);
 }
 
 async function loadFileNotes(fileId) {
@@ -947,9 +1206,13 @@ async function askAboutFile() {
     const result = await api("/api/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ context, prompt }),
+      body: JSON.stringify({ context, prompt, scope: "file", conversationId: state.ask.conversationId }),
     });
-    $("#askResponse").textContent = `${result.response}\n\nSources\n${(result.sources || []).map(formatSource).join("\n")}`;
+    state.ask.conversationId = result.conversationId || result.conversation?.id || state.ask.conversationId;
+    state.ask.conversationTitle = result.conversation?.title || state.ask.conversationTitle;
+    if (state.ask.conversationId) localStorage.setItem("studyhub.currentConversationId", String(state.ask.conversationId));
+    hydrateMessages(result.messages || []);
+    $("#askResponse").innerHTML = `<div class="message-body">${renderMarkdown(result.response)}</div><div class="source-list">${(result.sources || []).map(sourceCard).join("")}</div>`;
   } finally {
     $("#askBtn").disabled = false;
   }
@@ -1071,10 +1334,66 @@ document.addEventListener("click", async (event) => {
     route("askgpt");
     return;
   }
+  if (target.dataset.openConversation) {
+    await reopenConversation(Number(target.dataset.openConversation));
+    return;
+  }
+  if (target.dataset.renameConversation) {
+    const row = state.ask.history.find((item) => Number(item.id) === Number(target.dataset.renameConversation));
+    const title = prompt("Rename conversation", row?.title || "");
+    if (title?.trim()) {
+      await api("/api/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "rename", id: Number(target.dataset.renameConversation), title: title.trim() }),
+      });
+      await openHistoryDrawer($("#historySearch")?.value || "");
+    }
+    return;
+  }
+  if (target.dataset.duplicateConversation) {
+    const data = await api("/api/conversations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "duplicate", id: Number(target.dataset.duplicateConversation) }),
+    });
+    await reopenConversation(data.conversation.id);
+    return;
+  }
+  if (target.dataset.deleteConversation) {
+    if (confirm("Delete this local AI conversation?")) {
+      await api("/api/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete", id: Number(target.dataset.deleteConversation) }),
+      });
+      if (Number(state.ask.conversationId) === Number(target.dataset.deleteConversation)) {
+        state.ask.conversationId = null;
+        state.ask.conversationTitle = "";
+        state.ask.messages = [];
+        localStorage.removeItem("studyhub.currentConversationId");
+      }
+      await openHistoryDrawer($("#historySearch")?.value || "");
+    }
+    return;
+  }
+  if (target.dataset.copyMessage) {
+    await navigator.clipboard.writeText(target.dataset.copyMessage);
+    toast("Copied");
+    return;
+  }
+  if (target.dataset.retryLast) {
+    const lastUser = [...state.ask.messages].reverse().find((message) => message.role === "user");
+    if (lastUser) {
+      saveAskDraft(lastUser.text);
+      renderAskGpt();
+    }
+    return;
+  }
   if (target.dataset.view) route(target.dataset.view);
   if (target.dataset.course && !target.dataset.week) renderCourse(Number(target.dataset.course));
   if (target.dataset.week) renderWeek(Number(target.dataset.course), target.dataset.week);
-  if (target.dataset.preview) openFileDrawer(Number(target.dataset.preview));
+  if (target.dataset.preview) openFileDrawer(Number(target.dataset.preview), Number(target.dataset.page || 0));
   if (target.dataset.open) openOriginal(Number(target.dataset.open));
   if (target.dataset.star) toggleStar(Number(target.dataset.star));
   if (target.dataset.context) copyContext(Number(target.dataset.context));
@@ -1083,8 +1402,30 @@ document.addEventListener("click", async (event) => {
 $("#closeDrawer").addEventListener("click", () => {
   $("#fileDrawer").hidden = true;
 });
+$("#closeHistory").addEventListener("click", () => {
+  $("#historyDrawer").hidden = true;
+});
+$("#clearHistory").addEventListener("click", async () => {
+  if (!confirm("Clear all saved AI conversations?")) return;
+  await api("/api/conversations", { method: "POST", body: JSON.stringify({ action: "clear" }) });
+  state.ask.conversationId = null;
+  state.ask.conversationTitle = "";
+  localStorage.removeItem("studyhub.currentConversationId");
+  await loadConversationList();
+  renderHistoryList();
+  renderAskGpt();
+});
+$("#historySearch").addEventListener("input", debounce(async () => {
+  await loadConversationList($("#historySearch").value);
+  renderHistoryList();
+}, 200));
 $("#openOriginal").addEventListener("click", () => state.selectedFile && openOriginal(state.selectedFile.id));
 $("#askFileFull").addEventListener("click", () => state.selectedFile && openAskForFile(state.selectedFile.id));
+$("#toggleAiExpanded").addEventListener("click", () => {
+  const panel = document.querySelector(".drawer-panel");
+  panel.classList.toggle("ai-expanded");
+  $("#toggleAiExpanded").textContent = panel.classList.contains("ai-expanded") ? "Compact AI" : "Expand AI";
+});
 $("#starFile").addEventListener("click", () => state.selectedFile && toggleStar(state.selectedFile.id));
 $("#copyContext").addEventListener("click", () => state.selectedFile && copyContext(state.selectedFile.id));
 $("#askBtn").addEventListener("click", askAboutFile);
@@ -1092,6 +1433,49 @@ $("#saveNote").addEventListener("click", saveNote);
 $("#scanBtn").addEventListener("click", scanLibrary);
 $("#uploadBtn").addEventListener("click", () => $("#uploadDialog").showModal());
 $("#uploadSubmit").addEventListener("click", uploadMaterial);
+
+document.querySelectorAll(".rail-tab").forEach((button) => {
+  button.addEventListener("click", () => {
+    state.ask.railTab = button.dataset.railTab;
+    document.querySelectorAll(".rail-tab").forEach((tab) => tab.classList.toggle("active", tab === button));
+    document.querySelectorAll(".rail-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `rail-${state.ask.railTab}`));
+  });
+});
+
+$("#drawerSplitHandle").addEventListener("pointerdown", (event) => {
+  const panel = document.querySelector(".drawer-panel");
+  if (!panel.classList.contains("ai-expanded")) return;
+  const startX = event.clientX;
+  const startWidth = parseFloat(getComputedStyle(panel).getPropertyValue("--studyhub-preview-width")) || 55;
+  const rect = panel.getBoundingClientRect();
+  $("#drawerSplitHandle").setPointerCapture(event.pointerId);
+  const move = (moveEvent) => {
+    const pct = Math.min(70, Math.max(35, startWidth + ((moveEvent.clientX - startX) / rect.width) * 100));
+    panel.style.setProperty("--studyhub-preview-width", `${pct}%`);
+    localStorage.setItem("studyhub.previewWidth", `${pct}%`);
+  };
+  const up = () => {
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", up);
+  };
+  document.addEventListener("pointermove", move);
+  document.addEventListener("pointerup", up);
+});
+
+document.addEventListener("keydown", (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "a") {
+    event.preventDefault();
+    setAiMode(state.ask.mode === "focus" ? "compact" : "focus");
+    route("askgpt");
+  }
+  if (event.key === "Escape") {
+    if (!$("#historyDrawer").hidden) $("#historyDrawer").hidden = true;
+    else if (state.ask.mode === "focus") {
+      setAiMode("compact");
+      route("askgpt");
+    }
+  }
+});
 
 loadBase()
   .then(() => route("home"))
