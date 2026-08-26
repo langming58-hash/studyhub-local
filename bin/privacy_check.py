@@ -33,6 +33,17 @@ RUNTIME_DIR_NAMES = {
     "exports",
 }
 
+BINARY_TEXT_SCAN_SKIP_EXTS = {
+    ".gif",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".webp",
+    ".woff",
+    ".woff2",
+}
+
 PRIVATE_CONFIG_NAMES = {
     ".env",
     ".env.local",
@@ -74,10 +85,25 @@ SECRET_PATTERNS = [
     re.compile(r"(?i)\b(cookie|session|oauth|token|password|secret)\s*[:=]\s*['\"]?[A-Za-z0-9._-]{20,}"),
 ]
 
+TEXT_EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+
 PRIVATE_PATH_PATTERNS = [
     re.compile(r"/(?:Users)/[A-Za-z0-9._-]+(?:/[^\s'\"`<>)]*)?"),
     re.compile(r"/home/[A-Za-z0-9._-]+(?:/[^\s'\"`<>)]*)?"),
     re.compile(r"[A-Za-z]:\\Users\\[^\\\s'\"`<>]+(?:\\[^\s'\"`<>]*)?"),
+]
+
+SOCIAL_POST_URL_PATTERNS = [
+    re.compile(r"https?://(?:www\.)?linkedin\.com/feed/update/urn:li:(?:share|activity):\d+/?", re.IGNORECASE),
+    re.compile(r"https?://(?:www\.)?xiaohongshu\.com/explore/[A-Za-z0-9_-]+/?", re.IGNORECASE),
+    re.compile(r"https?://(?:www\.)?(?:x|twitter)\.com/[^/\s]+/status/\d+/?", re.IGNORECASE),
+    re.compile(r"https?://(?:www\.)?reddit\.com/r/[^/\s]+/comments/[A-Za-z0-9_/-]+", re.IGNORECASE),
+    re.compile(r"https?://news\.ycombinator\.com/item\?id=\d+", re.IGNORECASE),
+]
+
+LAUNCH_LEDGER_PATTERNS = [
+    re.compile(r"\b(?:PUBLISHED|UNDER REVIEW|READY AS FALLBACK|BLOCKED BY PLATFORM)\b", re.IGNORECASE),
+    re.compile(r"\b20\d{2}-\d{2}-\d{2}\s+\d{1,2}:\d{2}\s+(?:AEST|AEDT|UTC|GMT|BST|PST|PDT|EST|EDT|CST|CDT)\b"),
 ]
 
 EMAIL_RE = re.compile(r"^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$")
@@ -157,6 +183,8 @@ def check_text(root: Path, paths: list[Path], config: PrivacyConfig) -> list[str
     for path in paths:
         if not path.exists() or path.stat().st_size > 1_000_000:
             continue
+        if path.suffix.lower() in BINARY_TEXT_SCAN_SKIP_EXTS:
+            continue
         if path.suffix.lower() in ACADEMIC_MATERIAL_EXTS:
             continue
         try:
@@ -173,6 +201,17 @@ def check_text(root: Path, paths: list[Path], config: PrivacyConfig) -> list[str
         for pattern in SECRET_PATTERNS:
             if pattern.search(text):
                 issues.append(f"Potential secret in {rel}: {pattern.pattern}")
+        for match in TEXT_EMAIL_RE.finditer(text):
+            if not is_privacy_safe_public_email(match.group(0)):
+                issues.append(f"Potential personal email in {rel}")
+                break
+        for pattern in SOCIAL_POST_URL_PATTERNS:
+            if pattern.search(text):
+                issues.append(f"Potential personal social post URL in {rel}: {pattern.pattern}")
+        if len(rel.parts) >= 2 and rel.parts[0] == "docs" and rel.parts[1] == "launch":
+            for pattern in LAUNCH_LEDGER_PATTERNS:
+                if pattern.search(text):
+                    issues.append(f"Potential personal launch ledger detail in {rel}: {pattern.pattern}")
     return issues
 
 

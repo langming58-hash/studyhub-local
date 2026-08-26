@@ -24,6 +24,17 @@ The project does not include analytics or telemetry by default.
 
 Public examples, tests, screenshots, and docs must use synthetic materials only.
 
+## Public Identity Boundary
+
+Public project documentation must not act as a directory linking the
+maintainer's personal social accounts unless that linkage is intentionally part
+of the public professional profile.
+
+Do not record direct social post URLs, private messages, login state, account
+eligibility, account age, platform verification details, or exact personal
+publication timestamps in this repository. Social publishing status belongs
+outside the code repository.
+
 ## Local Privacy Markers
 
 The public privacy checker is generic and does not contain user-specific names, course codes, university names, or local paths.

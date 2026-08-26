@@ -1,12 +1,16 @@
 # Runtime data: never commit local study metadata or extracted text.
 data/
 cache/
+cache/previews/
 logs/
 backups/
 exports/
 *.sqlite
 *.sqlite-*
 *.sqlite.bak
+*.sqlite3
+*.db
+*.db-*
 
 # Secrets and local machine settings.
 .env
