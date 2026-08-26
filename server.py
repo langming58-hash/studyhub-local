@@ -20,6 +20,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -62,6 +63,7 @@ DEFAULT_PORT = int(os.environ.get("PORT", "8765"))
 DATA_DIR = APP_ROOT / "data"
 CACHE_DIR = APP_ROOT / "cache"
 TEXT_CACHE_DIR = CACHE_DIR / "text"
+TEXT_EXTRACTION_VERSION = "extract-v2-office-paragraphs"
 LOG_DIR = APP_ROOT / "logs"
 STATIC_DIR = APP_ROOT / "static"
 KATEX_DIST_DIR = APP_ROOT / "node_modules" / "katex" / "dist"
@@ -249,7 +251,13 @@ TEXT_EXTRACTABLE_EXTS = {
     ".ipynb",
 }
 ACTIVE_WEB_PREVIEW_EXTS = {".html", ".htm", ".xhtml", ".xml", ".svg"}
-OOXML_PREVIEW_EXTS = {".docx", ".pptx", ".xlsx"}
+OFFICE_PDF_PREVIEW_EXTS = {".doc", ".docx", ".ppt", ".pptx"}
+SPREADSHEET_PREVIEW_EXTS = {".xls", ".xlsx"}
+TEXT_PREVIEW_EXTS = {".csv", ".tsv", ".txt", ".md", ".py", ".r", ".ipynb"}
+IMAGE_PREVIEW_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+OFFICE_PREVIEW_TIMEOUT_SECONDS = int(os.environ.get("STUDYHUB_OFFICE_PREVIEW_TIMEOUT", "60"))
+_OFFICE_PREVIEW_LOCKS: dict[str, threading.Lock] = {}
+_OFFICE_PREVIEW_LOCKS_GUARD = threading.Lock()
 INTERNAL_FILENAMES = {
     "source index.csv",
     "question bank.csv",
@@ -269,7 +277,7 @@ class PayloadTooLarge(ValueError):
 
 
 def ensure_dirs() -> None:
-    for path in (DATA_DIR, CACHE_DIR, TEXT_CACHE_DIR, LOG_DIR):
+    for path in (DATA_DIR, CACHE_DIR, TEXT_CACHE_DIR, preview_cache_dir(), LOG_DIR):
         path.mkdir(parents=True, exist_ok=True)
 
 
@@ -313,6 +321,18 @@ def validate_path_component(component: Any) -> str:
     ):
         raise PermissionError("Unsafe path component")
     return value
+
+
+def preview_cache_dir() -> Path:
+    return CACHE_DIR / "previews"
+
+
+def text_cache_filename(digest: str) -> str:
+    return f"{digest}-{TEXT_EXTRACTION_VERSION}.txt"
+
+
+def expected_text_cache_path(digest: str) -> Path:
+    return TEXT_CACHE_DIR / text_cache_filename(digest)
 
 
 def safe_child_path(root: Path, *components: Any) -> Path:
@@ -637,6 +657,188 @@ def configured_tool(name: str, env_name: str) -> str:
     return ""
 
 
+def executable_file(path: Path) -> str:
+    candidate = path.expanduser()
+    return str(candidate) if candidate.exists() and os.access(candidate, os.X_OK) else ""
+
+
+def office_converter_path() -> str:
+    for env_name in ("STUDYHUB_OFFICE_CONVERTER", "STUDYHUB_SOFFICE", "STUDYHUB_LIBREOFFICE"):
+        raw = os.environ.get(env_name, "").strip()
+        if not raw:
+            continue
+        direct = executable_file(Path(raw))
+        if direct:
+            return direct
+        found = shutil.which(raw)
+        if found:
+            return found
+
+    for name in ("soffice", "libreoffice", "soffice.exe", "libreoffice.exe"):
+        found = shutil.which(name)
+        if found:
+            return found
+
+    candidates = [
+        Path("/Applications/LibreOffice.app/Contents/MacOS/soffice"),
+        Path("/usr/bin/libreoffice"),
+        Path("/usr/local/bin/libreoffice"),
+        Path("/opt/homebrew/bin/libreoffice"),
+        Path("/usr/bin/soffice"),
+        Path("/usr/local/bin/soffice"),
+        Path("/opt/homebrew/bin/soffice"),
+    ]
+    for root_env in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        root = os.environ.get(root_env, "").strip()
+        if root:
+            candidates.append(Path(root) / "LibreOffice" / "program" / "soffice.exe")
+    for candidate in candidates:
+        direct = executable_file(candidate)
+        if direct:
+            return direct
+    return ""
+
+
+_OFFICE_CONVERTER_VERSION_CACHE: dict[str, str] = {}
+
+
+def office_converter_version(converter: str) -> str:
+    if not converter:
+        return "missing"
+    if converter in _OFFICE_CONVERTER_VERSION_CACHE:
+        return _OFFICE_CONVERTER_VERSION_CACHE[converter]
+    try:
+        res = subprocess.run([converter, "--version"], text=True, capture_output=True, timeout=10)
+        version = (res.stdout or res.stderr or "").strip() or Path(converter).name
+    except Exception:
+        version = Path(converter).name
+    _OFFICE_CONVERTER_VERSION_CACHE[converter] = version[:200]
+    return _OFFICE_CONVERTER_VERSION_CACHE[converter]
+
+
+def office_preview_dependency_error() -> str:
+    if office_converter_path():
+        return ""
+    return "Office visual preview requires LibreOffice. Install LibreOffice to preview PowerPoint and Word files as slides/pages."
+
+
+@dataclass(frozen=True)
+class OfficePreviewResult:
+    status: str
+    path: Path | None = None
+    cached: bool = False
+    message: str = ""
+
+
+def preview_lock_for(key: str) -> threading.Lock:
+    with _OFFICE_PREVIEW_LOCKS_GUARD:
+        lock = _OFFICE_PREVIEW_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _OFFICE_PREVIEW_LOCKS[key] = lock
+        return lock
+
+
+def office_preview_cache_key(row: sqlite3.Row | dict[str, Any], source_path: Path, converter: str) -> str:
+    digest = row["sha256"] or row["hash"] or sha256_file(source_path)
+    payload = f"{row['id']}|{source_path.suffix.lower()}|{digest}|{office_converter_version(converter)}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def remove_stale_preview_derivatives(file_id: int, keep_key: str) -> None:
+    root = preview_cache_dir()
+    if not root.exists():
+        return
+    keep_pdf = f"file-{file_id}-{keep_key}.pdf"
+    keep_meta = f"file-{file_id}-{keep_key}.json"
+    for path in root.glob(f"file-{file_id}-*"):
+        if path.name not in {keep_pdf, keep_meta}:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
+def convert_office_document_to_pdf(row: sqlite3.Row | dict[str, Any], source_path: Path) -> OfficePreviewResult:
+    ext = source_path.suffix.lower()
+    if ext not in OFFICE_PDF_PREVIEW_EXTS:
+        return OfficePreviewResult("unsupported", message="This file type does not use Office-to-PDF visual preview.")
+    if not is_inside(source_path, DEFAULT_STUDY_ROOT):
+        raise PermissionError("Preview source is outside the configured study folder.")
+    if not source_path.exists():
+        raise FileNotFoundError("Original file is missing. Scan Library to refresh your file list.")
+
+    converter = office_converter_path()
+    if not converter:
+        return OfficePreviewResult("missing_converter", message=office_preview_dependency_error())
+
+    ensure_dirs()
+    key = office_preview_cache_key(row, source_path, converter)
+    cache_root = preview_cache_dir()
+    pdf_path = cache_root / f"file-{row['id']}-{key}.pdf"
+    meta_path = cache_root / f"file-{row['id']}-{key}.json"
+    if pdf_path.exists() and pdf_path.stat().st_size > 0:
+        remove_stale_preview_derivatives(int(row["id"]), key)
+        return OfficePreviewResult("converted", pdf_path, cached=True)
+
+    lock = preview_lock_for(f"file-{row['id']}-{key}")
+    with lock:
+        if pdf_path.exists() and pdf_path.stat().st_size > 0:
+            remove_stale_preview_derivatives(int(row["id"]), key)
+            return OfficePreviewResult("converted", pdf_path, cached=True)
+        with tempfile.TemporaryDirectory(prefix=f"office-preview-{row['id']}-", dir=cache_root) as tmp_name:
+            tmp = Path(tmp_name)
+            out_dir = tmp / "out"
+            profile_dir = tmp / "profile"
+            out_dir.mkdir()
+            profile_dir.mkdir()
+            cmd = [
+                converter,
+                f"-env:UserInstallation={profile_dir.as_uri()}",
+                "--headless",
+                "--nologo",
+                "--nodefault",
+                "--nofirststartwizard",
+                "--norestore",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                str(out_dir),
+                str(source_path),
+            ]
+            try:
+                res = subprocess.run(cmd, text=True, capture_output=True, timeout=OFFICE_PREVIEW_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                return OfficePreviewResult("timeout", message="StudyHub timed out while creating the Office visual preview.")
+            if res.returncode != 0:
+                return OfficePreviewResult("conversion_failed", message="StudyHub could not create an Office visual preview.")
+
+            expected = out_dir / f"{source_path.stem}.pdf"
+            outputs = [expected] if expected.exists() else sorted(out_dir.glob("*.pdf"))
+            converted = next((item for item in outputs if item.exists() and item.stat().st_size > 0), None)
+            if converted is None:
+                return OfficePreviewResult("conversion_failed", message="StudyHub could not create an Office visual preview.")
+            tmp_pdf = cache_root / f".file-{row['id']}-{key}.{threading.get_ident()}.tmp.pdf"
+            shutil.copyfile(converted, tmp_pdf)
+            os.replace(tmp_pdf, pdf_path)
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "file_id": row["id"],
+                        "source_sha256": row["sha256"] or row["hash"] or "",
+                        "source_extension": ext,
+                        "converter": Path(converter).name,
+                        "converter_version": office_converter_version(converter),
+                        "created_at": now_iso(),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            remove_stale_preview_derivatives(int(row["id"]), key)
+            return OfficePreviewResult("converted", pdf_path, cached=False)
+
+
 def pdf_extraction_dependency_error() -> str:
     if configured_tool("pdftotext", "STUDYHUB_PDFTOTEXT"):
         return ""
@@ -678,6 +880,17 @@ def extract_pdf_page_text(path: Path, page: int) -> str:
     return run_text_command([pdftotext, "-layout", "-f", str(page), "-l", str(page), str(path), "-"], timeout=15)
 
 
+PML_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
+A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+R_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+PKG_REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+
+
+def collapse_inline_whitespace(text: str) -> str:
+    return re.sub(r"[ \t\r\f\v\u00a0]+", " ", text).strip()
+
+
 def xml_text_from_zip(path: Path, prefixes: tuple[str, ...]) -> str:
     if not zipfile.is_zipfile(path):
         return ""
@@ -694,6 +907,110 @@ def xml_text_from_zip(path: Path, prefixes: tuple[str, ...]) -> str:
                 if node.text and node.text.strip():
                     out.append(node.text.strip())
     return "\n".join(out)[:200_000]
+
+
+def pptx_slide_names(path: Path) -> list[str]:
+    if not zipfile.is_zipfile(path):
+        return []
+    try:
+        with zipfile.ZipFile(path) as zf:
+            presentation = ElementTree.fromstring(zf.read("ppt/presentation.xml"))
+            rels = ElementTree.fromstring(zf.read("ppt/_rels/presentation.xml.rels"))
+            targets = {
+                rel.attrib.get("Id"): rel.attrib.get("Target", "")
+                for rel in rels.findall(f"{PKG_REL_NS}Relationship")
+                if "slide" in rel.attrib.get("Type", "")
+            }
+            names: list[str] = []
+            for slide_id in presentation.findall(f".//{PML_NS}sldId"):
+                rid = slide_id.attrib.get(f"{R_NS}id")
+                target = targets.get(rid, "")
+                if not target:
+                    continue
+                normalized = target.lstrip("/")
+                if not normalized.startswith("ppt/"):
+                    normalized = f"ppt/{normalized}"
+                if normalized.startswith("ppt/slides/") and normalized.endswith(".xml") and normalized not in names:
+                    names.append(normalized)
+            if names:
+                return names
+    except Exception:
+        pass
+
+    def slide_sort_key(name: str) -> tuple[int, str]:
+        match = re.search(r"slide(\d+)\.xml$", name)
+        return (int(match.group(1)) if match else 10_000_000, name)
+
+    with zipfile.ZipFile(path) as zf:
+        return sorted((name for name in zf.namelist() if name.startswith("ppt/slides/slide") and name.endswith(".xml")), key=slide_sort_key)
+
+
+def pptx_paragraph_text(paragraph: ElementTree.Element) -> str:
+    pieces: list[str] = []
+    for child in paragraph:
+        if child.tag == f"{A_NS}r":
+            text = "".join(node.text or "" for node in child.findall(f"{A_NS}t"))
+            if text:
+                pieces.append(text)
+        elif child.tag == f"{A_NS}fld":
+            text = "".join(node.text or "" for node in child.findall(f"{A_NS}t"))
+            if text:
+                pieces.append(text)
+        elif child.tag == f"{A_NS}br":
+            pieces.append("\n")
+    text = collapse_inline_whitespace("".join(pieces))
+    if not text:
+        return ""
+    ppr = paragraph.find(f"{A_NS}pPr")
+    bullet = ppr is not None and (
+        ppr.find(f"{A_NS}buChar") is not None
+        or ppr.find(f"{A_NS}buAutoNum") is not None
+        or ppr.find(f"{A_NS}buBlip") is not None
+    )
+    if bullet and not text.startswith(("•", "-", "*")):
+        text = f"• {text}"
+    return text
+
+
+def pptx_slide_text_items(path: Path) -> list[tuple[str, str]]:
+    if not zipfile.is_zipfile(path):
+        return []
+    items: list[tuple[str, str]] = []
+    with zipfile.ZipFile(path) as zf:
+        for name in pptx_slide_names(path):
+            try:
+                root = ElementTree.fromstring(zf.read(name))
+            except Exception:
+                continue
+            paragraphs = [pptx_paragraph_text(paragraph) for paragraph in root.iter(f"{A_NS}p")]
+            text = "\n".join(paragraph for paragraph in paragraphs if paragraph)
+            if text:
+                items.append((name, text))
+    return items
+
+
+def docx_paragraph_items(path: Path) -> list[tuple[str, str]]:
+    if not zipfile.is_zipfile(path):
+        return []
+    items: list[tuple[str, str]] = []
+    try:
+        with zipfile.ZipFile(path) as zf:
+            root = ElementTree.fromstring(zf.read("word/document.xml"))
+            for idx, paragraph in enumerate(root.iter(f"{W_NS}p"), start=1):
+                pieces: list[str] = []
+                for child in paragraph.iter():
+                    if child.tag == f"{W_NS}t" and child.text:
+                        pieces.append(child.text)
+                    elif child.tag == f"{W_NS}tab":
+                        pieces.append("\t")
+                    elif child.tag == f"{W_NS}br":
+                        pieces.append("\n")
+                text = collapse_inline_whitespace("".join(pieces))
+                if text:
+                    items.append((f"paragraph-{idx}", text))
+    except Exception:
+        return []
+    return items
 
 
 def xml_text_items_from_zip(path: Path, prefix: str) -> list[tuple[str, str]]:
@@ -722,8 +1039,12 @@ def extract_text(path: Path) -> str:
         if ext == ".pdf":
             return extract_text_from_pdf(path)
         if ext == ".docx":
-            return xml_text_from_zip(path, ("word/",))
+            items = docx_paragraph_items(path)
+            return "\n".join(text for _name, text in items)[:200_000] if items else xml_text_from_zip(path, ("word/",))
         if ext == ".pptx":
+            slide_items = pptx_slide_text_items(path)
+            if slide_items:
+                return "\n\n".join(f"Slide {idx}\n\n{text}" for idx, (_name, text) in enumerate(slide_items, start=1))[:200_000]
             return xml_text_from_zip(path, ("ppt/slides/", "ppt/notesSlides/"))
         if ext in {".csv", ".tsv", ".txt", ".md", ".py", ".r", ".html", ".htm", ".xhtml", ".xml", ".svg"}:
             return path.read_text(encoding="utf-8", errors="ignore")[:200_000]
@@ -780,7 +1101,7 @@ def extract_document_chunks(path: Path, fallback_text: str) -> list[dict[str, An
             return out
     if ext == ".pptx":
         out = []
-        slide_items = xml_text_items_from_zip(path, "ppt/slides/")
+        slide_items = pptx_slide_text_items(path) or xml_text_items_from_zip(path, "ppt/slides/")
         for idx, (_name, text) in enumerate(slide_items, start=1):
             chunks = chunk_plain_text(text, f"Slide {idx}", slide_start=idx)
             out.extend(chunks)
@@ -788,7 +1109,7 @@ def extract_document_chunks(path: Path, fallback_text: str) -> list[dict[str, An
             chunk["chunk_index"] = i
         return out
     if ext == ".docx":
-        items = xml_text_items_from_zip(path, "word/")
+        items = docx_paragraph_items(path) or xml_text_items_from_zip(path, "word/")
         text = "\n\n".join(item_text for _name, item_text in items)
         return chunk_plain_text(text or fallback_text, "document")
     if ext == ".ipynb":
@@ -1171,18 +1492,34 @@ def text_cache_available(text_cache: str) -> bool:
     return bool(cache_path and cache_path.exists() and cache_path.stat().st_size > 0)
 
 
+def text_cache_matches_current_pipeline(text_cache: str, digest: str) -> bool:
+    if not text_cache:
+        return False
+    try:
+        cache_path = safe_cache_path(text_cache)
+    except PermissionError:
+        return False
+    return bool(
+        cache_path
+        and cache_path.name == text_cache_filename(digest)
+        and cache_path.exists()
+        and cache_path.stat().st_size > 0
+    )
+
+
 def should_retry_incomplete_index(
     existing: sqlite3.Row,
     ext: str,
     chunk_count: int,
     local_ai_state: sqlite3.Row | None,
+    digest: str,
 ) -> bool:
     if ext not in TEXT_EXTRACTABLE_EXTS:
         return False
     status = local_ai_state["status"] if local_ai_state else ""
     error = local_ai_state["error"] if local_ai_state and "error" in local_ai_state.keys() else ""
     return (
-        not text_cache_available(existing["text_cache_path"] or "")
+        not text_cache_matches_current_pipeline(existing["text_cache_path"] or "", digest)
         or chunk_count == 0
         or status in {"not_indexed", "failed", "error", "missing"}
         or bool(error)
@@ -1456,7 +1793,7 @@ def scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
                 chunk_count = conn.execute("SELECT COUNT(*) AS c FROM document_chunks WHERE file_id=?", (existing["id"],)).fetchone()["c"]
                 ai_seen = conn.execute("SELECT status, error FROM ai_index_state WHERE file_id=? AND provider='local'", (existing["id"],)).fetchone()
                 same_file = existing["sha256"] == digest and existing["modified_at"] == modified
-                needs_reindex = not same_file or should_retry_incomplete_index(existing, ext, chunk_count, ai_seen)
+                needs_reindex = not same_file or should_retry_incomplete_index(existing, ext, chunk_count, ai_seen, digest)
                 if needs_reindex:
                     stats.updated_files += 1
                 else:
@@ -1467,7 +1804,7 @@ def scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
                 text = extract_text(path)
                 extraction_error = extraction_error_for(path, text)
                 if text:
-                    text_cache_path = TEXT_CACHE_DIR / f"{digest}.txt"
+                    text_cache_path = expected_text_cache_path(digest)
                     text_cache_path.write_text(text, encoding="utf-8", errors="ignore")
                     text_cache = str(text_cache_path)
                     chunks = extract_document_chunks(path, text)
@@ -1679,6 +2016,7 @@ def api_health(conn: sqlite3.Connection) -> dict[str, Any]:
     last_ai = conn.execute("SELECT MAX(last_synced_at) AS ts FROM ai_index_state").fetchone()
     vector_store_id = current_vector_store_id(conn)
     pdf_dependency_error = pdf_extraction_dependency_error()
+    office_dependency_error = office_preview_dependency_error()
     extraction_warnings = [pdf_dependency_error] if pdf_dependency_error else []
     return {
         "app": APP_NAME,
@@ -1697,6 +2035,8 @@ def api_health(conn: sqlite3.Connection) -> dict[str, Any]:
         "openAI": "Configured" if bool(os.environ.get("OPENAI_API_KEY")) else "Not configured",
         "canvas": "Handled separately by an authenticated user-approved importer workflow",
         "pdfTextExtraction": "Unavailable" if pdf_dependency_error else "Available",
+        "officeVisualPreview": "Unavailable" if office_dependency_error else "Available",
+        "officePreviewWarning": office_dependency_error,
         "extractionWarnings": extraction_warnings,
     }
 
@@ -3553,12 +3893,71 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Disposition", f"inline; filename*=UTF-8''{urllib.parse.quote(path.name + '.txt')}")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-StudyHub-Preview-Mode", "text")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "SAMEORIGIN")
         self.send_header(
             "Content-Security-Policy",
             "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; frame-ancestors 'self'",
         )
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_preview_file(self, path: Path, content_type: str, filename: str, mode: str) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f"inline; filename*=UTF-8''{urllib.parse.quote(filename)}")
+        self.send_header("Content-Length", str(path.stat().st_size))
+        self.send_header("X-StudyHub-Preview-Mode", mode)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        with path.open("rb") as f:
+            shutil.copyfileobj(f, self.wfile)
+
+    def send_preview_notice(self, filename: str, title: str, message: str, mode: str = "unavailable") -> None:
+        body = f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{html.escape(title)}</title>
+    <style>
+      body {{
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #f7f6f2;
+        color: #201f1b;
+        font: 16px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }}
+      main {{
+        max-width: 640px;
+        margin: 32px;
+        padding: 24px;
+        border: 1px solid #dedbd2;
+        background: #fffdf8;
+        box-shadow: 0 10px 30px rgba(0,0,0,.06);
+      }}
+      h1 {{ margin: 0 0 12px; font-size: 1.35rem; }}
+      p {{ margin: 0 0 12px; }}
+      .file {{ color: #706b61; word-break: break-word; }}
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="file">{html.escape(filename)}</p>
+      <h1>{html.escape(title)}</h1>
+      <p>{html.escape(message)}</p>
+      <p>Use the Readable Text tab for extracted text, or Open original file from More if you need the authoritative document.</p>
+    </main>
+  </body>
+</html>""".encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-StudyHub-Preview-Mode", mode)
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
@@ -3573,23 +3972,29 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 text = path.read_text(encoding="utf-8", errors="ignore")[:20000]
                 self.send_escaped_text_preview(path, text)
                 return
-            if ext in OOXML_PREVIEW_EXTS:
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("X-Content-Type-Options", "nosniff")
-                self.end_headers()
-                text = read_cached_text(row, 20000)
-                body = f"<pre>{html.escape(text[:20000] or 'No text preview available. Use Open Original.')}</pre>"
-                self.wfile.write(body.encode("utf-8"))
+            if ext in OFFICE_PDF_PREVIEW_EXTS:
+                preview = convert_office_document_to_pdf(row, path)
+                if preview.path:
+                    self.send_preview_file(preview.path, "application/pdf", f"{path.stem}.pdf", "converted_pdf")
+                elif preview.status == "missing_converter":
+                    self.send_preview_notice(path.name, "PowerPoint/Word visual preview requires LibreOffice", preview.message, "unavailable")
+                else:
+                    self.send_preview_notice(path.name, "Preview unavailable", preview.message or "StudyHub could not create a visual preview for this Office file.", "unavailable")
                 return
-            self.send_response(200)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Disposition", f"inline; filename*=UTF-8''{urllib.parse.quote(path.name)}")
-            self.send_header("Content-Length", str(path.stat().st_size))
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.end_headers()
-            with path.open("rb") as f:
-                shutil.copyfileobj(f, self.wfile)
+            if ext in SPREADSHEET_PREVIEW_EXTS:
+                self.send_preview_notice(path.name, "Spreadsheet visual preview is not available yet", "StudyHub keeps the original spreadsheet as the source of truth and can still use readable text when available.", "unavailable")
+                return
+            if ext in TEXT_PREVIEW_EXTS:
+                text = extract_text(path) if not ext.startswith(".ipynb") else extract_text(path)
+                self.send_escaped_text_preview(path, text)
+                return
+            if ext == ".pdf" or ctype == "application/pdf":
+                self.send_preview_file(path, "application/pdf", path.name, "native_pdf")
+                return
+            if ext in IMAGE_PREVIEW_EXTS or ctype.startswith("image/"):
+                self.send_preview_file(path, ctype, path.name, "image")
+                return
+            self.send_preview_notice(path.name, "Preview unavailable", "StudyHub does not have a safe visual preview for this file type.", "unavailable")
         finally:
             conn.close()
 

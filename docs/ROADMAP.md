@@ -6,8 +6,8 @@ dates.
 ## Likely Next Areas
 
 - Cross-platform launcher and installer polish
-- Better automatic dependency handling for Poppler / PDF extraction
-- Richer document extraction, including scanned-PDF/OCR workflows
+- Better automatic dependency handling for Poppler and LibreOffice
+- Richer document extraction, including scanned-PDF/OCR workflows and workbook previews
 - Search ranking and filtering refinements
 - Deeper browser navigation and shareable local deep links
 - Human screen-reader and keyboard-navigation audit

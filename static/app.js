@@ -1369,9 +1369,11 @@ async function renderSettings() {
           <div><span>Study Library</span><strong>${state.health.studyLibraryConnected ? "Connected" : "Missing"}</strong></div>
           <div><span>Files in library</span><strong>${escapeHtml(state.health.filesIndexed || 0)}</strong></div>
           <div><span>PDF reading support</span><strong>${escapeHtml(state.health.pdfTextExtraction || "Unknown")}</strong></div>
+          <div><span>Office visual previews</span><strong>${escapeHtml(state.health.officeVisualPreview || "Unknown")}</strong></div>
           <div><span>Suspicious Files</span><strong>${escapeHtml(state.health.suspiciousFiles || 0)}</strong></div>
         </div>
         ${(state.health.extractionWarnings || []).length ? `<div class="notice">${state.health.extractionWarnings.map(escapeHtml).join("<br>")}</div>` : ""}
+        ${state.health.officePreviewWarning ? `<div class="notice compact">${escapeHtml(state.health.officePreviewWarning)}</div>` : ""}
       </section>
       <section class="section-block quiet-section">
         <div class="section-head">

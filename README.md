@@ -53,10 +53,16 @@ More captures:
 - Node.js and npm
 - Python 3
 - Poppler / `pdftotext` recommended for PDF text extraction
+- LibreOffice recommended for high-fidelity PowerPoint/Word visual previews
 
 StudyHub can run without Poppler. PDF preview may still work, but searchable PDF
 text and AI understanding of PDFs may be limited until Poppler is installed and
 the library is scanned again.
+
+StudyHub can also run without LibreOffice. PowerPoint/Word files still stay in
+your library and their readable text can be indexed when available, but the main
+preview pane will show a clear unavailable state instead of pretending extracted
+text is the original slide or page layout.
 
 ## Quick Start
 
@@ -268,6 +274,7 @@ Remote MCP exposure is not enabled by default.
 - OpenAI features require a separate OpenAI API account and billing
 - Document extraction quality varies by format and local tools
 - Poppler affects searchable PDF text and AI understanding of PDFs
+- LibreOffice affects visual previews for PowerPoint and Word files
 - Browser previews vary by file type and browser support
 - Automated accessibility checks exist, but a full human screen-reader audit is
   still incomplete
