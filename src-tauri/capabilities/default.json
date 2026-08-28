@@ -10,6 +10,8 @@
     "core:default",
     "dialog:allow-open",
     "allow-choose-study-folder",
-    "allow-restart-backend"
+    "allow-restart-backend",
+    "allow-retry-backend",
+    "allow-startup-diagnostics"
   ]
 }

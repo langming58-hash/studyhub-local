@@ -83,6 +83,7 @@ STATIC_DIR = configured_path("STUDYHUB_STATIC_DIR", APP_ROOT / "static")
 DEMO_DATA_DIR = configured_path("STUDYHUB_DEMO_DATA_DIR", APP_ROOT / "demo-data")
 KATEX_DIST_DIR = configured_path("STUDYHUB_KATEX_DIR", APP_ROOT / "node_modules" / "katex" / "dist")
 DESKTOP_MODE = os.environ.get("STUDYHUB_DESKTOP", "").strip().lower() in {"1", "true", "yes", "on"}
+PACKAGED_BACKEND = bool(getattr(sys, "frozen", False))
 DEMO_MODE = os.environ.get("DEMO_MODE", "").strip().lower() in {"1", "true", "yes", "on"} or (
     not ENV_LOCAL_EXISTS
     and "DEMO_MODE" not in os.environ
@@ -2026,11 +2027,13 @@ def api_health(conn: sqlite3.Connection) -> dict[str, Any]:
     vector_store_id = current_vector_store_id(conn)
     pdf_dependency_error = pdf_extraction_dependency_error()
     office_dependency_error = office_preview_dependency_error()
+    ca_bundle_available = certifi is not None and Path(certifi.where()).is_file()
     extraction_warnings = [pdf_dependency_error] if pdf_dependency_error else []
     return {
         "app": APP_NAME,
         "version": "0.1.5",
         "desktopMode": DESKTOP_MODE,
+        "packagedBackend": PACKAGED_BACKEND,
         "demoMode": DEMO_MODE,
         "studyLibraryConnected": DEFAULT_STUDY_ROOT.exists(),
         "database": "Healthy",
@@ -2044,6 +2047,7 @@ def api_health(conn: sqlite3.Connection) -> dict[str, Any]:
         "lastScan": last_scan["created_at"] if last_scan else None,
         "lastAISync": last_ai["ts"] if last_ai else None,
         "openAI": "Configured" if bool(os.environ.get("OPENAI_API_KEY")) else "Not configured",
+        "verifiedHttps": "Available" if ca_bundle_available else "Unavailable",
         "canvas": "Handled separately by an authenticated user-approved importer workflow",
         "pdfTextExtraction": "Unavailable" if pdf_dependency_error else "Available",
         "officeVisualPreview": "Unavailable" if office_dependency_error else "Available",

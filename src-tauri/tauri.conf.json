@@ -18,10 +18,10 @@
     "targets": ["app"],
     "createUpdaterArtifacts": false,
     "resources": {
-      "../server.py": "server.py",
       "../static/": "static/",
       "../demo-data/": "demo-data/",
-      "../node_modules/katex/dist/": "katex/"
+      "../node_modules/katex/dist/": "katex/",
+      "backend/studyhub-backend/": "backend/"
     },
     "macOS": {
       "minimumSystemVersion": "13.0"

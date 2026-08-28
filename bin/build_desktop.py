@@ -15,6 +15,17 @@ def main() -> int:
     tauri = ROOT / "node_modules" / ".bin" / "tauri"
     if not tauri.exists():
         raise SystemExit("Tauri CLI is unavailable. Run npm install first.")
+    backend_python = ROOT / ".venv-desktop" / "bin" / "python"
+    if not backend_python.exists():
+        raise SystemExit("Desktop build environment is unavailable. Run npm run desktop:setup first.")
+
+    backend = subprocess.run(
+        [str(backend_python), str(ROOT / "bin" / "build_desktop_backend.py")],
+        cwd=ROOT,
+        check=False,
+    )
+    if backend.returncode:
+        return backend.returncode
 
     env = os.environ.copy()
     remap = f"--remap-path-prefix={Path.home()}=/build-home"

@@ -189,6 +189,18 @@
           "markdownDescription": "Enables the restart_backend command without any pre-configured scope."
         },
         {
+          "description": "Enables the retry_backend command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-retry-backend",
+          "markdownDescription": "Enables the retry_backend command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the startup_diagnostics command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-startup-diagnostics",
+          "markdownDescription": "Enables the startup_diagnostics command without any pre-configured scope."
+        },
+        {
           "description": "Denies the choose_study_folder command without any pre-configured scope.",
           "type": "string",
           "const": "deny-choose-study-folder",
@@ -199,6 +211,18 @@
           "type": "string",
           "const": "deny-restart-backend",
           "markdownDescription": "Denies the restart_backend command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the retry_backend command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-retry-backend",
+          "markdownDescription": "Denies the retry_backend command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the startup_diagnostics command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-startup-diagnostics",
+          "markdownDescription": "Denies the startup_diagnostics command without any pre-configured scope."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
