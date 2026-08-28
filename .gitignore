@@ -33,6 +33,8 @@ Question Bank.csv
 __pycache__/
 *.py[cod]
 node_modules/
+.tools/
+src-tauri/target/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/

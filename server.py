@@ -14,6 +14,7 @@ import ipaddress
 import re
 import shutil
 import secrets
+import signal
 import socket
 import sqlite3
 import ssl
@@ -42,7 +43,9 @@ except ImportError:
 
 APP_NAME = "StudyHub Local"
 APP_ROOT = Path(__file__).resolve().parent
-ENV_LOCAL_PATH = APP_ROOT / ".env.local"
+ENV_LOCAL_PATH = Path(os.environ.get("STUDYHUB_CONFIG_PATH", APP_ROOT / ".env.local")).expanduser()
+if not ENV_LOCAL_PATH.is_absolute():
+    ENV_LOCAL_PATH = APP_ROOT / ENV_LOCAL_PATH
 ENV_LOCAL_EXISTS = ENV_LOCAL_PATH.exists()
 
 
@@ -60,18 +63,6 @@ def load_local_env() -> None:
 load_local_env()
 DEFAULT_HOST = os.environ.get("HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("PORT", "8765"))
-DATA_DIR = APP_ROOT / "data"
-CACHE_DIR = APP_ROOT / "cache"
-TEXT_CACHE_DIR = CACHE_DIR / "text"
-TEXT_EXTRACTION_VERSION = "extract-v2-office-paragraphs"
-LOG_DIR = APP_ROOT / "logs"
-STATIC_DIR = APP_ROOT / "static"
-KATEX_DIST_DIR = APP_ROOT / "node_modules" / "katex" / "dist"
-DEMO_MODE = os.environ.get("DEMO_MODE", "").strip().lower() in {"1", "true", "yes", "on"} or (
-    not ENV_LOCAL_EXISTS
-    and "DEMO_MODE" not in os.environ
-    and "STUDY_LIBRARY_PATH" not in os.environ
-)
 
 
 def configured_path(env_name: str, fallback: Path) -> Path:
@@ -80,6 +71,23 @@ def configured_path(env_name: str, fallback: Path) -> Path:
     if not path.is_absolute():
         path = APP_ROOT / path
     return path
+
+
+RUNTIME_DIR = configured_path("STUDYHUB_RUNTIME_DIR", APP_ROOT)
+DATA_DIR = configured_path("STUDYHUB_DATA_DIR", RUNTIME_DIR / "data")
+CACHE_DIR = configured_path("STUDYHUB_CACHE_DIR", RUNTIME_DIR / "cache")
+TEXT_CACHE_DIR = CACHE_DIR / "text"
+TEXT_EXTRACTION_VERSION = "extract-v2-office-paragraphs"
+LOG_DIR = configured_path("STUDYHUB_LOG_DIR", RUNTIME_DIR / "logs")
+STATIC_DIR = configured_path("STUDYHUB_STATIC_DIR", APP_ROOT / "static")
+DEMO_DATA_DIR = configured_path("STUDYHUB_DEMO_DATA_DIR", APP_ROOT / "demo-data")
+KATEX_DIST_DIR = configured_path("STUDYHUB_KATEX_DIR", APP_ROOT / "node_modules" / "katex" / "dist")
+DESKTOP_MODE = os.environ.get("STUDYHUB_DESKTOP", "").strip().lower() in {"1", "true", "yes", "on"}
+DEMO_MODE = os.environ.get("DEMO_MODE", "").strip().lower() in {"1", "true", "yes", "on"} or (
+    not ENV_LOCAL_EXISTS
+    and "DEMO_MODE" not in os.environ
+    and "STUDY_LIBRARY_PATH" not in os.environ
+)
 
 
 def read_local_env_entries() -> dict[str, str]:
@@ -97,6 +105,7 @@ def read_local_env_entries() -> dict[str, str]:
 
 def write_local_env_entries(entries: dict[str, str]) -> None:
     ensure_dirs()
+    ENV_LOCAL_PATH.parent.mkdir(parents=True, exist_ok=True)
     ordered = [
         "DEMO_MODE",
         "STUDY_LIBRARY_PATH",
@@ -151,7 +160,7 @@ def save_study_library_config(raw_path: str) -> dict[str, Any]:
 DB_PATH = configured_path("DATABASE_PATH", DATA_DIR / "studyhub.sqlite")
 DEFAULT_STUDY_ROOT = configured_path(
     "STUDY_LIBRARY_PATH",
-    APP_ROOT / "demo-data" if DEMO_MODE else Path.home() / "StudyLibrary",
+    DEMO_DATA_DIR if DEMO_MODE else Path.home() / "StudyLibrary",
 )
 OPENAI_API_BASE = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1").rstrip("/")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4")
@@ -2020,6 +2029,8 @@ def api_health(conn: sqlite3.Connection) -> dict[str, Any]:
     extraction_warnings = [pdf_dependency_error] if pdf_dependency_error else []
     return {
         "app": APP_NAME,
+        "version": "0.1.5",
+        "desktopMode": DESKTOP_MODE,
         "demoMode": DEMO_MODE,
         "studyLibraryConnected": DEFAULT_STUDY_ROOT.exists(),
         "database": "Healthy",
@@ -4194,6 +4205,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
 
 def find_free_port(start_port: int) -> int:
     bind_host = validate_loopback_bind_host(DEFAULT_HOST)
+    if start_port == 0:
+        return 0
     port = start_port
     while port < start_port + 50:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -4214,14 +4227,30 @@ def serve(port: int, open_browser: bool = False, scan_first: bool = True) -> Non
     if chosen_port != port:
         print(f"Port {port} is already in use; StudyHub is using localhost port {chosen_port} instead.", flush=True)
     server = ThreadingHTTPServer((bind_host, chosen_port), StudyHubHandler)
+    actual_port = int(server.server_address[1])
     display_host = "localhost" if bind_host in {"127.0.0.1", "::1", "localhost"} else bind_host
-    url = f"http://{display_host}:{chosen_port}"
+    url = f"http://{display_host}:{actual_port}"
     print(f"{APP_NAME} running at {url}", flush=True)
     print("Study library: configured local path", flush=True)
     print("SQLite database: local runtime database", flush=True)
     if open_browser:
         webbrowser.open(url)
-    server.serve_forever()
+    previous_sigterm = None
+    if threading.current_thread() is threading.main_thread():
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+        def stop_server(_signum: int, _frame: Any) -> None:
+            raise KeyboardInterrupt
+
+        signal.signal(signal.SIGTERM, stop_server)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        if previous_sigterm is not None:
+            signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 def verify_library() -> int:

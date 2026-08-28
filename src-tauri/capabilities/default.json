@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "studyhub-localhost",
+  "description": "Only the StudyHub localhost UI can invoke the desktop folder picker.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://localhost:*"]
+  },
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "allow-choose-study-folder",
+    "allow-restart-backend"
+  ]
+}

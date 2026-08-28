@@ -34,6 +34,12 @@ const view = $("#view");
 let restoringRoute = false;
 let appLoaded = false;
 
+function desktopInvoke(command, args = {}) {
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (!state.health?.desktopMode || typeof invoke !== "function") return null;
+  return invoke(command, args);
+}
+
 function routeHash(routeState = {}) {
   const viewName = routeState.view || "home";
   if (viewName === "course" && routeState.courseId) return `#/course/${encodeURIComponent(routeState.courseId)}`;
@@ -420,6 +426,7 @@ function firstRunPanel() {
   const preflight = state.preflight || {};
   const needsAttention = actionPreflightItems().length > 0;
   if (dismissed && !needsAttention) return "";
+  const desktopMode = Boolean(state.health?.desktopMode);
   const mode = preflight.demoMode ? "Demo Mode" : "Local Library";
   return `
     <section class="onboarding-card" aria-labelledby="firstRunTitle">
@@ -429,8 +436,8 @@ function firstRunPanel() {
         <p class="muted">${preflight.demoMode ? "These sample courses are synthetic. Your real files stay on your computer when you choose a study folder. OpenAI is optional." : "Your courses and files are read from your local study folder. OpenAI is optional."}</p>
       </div>
       <div class="onboarding-actions">
-        <button class="button primary" data-view="${preflight.fileCount ? "courses" : "settings"}">${preflight.fileCount ? "Start exploring" : "Set up files"}</button>
-        <button class="button secondary" data-open-library-setup="1">Use my own files</button>
+        <button class="button primary" data-view="courses">${desktopMode && preflight.demoMode ? "Try Demo" : "Start exploring"}</button>
+        <button class="button secondary" ${desktopMode ? "data-choose-study-folder=\"1\"" : "data-open-library-setup=\"1\""}>Choose My Study Folder</button>
         <button class="button ghost" data-dismiss-onboarding="1">Hide</button>
       </div>
     </section>
@@ -465,13 +472,14 @@ function recoveryCard(item, expandProblems = false) {
 }
 
 function librarySetupForm() {
+  const desktopMode = Boolean(state.health?.desktopMode);
   return `
     <form class="library-setup-form" id="librarySetupForm">
       <label>Study folder
-        <input id="studyLibraryPathInput" placeholder="~/StudyLibrary" autocomplete="off" />
+        <input id="studyLibraryPathInput" placeholder="${desktopMode ? "Choose a folder on this Mac" : "~/StudyLibrary"}" autocomplete="off" ${desktopMode ? "readonly" : ""} />
       </label>
-      <button class="button primary" type="submit">Use this folder</button>
-      <p class="muted">StudyHub will save this in your local settings file and ask you to restart. It will not upload the folder.</p>
+      ${desktopMode ? '<button class="button primary" type="button" data-choose-study-folder="1">Choose folder</button>' : '<button class="button primary" type="submit">Use this folder</button>'}
+      <p class="muted">StudyHub saves this choice locally. It does not upload the folder.</p>
       <div id="librarySetupResult" class="notice compact" hidden></div>
     </form>
   `;
@@ -668,9 +676,11 @@ function bindLibrarySetupForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path }),
       });
-      result.textContent = data.message || "Saved. Restart StudyHub to use this folder.";
+      result.textContent = state.health?.desktopMode ? "Opening this study folder..." : (data.message || "Saved. Restart StudyHub to use this folder.");
       localStorage.setItem("studyhub.onboardingDismissed", "true");
       toast("Study folder saved");
+      const restart = desktopInvoke("restart_backend");
+      if (restart) await restart;
     } catch (error) {
       result.textContent = error.message;
     }
@@ -1695,6 +1705,30 @@ document.addEventListener("click", async (event) => {
   }
   if (target.dataset.openLibrarySetup) {
     route("settings").then(() => $("#studyLibraryPathInput")?.focus());
+    return;
+  }
+  if (target.dataset.chooseStudyFolder) {
+    try {
+      const selected = await desktopInvoke("choose_study_folder");
+      if (!selected) return;
+      const form = $("#librarySetupForm");
+      const input = $("#studyLibraryPathInput");
+      if (form && input) {
+        input.value = selected;
+        form.requestSubmit();
+        return;
+      }
+      await api("/api/config/study-library", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: selected }),
+      });
+      localStorage.setItem("studyhub.onboardingDismissed", "true");
+      const restart = desktopInvoke("restart_backend");
+      if (restart) await restart;
+    } catch (error) {
+      toast(error.message || String(error));
+    }
     return;
   }
   if (target.dataset.studyMode) {

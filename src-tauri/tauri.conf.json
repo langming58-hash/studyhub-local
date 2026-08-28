@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "StudyHub Local",
+  "version": "0.1.5",
+  "identifier": "io.studyhublocal.desktop.prototype",
+  "build": {
+    "frontendDist": "../desktop-shell"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "createUpdaterArtifacts": false,
+    "resources": {
+      "../server.py": "server.py",
+      "../static/": "static/",
+      "../demo-data/": "demo-data/",
+      "../node_modules/katex/dist/": "katex/"
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.0"
+    }
+  }
+}

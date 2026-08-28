@@ -5,15 +5,28 @@
 [![CI](https://github.com/langming58-hash/studyhub-local/actions/workflows/ci.yml/badge.svg)](https://github.com/langming58-hash/studyhub-local/actions/workflows/ci.yml)
 ![Local-first](https://img.shields.io/badge/localhost--only-local--first-blue)
 
-StudyHub Local is an early-stage, local-first study app for messy course folders.
-It helps you browse course files by Course -> Week, preview materials, search your
-own study library, keep notes and review records, and optionally ask AI questions
-grounded in your own materials.
+StudyHub Local is a local-first study workspace for your own course files.
+
+It works with any university. Your university does not need to provide an API.
+StudyHub is currently a local application that runs on your computer.
+
+This early-stage project helps you browse course files by Course -> Week, preview
+materials, search your own study library, keep notes and review records, and
+optionally ask AI questions grounded in your own materials.
 
 Your original files stay in your own local study folder. The public repository
 ships only synthetic Demo Mode data.
 
-[Quick Start](#quick-start) · [Use Your Own Files](#use-your-own-files) · [AI](#ai-and-sources) · [Privacy](#privacy-at-a-glance) · [Security](SECURITY.md)
+[Try StudyHub Today](#try-studyhub-today) · [Use Your Own Files](#use-your-own-files) · [AI](#ai-and-sources) · [FAQ](#faq) · [Privacy](#privacy-at-a-glance) · [Security](SECURITY.md)
+
+## Current Release Status
+
+The current stable release is the source-based
+[v0.1.5](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.5).
+It requires the prerequisites listed below.
+
+A macOS desktop shell is under development as an internal prototype. It is not
+a public desktop download, signed app, notarized app, or DMG release yet.
 
 ## Screenshots
 
@@ -64,10 +77,18 @@ your library and their readable text can be indexed when available, but the main
 preview pane will show a clear unavailable state instead of pretending extracted
 text is the original slide or page layout.
 
-## Quick Start
+## Try StudyHub Today
 
-Quick Start uses the current development `main` branch. The latest stable release
-is [v0.1.5](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.5).
+Choose the path that fits you:
+
+1. **Guided local start on macOS:** install the prerequisites below, clone the
+   repository, install its dependencies once, then double-click
+   `Start StudyHub Local.command` for later launches.
+2. **Install with Codex:** use the privacy-safe prompt in
+   [Install With Codex](docs/INSTALL_WITH_CODEX.md).
+3. **Manual developer setup:** use the commands below on macOS, Linux, or Windows.
+
+The current commands use the development `main` branch:
 
 ```bash
 git clone https://github.com/langming58-hash/studyhub-local.git
@@ -90,6 +111,9 @@ URL rather than assuming the default.
 
 No `.env.local` file is required for the first run. With no local configuration,
 StudyHub starts automatically in Demo Mode.
+
+On macOS, later launches can use `Start StudyHub Local.command`. This is a
+convenience launcher for the source install, not the unreleased desktop app.
 
 ## Try The Demo
 
@@ -224,6 +248,42 @@ npm run dev
 
 Linux users can run the Quick Start commands after installing Git, Node.js, npm,
 and Python 3 through their package manager.
+
+## FAQ
+
+### Is StudyHub only for the University of Sydney?
+
+No. StudyHub works with course files from any university.
+
+### Does my school need to provide an API?
+
+No. StudyHub works with course files you already have on your computer.
+School or LMS APIs are optional ways a user might automate downloading or
+syncing; they are not required by StudyHub.
+
+### Do I need Canvas?
+
+No. StudyHub scans a local folder and is not tied to Canvas or another LMS.
+
+### Do I need an OpenAI API key?
+
+Only if you want the optional OpenAI-powered AI features. Browsing, search,
+preview, notes, stars, and study records work without it.
+
+### Does ChatGPT Plus automatically work as my API account?
+
+No. OpenAI API access is configured and billed separately from a ChatGPT
+subscription.
+
+### Do my course files need to be uploaded to StudyHub servers?
+
+No. StudyHub has no hosted file service and its core workflow is local-first. If
+you explicitly enable OpenAI features, selected or indexed content used by those
+features may be sent to OpenAI through your own API account.
+
+### Does StudyHub work without AI?
+
+Yes. AI is optional.
 
 ## Privacy At A Glance
 
