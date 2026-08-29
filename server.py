@@ -1956,7 +1956,15 @@ def has_context_scope(context: dict[str, Any]) -> bool:
 
 
 def get_file(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row:
-    row = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
+    row = conn.execute(
+        """
+        SELECT f.*, s.id AS star_id
+        FROM files f
+        LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
+        WHERE f.id=?
+        """,
+        (file_id,),
+    ).fetchone()
     if row is None:
         raise FileNotFoundError("File was not found. Scan Library to refresh your file list.")
     path = Path(row["original_path"]).expanduser().resolve()
@@ -3576,13 +3584,19 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 normalized_query = fts_query(query)
                 if normalized_query:
                     sql = """
-                    SELECT f.*, bm25(files_fts) AS rank
+                    SELECT f.*, s.id AS star_id, bm25(files_fts) AS rank
                     FROM files_fts JOIN files f ON files_fts.rowid=f.id
+                    LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
                     WHERE files_fts MATCH ? AND f.active=1
                     """
                     params.append(normalized_query)
                 else:
-                    sql = "SELECT f.*, 0 AS rank FROM files f WHERE f.active=1"
+                    sql = """
+                    SELECT f.*, s.id AS star_id, 0 AS rank
+                    FROM files f
+                    LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
+                    WHERE f.active=1
+                    """
                 if course_id:
                     sql += " AND f.course_id=?"
                     params.append(int(course_id))
@@ -3595,11 +3609,20 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 sql += " ORDER BY rank, f.modified_at DESC LIMIT 80"
                 self.send_json([public_file(row) for row in conn.execute(sql, params).fetchall()])
             elif path == "/api/recent":
-                rows = conn.execute("SELECT * FROM files WHERE active=1 ORDER BY indexed_at DESC LIMIT 20").fetchall()
+                rows = conn.execute(
+                    """
+                    SELECT f.*, s.id AS star_id
+                    FROM files f
+                    LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
+                    WHERE f.active=1
+                    ORDER BY f.indexed_at DESC
+                    LIMIT 20
+                    """
+                ).fetchall()
                 self.send_json([public_file(row) for row in rows])
             elif path == "/api/starred":
                 rows = conn.execute(
-                    "SELECT f.* FROM stars s JOIN files f ON f.id=s.target_id WHERE s.target_type='file' AND f.active=1 ORDER BY s.created_at DESC"
+                    "SELECT f.*, s.id AS star_id FROM stars s JOIN files f ON f.id=s.target_id WHERE s.target_type='file' AND f.active=1 ORDER BY s.created_at DESC"
                 ).fetchall()
                 self.send_json([public_file(row) for row in rows])
             elif path == "/api/context":

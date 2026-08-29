@@ -369,6 +369,17 @@ def main() -> int:
             custom_health = health(custom_url)
             courses = get_json(custom_url, "/api/courses")
             search = get_json(custom_url, "/api/search?q=derivative")
+            matching = [
+                item
+                for item in search
+                if isinstance(item, dict) and "Derivatives" in str(item.get("filename") or "")
+            ]
+            starred_file_id = int(matching[0]["id"]) if matching else 0
+            star_result = post_json(custom_url, f"/api/star/{starred_file_id}", {}) if starred_file_id else {}
+            search_after_star = get_json(custom_url, "/api/search?q=derivative")
+            recent_after_star = get_json(custom_url, "/api/recent")
+            detail_after_star = get_json(custom_url, f"/api/file?id={starred_file_id}") if starred_file_id else {}
+            starred_after_star = get_json(custom_url, "/api/starred")
             scan_result = rescan(custom_url)
             results.update(
                 {
@@ -379,6 +390,12 @@ def main() -> int:
                     and all(str(course.get("code") or "").startswith("TEST") for course in courses),
                     "synthetic_library_search": isinstance(search, list)
                     and any("Derivatives" in str(item.get("filename") or "") for item in search),
+                    "star_state_consistent_across_file_views": bool(star_result.get("starred"))
+                    and any(item.get("id") == starred_file_id and item.get("star_id") for item in search_after_star)
+                    and any(item.get("id") == starred_file_id and item.get("star_id") for item in recent_after_star)
+                    and detail_after_star.get("id") == starred_file_id
+                    and bool(detail_after_star.get("star_id"))
+                    and any(item.get("id") == starred_file_id and item.get("star_id") for item in starred_after_star),
                     "synthetic_library_rescan": scan_result.get("ok") is True,
                 }
             )
