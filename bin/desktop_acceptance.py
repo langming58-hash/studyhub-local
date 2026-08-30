@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import queue
@@ -257,6 +258,15 @@ def packaged_checks(results: dict[str, bool]) -> None:
 
         synthetic_library = temp_root / "Synthetic StudyLibrary"
         shutil.copytree(APP_RESOURCES / "demo-data", synthetic_library)
+        incoming_dir = temp_root / "Incoming Synthetic Materials"
+        incoming_dir.mkdir()
+        incoming_paths = [
+            incoming_dir / "TEST4099 Lecture A.txt",
+            incoming_dir / "TEST4099 Tutorial B.txt",
+        ]
+        for index, path in enumerate(incoming_paths, start=1):
+            path.write_text(f"TEST4099 packaged material {index}. Unique grounded text {index}.\n", encoding="utf-8")
+        incoming_hashes = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in incoming_paths}
         custom_runtime = temp_root / "custom-runtime"
         custom_process, custom_url, _ = start_backend(
             custom_runtime,
@@ -267,6 +277,8 @@ def packaged_checks(results: dict[str, bool]) -> None:
         )
         note_text = "Synthetic packaged desktop persistence note."
         note_file_id = 0
+        managed_course_id = 0
+        managed_material_ids: list[int] = []
         try:
             custom_health = health(custom_url)
             courses = get_json(custom_url, "/api/courses")
@@ -280,6 +292,65 @@ def packaged_checks(results: dict[str, bool]) -> None:
                 "/api/notes",
                 {"targetType": "file", "targetId": note_file_id, "body": note_text},
             )
+            term = post_json(custom_url, "/api/terms/manage", {"action": "create", "name": "Packaged QA Term"})
+            managed_course = post_json(
+                custom_url,
+                "/api/courses/manage",
+                {
+                    "action": "create",
+                    "course_code": "TEST4099",
+                    "display_name": "Packaged Product QA",
+                    "term_id": int(term["id"]),
+                },
+            )
+            managed_course_id = int(managed_course["id"])
+            first_week = post_json(
+                custom_url,
+                "/api/weeks/manage",
+                {"action": "create", "course_id": managed_course_id, "label": "Module Alpha", "kind": "module"},
+            )
+            second_week = post_json(
+                custom_url,
+                "/api/weeks/manage",
+                {"action": "create", "course_id": managed_course_id, "label": "Review Block", "kind": "module"},
+            )
+            imported = post_json(
+                custom_url,
+                "/api/materials/import-paths",
+                {
+                    "paths": [str(path) for path in incoming_paths],
+                    "course_id": managed_course_id,
+                    "week_id": int(first_week["id"]),
+                    "material_type": "Lecture",
+                },
+            )
+            managed_material_ids = [int(item["id"]) for item in imported["items"] if item.get("status") == "added"]
+            classified = post_json(
+                custom_url,
+                "/api/materials/manage",
+                {
+                    "action": "classify",
+                    "ids": managed_material_ids,
+                    "course_id": managed_course_id,
+                    "week_id": int(second_week["id"]),
+                    "material_type": "Reading",
+                },
+            )
+            renamed_course = post_json(
+                custom_url,
+                "/api/courses/manage",
+                {
+                    "action": "update",
+                    "id": managed_course_id,
+                    "course_code": "TEST4199",
+                    "display_name": "Renamed Packaged QA",
+                    "term_id": int(term["id"]),
+                },
+            )
+            archived_course = post_json(custom_url, "/api/courses/manage", {"action": "archive", "id": managed_course_id})
+            restored_course = post_json(custom_url, "/api/courses/manage", {"action": "restore", "id": managed_course_id})
+            managed_files = get_json(custom_url, f"/api/files?course_id={managed_course_id}")
+            cache_result = post_json(custom_url, "/api/cache/clear", {})
             results.update(
                 {
                     "packaged_custom_library_mode": custom_health.get("demoMode") is False,
@@ -293,6 +364,22 @@ def packaged_checks(results: dict[str, bool]) -> None:
                     and normalized_preview_headers.get("x-studyhub-preview-mode") == "text"
                     and b"derivative" in preview_body.lower(),
                     "packaged_note_created": isinstance(note_result, dict) and note_result.get("ok") is True,
+                    "packaged_term_course_week_crud": managed_course_id > 0
+                    and first_week.get("kind") == "module"
+                    and second_week.get("week_label") == "Review Block"
+                    and renamed_course.get("code") == "TEST4199",
+                    "packaged_native_path_batch_import": imported.get("added") == 2 and len(managed_material_ids) == 2,
+                    "packaged_batch_reclassification": classified.get("ok") is True
+                    and isinstance(managed_files, list)
+                    and len(managed_files) == 2
+                    and all(item.get("material_type") == "Reading" and item.get("week_label") == "Review Block" for item in managed_files),
+                    "packaged_course_archive_restore": archived_course.get("archived") == 1
+                    and restored_course.get("archived") == 0,
+                    "packaged_cache_rebuild": cache_result.get("ok") is True and int(cache_result.get("reindexed") or 0) >= 2,
+                    "packaged_import_preserves_sources": all(
+                        path.exists() and hashlib.sha256(path.read_bytes()).hexdigest() == incoming_hashes[path]
+                        for path in incoming_paths
+                    ),
                 }
             )
         finally:
@@ -307,8 +394,24 @@ def packaged_checks(results: dict[str, bool]) -> None:
         )
         try:
             notes = get_json(reopened_url, f"/api/notes?targetType=file&targetId={note_file_id}")
+            reopened_courses = get_json(reopened_url, "/api/courses")
+            reopened_files = get_json(reopened_url, f"/api/files?course_id={managed_course_id}")
             results["packaged_note_persistence"] = isinstance(notes, list) and any(
                 item.get("body") == note_text for item in notes if isinstance(item, dict)
+            )
+            results["packaged_management_restart_persistence"] = isinstance(reopened_courses, list) and any(
+                item.get("id") == managed_course_id and item.get("code") == "TEST4199"
+                for item in reopened_courses if isinstance(item, dict)
+            ) and isinstance(reopened_files, list) and len(reopened_files) == 2
+            removed = post_json(
+                reopened_url,
+                "/api/materials/manage",
+                {"action": "remove", "ids": managed_material_ids},
+            )
+            reset = post_json(reopened_url, "/api/reset", {"confirmation": "RESET STUDYHUB"})
+            results["packaged_remove_and_reset_preserve_sources"] = removed.get("ok") is True and reset.get("ok") is True and all(
+                path.exists() and hashlib.sha256(path.read_bytes()).hexdigest() == incoming_hashes[path]
+                for path in incoming_paths
             )
         finally:
             stop_backend(reopened_process)
