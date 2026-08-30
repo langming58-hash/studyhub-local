@@ -177,6 +177,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the choose_study_files command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-choose-study-files",
+          "markdownDescription": "Enables the choose_study_files command without any pre-configured scope."
+        },
+        {
           "description": "Enables the choose_study_folder command without any pre-configured scope.",
           "type": "string",
           "const": "allow-choose-study-folder",
@@ -199,6 +205,12 @@
           "type": "string",
           "const": "allow-startup-diagnostics",
           "markdownDescription": "Enables the startup_diagnostics command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the choose_study_files command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-choose-study-files",
+          "markdownDescription": "Denies the choose_study_files command without any pre-configured scope."
         },
         {
           "description": "Denies the choose_study_folder command without any pre-configured scope.",

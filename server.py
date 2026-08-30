@@ -2890,20 +2890,46 @@ def manage_materials(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str
 
 
 def clear_recreatable_cache(conn: sqlite3.Connection) -> dict[str, Any]:
-    for child in CACHE_DIR.iterdir() if CACHE_DIR.exists() else []:
-        if child.is_dir():
-            shutil.rmtree(child)
-        else:
-            child.unlink(missing_ok=True)
+    visibility = course_visibility_sql("c", include_system=True)
+    visible_rows = conn.execute(
+        f"""
+        SELECT f.*
+        FROM files f
+        JOIN courses c ON c.id=f.course_id
+        WHERE f.active=1 AND f.removed_at IS NULL AND c.archived=0 AND {visibility}
+        """
+    ).fetchall()
+    visible_ids = [int(row["id"]) for row in visible_rows]
+    if visible_ids:
+        placeholders = ",".join("?" for _ in visible_ids)
+        for row in visible_rows:
+            try:
+                cache_path = safe_cache_path(row["text_cache_path"])
+            except PermissionError:
+                cache_path = None
+            if cache_path:
+                shared = conn.execute(
+                    f"SELECT COUNT(*) AS c FROM files WHERE text_cache_path=? AND id NOT IN ({placeholders})",
+                    [str(cache_path), *visible_ids],
+                ).fetchone()["c"]
+                if not shared:
+                    cache_path.unlink(missing_ok=True)
+            for derivative in preview_cache_dir().glob(f"file-{int(row['id'])}-*"):
+                derivative.unlink(missing_ok=True)
+        conn.execute(f"DELETE FROM files_fts WHERE rowid IN ({placeholders})", visible_ids)
+        for table in ("document_chunks", "questions", "solutions"):
+            conn.execute(f"DELETE FROM {table} WHERE file_id IN ({placeholders})", visible_ids)
+        conn.execute(
+            f"DELETE FROM ai_index_state WHERE provider='local' AND file_id IN ({placeholders})",
+            visible_ids,
+        )
+        conn.execute(
+            f"UPDATE files SET text_cache_path='', ai_index_status='not_indexed', ai_index_error='' WHERE id IN ({placeholders})",
+            visible_ids,
+        )
     ensure_dirs()
-    conn.execute("DELETE FROM files_fts")
-    conn.execute("DELETE FROM document_chunks")
-    conn.execute("DELETE FROM questions")
-    conn.execute("DELETE FROM solutions")
-    conn.execute("DELETE FROM ai_index_state WHERE provider='local'")
-    conn.execute("UPDATE files SET text_cache_path='', ai_index_status='not_indexed', ai_index_error='' WHERE active=1")
     reindexed = 0
-    for row in conn.execute("SELECT * FROM files WHERE active=1 AND removed_at IS NULL").fetchall():
+    for row in visible_rows:
         path = Path(row["original_path"])
         if material_path_allowed(row, path) and path.exists():
             index_material_content(conn, row["id"], path, force=True)
@@ -3529,10 +3555,11 @@ def resolve_mcp_file(conn: sqlite3.Connection, file_id: str) -> sqlite3.Row:
         raise FileNotFoundError("NOT FOUND")
     prefix = file_id.removeprefix("file_")
     row = conn.execute(
-        """
+        f"""
         SELECT f.* FROM files f JOIN courses c ON c.id=f.course_id
         WHERE f.active=1 AND f.removed_at IS NULL AND c.archived=0
-          AND {visibility} AND (f.stable_id LIKE ? OR f.sha256 LIKE ? OR f.hash LIKE ?)
+          AND {course_visibility_sql('c', include_system=True)}
+          AND (f.stable_id LIKE ? OR f.sha256 LIKE ? OR f.hash LIKE ?)
         ORDER BY f.id LIMIT 1
         """,
         (f"{prefix}%", f"{prefix}%", f"{prefix}%"),
@@ -4236,22 +4263,27 @@ def sync_openai_vector_store(limit: int = 20) -> dict[str, Any]:
     conn = connect_db()
     init_db(conn)
     vector_store_id = ensure_openai_vector_store(conn)
+    visibility = course_visibility_sql("c")
     unchanged = conn.execute(
-        """
+        f"""
         SELECT COUNT(*) AS c
         FROM files f
+        JOIN courses c ON c.id=f.course_id
         JOIN ai_index_state ais ON ais.file_id=f.id AND ais.provider='openai'
         WHERE f.active=1 AND f.is_official=1 AND f.suspicious='' AND f.ai_index_status='indexed'
+          AND f.removed_at IS NULL AND c.archived=0 AND {visibility}
           AND ais.sha256=f.sha256 AND ais.status IN ('indexed', 'completed', 'in_progress')
         """
     ).fetchone()["c"]
     rows = conn.execute(
-        """
+        f"""
         SELECT f.*, ais.provider_file_id AS old_provider_file_id, ais.vector_store_id AS old_vector_store_id,
           ais.sha256 AS old_sha256
         FROM files f
+        JOIN courses c ON c.id=f.course_id
         LEFT JOIN ai_index_state ais ON ais.file_id=f.id AND ais.provider='openai'
         WHERE f.active=1 AND f.is_official=1 AND f.suspicious='' AND f.ai_index_status='indexed'
+          AND f.removed_at IS NULL AND c.archived=0 AND {visibility}
           AND (ais.id IS NULL OR ais.sha256 != f.sha256 OR ais.status NOT IN ('indexed', 'completed', 'in_progress'))
         ORDER BY f.course_code, f.week_label, f.filename
         LIMIT ?
@@ -5010,11 +5042,30 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         }
 
     def handle_ai_status(self, conn: sqlite3.Connection) -> dict[str, Any]:
+        visibility = course_visibility_sql("c", include_system=True)
         rows = conn.execute(
-            "SELECT status, COUNT(*) AS count FROM ai_index_state GROUP BY status ORDER BY status"
+            f"""
+            SELECT ais.status, COUNT(*) AS count
+            FROM ai_index_state ais
+            JOIN files f ON f.id=ais.file_id
+            JOIN courses c ON c.id=f.course_id
+            WHERE f.active=1 AND f.removed_at IS NULL AND c.archived=0 AND {visibility}
+            GROUP BY ais.status ORDER BY ais.status
+            """
         ).fetchall()
-        indexed_files = conn.execute("SELECT COUNT(*) AS c FROM files WHERE active=1 AND ai_index_status='indexed'").fetchone()["c"]
-        vector_indexed = conn.execute("SELECT COUNT(*) AS c FROM ai_index_state WHERE provider='openai' AND status IN ('indexed', 'completed', 'in_progress')").fetchone()["c"]
+        indexed_files = conn.execute(
+            f"SELECT COUNT(*) AS c FROM files f JOIN courses c ON c.id=f.course_id WHERE f.active=1 AND f.removed_at IS NULL AND f.ai_index_status='indexed' AND c.archived=0 AND {visibility}"
+        ).fetchone()["c"]
+        vector_indexed = conn.execute(
+            f"""
+            SELECT COUNT(*) AS c
+            FROM ai_index_state ais
+            JOIN files f ON f.id=ais.file_id
+            JOIN courses c ON c.id=f.course_id
+            WHERE ais.provider='openai' AND ais.status IN ('indexed', 'completed', 'in_progress')
+              AND f.active=1 AND f.removed_at IS NULL AND c.archived=0 AND {visibility}
+            """
+        ).fetchone()["c"]
         vector_row = conn.execute(
             "SELECT vector_store_id FROM ai_index_state WHERE provider='openai' AND vector_store_id IS NOT NULL AND vector_store_id!='' ORDER BY last_synced_at DESC LIMIT 1"
         ).fetchone()

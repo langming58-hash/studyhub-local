@@ -317,6 +317,18 @@ async fn choose_study_folder(app: tauri::AppHandle) -> Result<Option<String>, St
 }
 
 #[tauri::command]
+async fn choose_study_files(app: tauri::AppHandle) -> Result<Option<Vec<String>>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .blocking_pick_files()
+            .map(|paths| paths.into_iter().map(|path| path.to_string()).collect())
+    })
+    .await
+    .map_err(|_| "StudyHub could not open the file picker.".to_string())
+}
+
+#[tauri::command]
 async fn restart_backend(
     app: tauri::AppHandle,
     state: tauri::State<'_, BackendState>,
@@ -424,6 +436,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             choose_study_folder,
+            choose_study_files,
             restart_backend,
             retry_backend,
             startup_diagnostics

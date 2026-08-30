@@ -49,24 +49,24 @@ clearly synthetic Demo fixtures.
 | Runtime | Python-free and Node-free end-user launch | EXISTS | Preserve |
 | Privacy | Localhost-only backend and filesystem containment | EXISTS | Preserve |
 | Library | Structured-folder scan | EXISTS | Keep as power import |
-| Library | Stable term identity | MISSING | Implement |
-| Library | Stable course identity independent of folder/code/name | PARTIAL | Migrate |
-| Library | Create, rename, archive, restore, remove course | MISSING | Implement |
-| Library | Dynamic weeks/modules | MISSING | Implement |
-| Library | Material type metadata | PARTIAL | Normalize |
-| Materials | Reference original files in place | PARTIAL | Make default |
-| Materials | Native single/multi-file picker | PARTIAL | Implement desktop path import |
-| Materials | Batch import and drag/drop | MISSING | Implement |
-| Materials | Inbox/unclassified import | MISSING | Implement |
-| Materials | Reclassify without moving source | MISSING | Implement |
-| Materials | Duplicate path/checksum detection | PARTIAL | Implement explicit decisions |
-| Materials | Missing-file state and relink | PARTIAL | Implement relink |
-| Materials | Remove metadata without deleting source | MISSING | Implement |
+| Library | Stable term identity | IMPLEMENTED | Additive migration and CRUD |
+| Library | Stable course identity independent of folder/code/name | IMPLEMENTED | Stable ID survives metadata edits |
+| Library | Create, rename, archive, restore, remove course | IMPLEMENTED | Metadata-only operations |
+| Library | Dynamic weeks/modules | IMPLEMENTED | No fixed Week 01-12 creation |
+| Library | Material type metadata | IMPLEMENTED | Structured field and controls |
+| Materials | Reference original files in place | IMPLEMENTED | Desktop default |
+| Materials | Native single/multi-file picker | IMPLEMENTED | Tauri path import |
+| Materials | Batch import and drag/drop | IMPLEMENTED | Desktop paths, bounded folder import |
+| Materials | Inbox/unclassified import | IMPLEMENTED | Explicit later classification |
+| Materials | Reclassify without moving source | IMPLEMENTED | Metadata-only batch action |
+| Materials | Duplicate path/checksum detection | IMPLEMENTED | Open existing, add anyway, cancel |
+| Materials | Missing-file state and relink | IMPLEMENTED | Missing state remains visible |
+| Materials | Remove metadata without deleting source | IMPLEMENTED | Original stays untouched |
 | Demo | Synthetic fixture library | EXISTS | Preserve |
-| Demo | Explicit disposable Demo workspace | PARTIAL | Isolate/reset |
-| Data | Clear recreatable cache | MISSING | Implement |
-| Data | Reset StudyHub-owned state only | MISSING | Implement |
-| Data | Metadata backup/restore | MISSING | Implement after CRUD |
+| Demo | Explicit disposable Demo workspace | IMPLEMENTED | Isolated visibility and reset |
+| Data | Clear recreatable cache | IMPLEMENTED | Current workspace only |
+| Data | Reset StudyHub-owned state only | IMPLEMENTED | Confirmation required |
+| Data | Metadata backup/restore | DESIGNED | Defer implementation until format is stable |
 | Search | Local metadata and extracted-content search | EXISTS | Preserve |
 | Preview | PDF, Office fallback, text/code preview | EXISTS | Preserve |
 | Notes | File notes with persistence | EXISTS | Preserve |
@@ -133,6 +133,40 @@ The migration is additive and idempotent:
 - Demo mutations use disposable runtime state and never modify packaged fixture
   files.
 - Public tests and documentation contain synthetic `TEST` data only.
+
+## Backup And Restore Design
+
+Backup is intentionally designed but not implemented in this pass. Shipping an
+unstable export format would create a false recovery guarantee while the P0
+schema is still settling.
+
+The future export is a versioned archive containing a schema manifest and
+portable JSON for terms, courses, weeks/modules, material metadata, notes,
+stars, attempts, wrong-question records, study state, and local AI conversation
+history. It must exclude original study files, extracted text, previews,
+runtime databases, credentials, provider file/vector IDs, logs, and absolute
+cache paths.
+
+Restore must first validate the archive version and schema, show a dry-run
+summary, ask the user to relink unavailable source roots, and then import in a
+single database transaction after making a local rollback copy. Restore never
+overwrites or moves an original source file. Stable IDs are used to reconcile
+records; conflicts require an explicit keep/replace/duplicate decision.
+
+## P0 Verification
+
+The synthetic acceptance suite verifies additive legacy migration, term and
+course lifecycle, stable identities, dynamic weeks/modules, 23-file folder
+import, path and checksum duplicates, classification, cross-course moves,
+missing-file relink, cache rebuild, note/star persistence, metadata-only
+removal, reset safety, Demo/private visibility, the three first-run choices,
+native multi-file selection, drag/drop wiring, and structured material types.
+
+Manual browser validation additionally covered course creation, empty-course
+display, custom Module creation, archive/restore, week-scoped batch actions,
+refresh persistence, desktop and narrow layouts, and browser console errors.
+All data used by these checks is synthetic `TEST` data in isolated temporary
+runtime directories.
 
 ## Deferred Product Work
 

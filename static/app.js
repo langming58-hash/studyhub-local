@@ -1,5 +1,8 @@
 const state = {
   courses: [],
+  archivedCourses: [],
+  terms: [],
+  materialTypes: [],
   weeksByCourse: new Map(),
   health: null,
   preflight: null,
@@ -11,6 +14,9 @@ const state = {
   weekFiles: [],
   weekFilter: "all",
   weekSort: "section",
+  selectedMaterialIds: new Set(),
+  nativeImportPaths: [],
+  duplicateImport: null,
   studyMode: "practice",
   searchFiltersOpen: false,
   sidebarCollapsed: localStorage.getItem("studyhub.sidebarCollapsed") === "true",
@@ -96,6 +102,14 @@ async function api(path, options = {}) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || response.statusText);
   return data;
+}
+
+function postJson(path, body = {}) {
+  return api(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 function escapeHtml(value) {
@@ -436,9 +450,9 @@ function firstRunPanel() {
         <p class="muted">${preflight.demoMode ? "These sample courses are synthetic. Your real files stay on your computer when you choose a study folder. OpenAI is optional." : "Your courses and files are read from your local study folder. OpenAI is optional."}</p>
       </div>
       <div class="onboarding-actions">
-        <button class="button primary" data-view="courses">${desktopMode && preflight.demoMode ? "Try Demo" : "Start exploring"}</button>
-        <button class="button secondary" ${desktopMode ? "data-choose-study-folder=\"1\"" : "data-open-library-setup=\"1\""}>Choose My Study Folder</button>
-        <button class="button ghost" data-dismiss-onboarding="1">Hide</button>
+        <button class="button primary" data-start-demo="1">Try Demo</button>
+        <button class="button secondary" data-create-first-course="1">Create My First Course</button>
+        <button class="button secondary" ${desktopMode ? "data-import-first-folder=\"1\"" : "data-open-library-setup=\"1\""}>Import Existing Course Folder</button>
       </div>
     </section>
   `;
@@ -495,17 +509,19 @@ function extensionIcon(ext = "") {
   return "FILE";
 }
 
-function fileCard(file) {
+function fileCard(file, selectable = false) {
   const suspicious = file.suspicious ? `<span class="chip warn">${escapeHtml(file.suspicious)}</span>` : "";
+  const missing = file.source_missing ? '<span class="chip warn">Original missing</span>' : "";
   const star = file.star_id ? "★" : "☆";
   return `
     <article class="file-row">
+      ${selectable ? `<input class="material-check" type="checkbox" data-material-select="${file.id}" aria-label="Select ${escapeHtml(file.display_name || file.filename)}" ${state.selectedMaterialIds.has(Number(file.id)) ? "checked" : ""} />` : ""}
       <button class="file-row-main" data-preview="${file.id}" title="${escapeHtml(file.filename)}">
         <span class="file-badge">${extensionIcon(file.extension)}</span>
         <span class="file-row-text">
-          <strong class="file-name">${escapeHtml(file.filename)}</strong>
+          <strong class="file-name">${escapeHtml(file.display_name || file.filename)}</strong>
           <span class="muted">${escapeHtml(fileMetaLine(file))}</span>
-          ${suspicious}
+          ${missing}${suspicious}
         </span>
       </button>
       <div class="file-row-actions">
@@ -514,7 +530,9 @@ function fileCard(file) {
           <summary>More</summary>
           <div>
             <button class="button secondary" data-ask-file="${file.id}">Ask AI</button>
-            <button class="button secondary" data-open="${file.id}">Open original file</button>
+            ${file.source_missing ? `<button class="button secondary" data-relink-material="${file.id}">Locate File</button>` : `<button class="button secondary" data-open="${file.id}">Open original file</button>`}
+            <button class="button secondary" data-rename-material="${file.id}" data-material-name="${escapeHtml(file.display_name || file.filename)}">Rename in StudyHub</button>
+            <button class="button secondary" data-remove-material="${file.id}">Remove from StudyHub</button>
           </div>
         </details>
       </div>
@@ -561,7 +579,11 @@ async function loadBase() {
   state.csrfToken = session.csrfToken || state.csrfToken || "";
   state.health = await api("/api/health");
   state.preflight = await api("/api/preflight");
-  state.courses = await api("/api/courses");
+  state.terms = await api("/api/terms");
+  state.materialTypes = (await api("/api/material-types")).types || [];
+  const allCourses = await api("/api/courses?include_archived=1");
+  state.courses = allCourses.filter((course) => !course.archived);
+  state.archivedCourses = allCourses.filter((course) => course.archived);
   await Promise.all(
     state.courses.map(async (course) => {
       state.weeksByCourse.set(Number(course.id), await api(`/api/weeks?course_id=${course.id}`));
@@ -578,6 +600,8 @@ async function loadBase() {
   }
   applySidebarState();
   populateUploadCourses();
+  populateCourseTerms();
+  await resumePendingFirstRunAction();
   if (state.ask.conversationId && !state.ask.messages.length) {
     try {
       const data = await api(`/api/conversation?id=${state.ask.conversationId}`);
@@ -595,13 +619,39 @@ async function loadBase() {
 function renderCourseList() {}
 
 function populateUploadCourses() {
-  $("#uploadCourse").innerHTML = state.courses
+  $("#uploadCourse").innerHTML = `<option value="0">Inbox / Unclassified</option>${state.courses
     .map((course) => `<option value="${course.id}">${escapeHtml(courseLabel(course))}</option>`)
-    .join("");
-  $("#uploadWeek").innerHTML = Array.from({ length: 12 }, (_, i) => {
-    const label = `Week ${String(i + 1).padStart(2, "0")}`;
-    return `<option>${label}</option>`;
-  }).join("");
+    .join("")}`;
+  $("#uploadMaterialType").innerHTML = state.materialTypes.map((type) => `<option>${escapeHtml(type)}</option>`).join("");
+  populateUploadWeeks();
+}
+
+function populateUploadWeeks() {
+  const courseId = Number($("#uploadCourse").value || state.selectedCourseId || 0);
+  const weeks = weeksFor(courseId);
+  $("#uploadWeek").innerHTML = weeks.length
+    ? weeks.map((week) => `<option value="${week.id}">${escapeHtml(week.week_label)}</option>`).join("")
+    : '<option value="">Unclassified</option>';
+}
+
+function populateCourseTerms() {
+  $("#courseTerm").innerHTML = state.terms.map((term) => `<option value="${term.id}">${escapeHtml(term.name)}</option>`).join("");
+}
+
+async function resumePendingFirstRunAction() {
+  if (!state.health?.desktopMode || state.preflight?.demoMode) return;
+  const folder = localStorage.getItem("studyhub.pendingImportFolder");
+  if (folder) {
+    localStorage.removeItem("studyhub.pendingImportFolder");
+    await postJson("/api/materials/import-folder", { path: folder });
+    localStorage.setItem("studyhub.onboardingDismissed", "true");
+    window.location.reload();
+    return;
+  }
+  if (localStorage.getItem("studyhub.pendingCreateCourse") === "true") {
+    localStorage.removeItem("studyhub.pendingCreateCourse");
+    setTimeout(() => openCourseDialog(), 0);
+  }
 }
 
 async function renderHome() {
@@ -645,7 +695,7 @@ async function renderHome() {
         </div>
         <button class="button secondary" data-view="search">Search</button>
       </div>
-      <div class="file-list">${recent.length ? recent.slice(0, 8).map(fileCard).join("") : empty("No files ready yet.")}</div>
+      <div class="file-list">${recent.length ? recent.slice(0, 8).map((file) => fileCard(file)).join("") : empty("No files ready yet.")}</div>
     </section>
     <section class="section-block quiet-section">
       <div class="section-head">
@@ -718,7 +768,14 @@ function courseSummary(course) {
       </button>
       <div class="course-row-meta">
         <span>${escapeHtml(weeksWithMaterialLabel(course))}</span>
-        <span aria-hidden="true">→</span>
+        <details class="row-more">
+          <summary aria-label="Course actions">More</summary>
+          <div>
+            <button class="button secondary" data-edit-course="${course.id}">Edit course</button>
+            <button class="button secondary" data-archive-course="${course.id}">Archive</button>
+            <button class="button secondary" data-remove-course="${course.id}">Remove from StudyHub</button>
+          </div>
+        </details>
       </div>
     </article>
   `;
@@ -727,9 +784,10 @@ function courseSummary(course) {
 async function renderCourses() {
   setTitle("Courses");
   setPageActions(true);
-  const activeCourses = state.courses.filter((course) => Number(course.file_count || 0) > 0);
-  const inactive = state.courses.length - activeCourses.length;
+  const activeCourses = state.courses.filter((course) => !course.archived);
   const starred = await api("/api/starred");
+  const inbox = await api("/api/inbox");
+  state.selectedMaterialIds.clear();
   view.innerHTML = `
     <section class="library-hero">
       <div>
@@ -738,11 +796,12 @@ async function renderCourses() {
       </div>
       <div class="library-actions">
         <button class="button secondary" data-view="search">Search library</button>
-        <button class="button secondary" data-open-upload="1">Add Material</button>
+        <button class="button secondary" data-import-course-folder="1">Import Course Folder</button>
+        <button class="button primary" data-new-course="1">New Course</button>
+        <button class="button secondary" data-open-upload="1" data-course-id="0">Add to Inbox</button>
         <button class="button primary" data-run-scan="1">Scan Library</button>
       </div>
     </section>
-    ${inactive ? `<div class="notice compact">Hiding ${inactive} course${inactive === 1 ? "" : "s"} with no files from this library view.</div>` : ""}
     <section class="section-block quiet-section">
       <div class="section-head">
         <h2>Courses</h2>
@@ -750,14 +809,66 @@ async function renderCourses() {
       </div>
       <div class="course-list-main">${activeCourses.length ? activeCourses.map(courseSummary).join("") : empty("No courses in this library yet.")}</div>
     </section>
+    ${state.archivedCourses.length ? `
+      <details class="section-block quiet-section">
+        <summary><strong>Archived Courses</strong> <span class="muted">${state.archivedCourses.length}</span></summary>
+        <div class="course-list-main">
+          ${state.archivedCourses.map((course) => `
+            <article class="course-row">
+              <div class="course-row-main"><strong>${escapeHtml(courseLabel(course))}</strong><span>${escapeHtml(course.name || "")}</span></div>
+              <button class="button secondary" data-restore-course="${course.id}">Restore</button>
+            </article>
+          `).join("")}
+        </div>
+      </details>
+    ` : ""}
     <section class="section-block quiet-section">
       <div class="section-head">
         <h2>Starred Files</h2>
         <button class="button secondary" data-view="search" data-show-starred="1">Find more</button>
       </div>
-      <div class="file-list">${starred.length ? starred.slice(0, 8).map(fileCard).join("") : empty("No starred files yet.")}</div>
+      <div class="file-list">${starred.length ? starred.slice(0, 8).map((file) => fileCard(file)).join("") : empty("No starred files yet.")}</div>
     </section>
+    ${inbox.length ? `
+      <section class="section-block quiet-section">
+        <div class="section-head"><div><p class="eyebrow">Unclassified</p><h2>Inbox</h2></div><span class="muted">${inbox.length} item${inbox.length === 1 ? "" : "s"}</span></div>
+        <div class="toolbar">
+          <select id="inboxCourse" aria-label="Inbox destination course">${state.courses.map((course) => `<option value="${course.id}">${escapeHtml(courseLabel(course))}</option>`).join("")}</select>
+          <select id="inboxWeek" aria-label="Inbox destination week"></select>
+          <select id="inboxMaterialType">${state.materialTypes.map((type) => `<option>${escapeHtml(type)}</option>`).join("")}</select>
+          <button class="button secondary" id="inboxAssign" disabled>Assign Selected</button>
+        </div>
+        <div class="file-list">${inbox.map((file) => fileCard(file, true)).join("")}</div>
+      </section>
+    ` : ""}
   `;
+  if (inbox.length) {
+    populateInboxWeeks();
+    $("#inboxCourse").addEventListener("change", populateInboxWeeks);
+    $("#inboxAssign").addEventListener("click", classifyInbox);
+  }
+}
+
+function populateInboxWeeks() {
+  const courseId = Number($("#inboxCourse")?.value || 0);
+  const select = $("#inboxWeek");
+  if (!select) return;
+  select.innerHTML = weeksFor(courseId).map((week) => `<option value="${week.id}">${escapeHtml(week.week_label)}</option>`).join("");
+}
+
+async function classifyInbox() {
+  const ids = [...state.selectedMaterialIds];
+  if (!ids.length) return;
+  await postJson("/api/materials/manage", {
+    action: "classify",
+    ids,
+    course_id: Number($("#inboxCourse").value),
+    week_id: Number($("#inboxWeek").value),
+    material_type: $("#inboxMaterialType").value,
+  });
+  await loadBase();
+  await renderCourses();
+  toast("Inbox materials assigned");
 }
 
 async function renderThisWeek() {
@@ -776,7 +887,7 @@ async function renderThisWeek() {
             </div>
             <button class="button secondary" data-course="${course.id}" data-week="${escapeHtml(week.week_label)}">Open Week</button>
           </div>
-          <div class="grid">${files.length ? files.slice(0, 6).map(fileCard).join("") : empty("No files ready for this week.")}</div>
+          <div class="grid">${files.length ? files.slice(0, 6).map((file) => fileCard(file)).join("") : empty("No files ready for this week.")}</div>
         </section>
       `;
     }),
@@ -786,6 +897,7 @@ async function renderThisWeek() {
 
 async function renderCourse(courseId) {
   const course = courseById(courseId);
+  state.view = "course";
   state.selectedCourseId = courseId;
   recordRoute({ view: "course", courseId });
   setTitle(course?.name || courseLabel(course) || "Course");
@@ -799,6 +911,9 @@ async function renderCourse(courseId) {
         <p class="muted">${files.length} file${files.length === 1 ? "" : "s"} · ${activeWeeks.length} week${activeWeeks.length === 1 ? "" : "s"} with material</p>
       </div>
       <div class="course-actions">
+        <button class="button secondary" data-add-week="${courseId}">Add Week or Module</button>
+        <button class="button secondary" data-open-upload="1" data-course-id="${courseId}">Add Material</button>
+        <button class="button secondary" data-edit-course="${courseId}">Edit Course</button>
         <button class="button secondary" data-ask-course="${courseId}">Ask AI</button>
       </div>
     </section>
@@ -809,28 +924,39 @@ async function renderCourse(courseId) {
       </div>
       <div class="week-list">
         ${weeks.map((week) => `
-          <button class="week-row ${week.has_materials ? "has-materials" : "empty-week"}" data-week="${week.week_label}" data-course="${courseId}">
-            <strong>${escapeHtml(week.week_label)}</strong>
-            ${week.has_materials ? `<span class="muted">${week.file_count || 0} file${Number(week.file_count || 0) === 1 ? "" : "s"}</span>` : ""}
-          </button>
+          <article class="week-row ${week.has_materials ? "has-materials" : "empty-week"}">
+            <button class="week-row-main" data-week="${week.week_label}" data-course="${courseId}">
+              <strong>${escapeHtml(week.week_label)}</strong>
+              <span class="muted">${week.file_count || 0} file${Number(week.file_count || 0) === 1 ? "" : "s"}</span>
+            </button>
+            <details class="row-more">
+              <summary aria-label="Week actions">More</summary>
+              <div>
+                <button class="button secondary" data-edit-week="${week.id}" data-course-id="${courseId}">Rename</button>
+                ${week.has_materials ? "" : `<button class="button secondary" data-remove-week="${week.id}" data-course-id="${courseId}">Remove</button>`}
+              </div>
+            </details>
+          </article>
         `).join("")}
       </div>
     </section>
     <section class="section-block quiet-section">
       <h2>All Course Files</h2>
-      <div class="file-list">${files.length ? files.slice(0, 24).map(fileCard).join("") : empty("No files ready for this course.")}</div>
+      <div class="file-list">${files.length ? files.slice(0, 24).map((file) => fileCard(file)).join("") : empty("No files ready for this course.")}</div>
     </section>
   `;
 }
 
 async function renderWeek(courseId, weekLabel) {
   const course = courseById(courseId);
+  state.view = "week";
   state.selectedCourseId = courseId;
   state.selectedWeek = weekLabel;
   recordRoute({ view: "week", courseId, week: weekLabel });
   state.weekFiles = await api(`/api/files?course_id=${courseId}&week=${encodeURIComponent(weekLabel)}`);
   state.weekFilter = "all";
   state.weekSort = "section";
+  state.selectedMaterialIds.clear();
   setTitle(`${courseLabel(course) || "Course"} · ${weekLabel}`, "Week workspace");
   view.innerHTML = `
     <section class="week-header">
@@ -841,6 +967,7 @@ async function renderWeek(courseId, weekLabel) {
         </div>
         <div class="top-actions">
           <button class="button secondary" id="weekPreviewGpt">Prepare with AI</button>
+          <button class="button secondary" data-open-upload="1" data-course-id="${courseId}" data-week-label="${escapeHtml(weekLabel)}">Add Material</button>
           <button class="button secondary" data-ask-week="${courseId}" data-week-label="${escapeHtml(weekLabel)}">Ask AI</button>
           <button class="button secondary" data-course="${courseId}">Back to Course</button>
         </div>
@@ -866,6 +993,13 @@ async function renderWeek(courseId, weekLabel) {
           <option value="type">Type</option>
           <option value="size">Size</option>
         </select>
+        <span class="toolbar-spacer"></span>
+        <select id="batchCourse" aria-label="Batch destination course">${state.courses.map((item) => `<option value="${item.id}" ${Number(item.id) === Number(courseId) ? "selected" : ""}>${escapeHtml(courseLabel(item))}</option>`).join("")}</select>
+        <select id="batchWeek" aria-label="Batch destination week"></select>
+        <select id="batchMaterialType" aria-label="Batch material type">${state.materialTypes.map((type) => `<option>${escapeHtml(type)}</option>`).join("")}</select>
+        <button class="button secondary" id="batchClassify" disabled>Apply to selected</button>
+        <button class="button secondary" id="batchStar" disabled>Star selected</button>
+        <button class="button secondary" id="batchRemove" disabled>Remove selected</button>
       </div>
     </section>
     <section id="weekBridgePreview" class="notice" hidden></section>
@@ -880,6 +1014,11 @@ async function renderWeek(courseId, weekLabel) {
     renderWeekFiles();
   });
   $("#weekPreviewGpt").addEventListener("click", previewWeekWithGpt);
+  populateBatchWeeks();
+  $("#batchCourse").addEventListener("change", populateBatchWeeks);
+  $("#batchClassify").addEventListener("click", () => batchManageMaterials("classify"));
+  $("#batchStar").addEventListener("click", () => batchManageMaterials("star"));
+  $("#batchRemove").addEventListener("click", () => batchManageMaterials("remove"));
   renderWeekFiles();
 }
 
@@ -914,6 +1053,13 @@ function renderWeekFiles() {
     .join("");
 }
 
+function populateBatchWeeks() {
+  const courseId = Number($("#batchCourse")?.value || state.selectedCourseId || 0);
+  const select = $("#batchWeek");
+  if (!select) return;
+  select.innerHTML = weeksFor(courseId).map((week) => `<option value="${week.id}" ${week.week_label === state.selectedWeek ? "selected" : ""}>${escapeHtml(week.week_label)}</option>`).join("");
+}
+
 function fileGroup(title, rows) {
   return `
     <section class="section-block quiet-section">
@@ -921,7 +1067,7 @@ function fileGroup(title, rows) {
         <h2>${escapeHtml(title)}</h2>
         <span class="muted">${rows.length} file${rows.length === 1 ? "" : "s"}</span>
       </div>
-      <div class="file-list">${rows.map(fileCard).join("")}</div>
+      <div class="file-list">${rows.map((file) => fileCard(file, true)).join("")}</div>
     </section>
   `;
 }
@@ -957,6 +1103,7 @@ async function renderSearch() {
           <option>Lab</option>
           <option>Quiz</option>
         </select>
+        <label class="inline-check"><input id="searchArchived" type="checkbox" /> Include archived courses</label>
         <button class="button ghost" id="clearSearchFilters">Clear</button>
       </div>
     </section>
@@ -965,6 +1112,7 @@ async function renderSearch() {
   $("#searchInput").addEventListener("input", debounce(runSearch, 220));
   $("#searchCourse").addEventListener("change", runSearch);
   $("#searchScope").addEventListener("change", runSearch);
+  $("#searchArchived").addEventListener("change", runSearch);
   $("#toggleSearchFilters").addEventListener("click", () => {
     state.searchFiltersOpen = !state.searchFiltersOpen;
     renderSearch();
@@ -972,6 +1120,7 @@ async function renderSearch() {
   $("#clearSearchFilters").addEventListener("click", () => {
     $("#searchCourse").value = "";
     $("#searchScope").value = "";
+    $("#searchArchived").checked = false;
     runSearch();
   });
   await runSearch();
@@ -981,12 +1130,13 @@ async function runSearch() {
   const q = $("#searchInput")?.value || "";
   const course = $("#searchCourse")?.value || "";
   const scope = $("#searchScope")?.value || "";
-  if (!q.trim() && !course && !scope) {
+  const archived = $("#searchArchived")?.checked ? "1" : "0";
+  if (!q.trim() && !course && !scope && archived === "0") {
     $("#searchResults").innerHTML = empty("Search for a topic, filename, tutorial, lab, or phrase from readable text.");
     return;
   }
-  const results = await api(`/api/search?q=${encodeURIComponent(q)}&course_id=${course}&scope=${encodeURIComponent(scope)}`);
-  $("#searchResults").innerHTML = results.length ? results.map(fileCard).join("") : empty("No matching files.");
+  const results = await api(`/api/search?q=${encodeURIComponent(q)}&course_id=${course}&scope=${encodeURIComponent(scope)}&include_archived=${archived}`);
+  $("#searchResults").innerHTML = results.length ? results.map((file) => fileCard(file)).join("") : empty("No matching files.");
 }
 
 async function renderAskGpt() {
@@ -1208,7 +1358,7 @@ function debounce(fn, wait) {
 async function renderStarred() {
   setTitle("Starred", "Saved study material");
   const rows = await api("/api/starred");
-  view.innerHTML = `<section class="section-block quiet-section"><div class="file-list">${rows.length ? rows.map(fileCard).join("") : empty("No starred files yet.")}</div></section>`;
+  view.innerHTML = `<section class="section-block quiet-section"><div class="file-list">${rows.length ? rows.map((file) => fileCard(file)).join("") : empty("No starred files yet.")}</div></section>`;
 }
 
 function studyTabs() {
@@ -1262,7 +1412,7 @@ function studyPracticePanel() {
         </select>
         <select id="practiceWeek">
           <option value="">All weeks</option>
-          ${Array.from({ length: 12 }, (_, i) => `<option>Week ${String(i + 1).padStart(2, "0")}</option>`).join("")}
+          ${[...new Set(state.courses.flatMap((course) => weeksFor(course.id).map((week) => week.week_label)))].sort().map((label) => `<option>${escapeHtml(label)}</option>`).join("")}
         </select>
         <select id="practiceType">
           <option value="">All types</option>
@@ -1350,9 +1500,27 @@ async function renderSettings() {
   setPageActions(true);
   state.health = await api("/api/health");
   const ai = await api("/api/ai-status");
+  const allTerms = await api("/api/terms?include_archived=1");
   const askReady = ai.openAI === "Configured" && ai.vectorStore === "Configured" ? "Ready" : "Not ready";
   view.innerHTML = `
     <section class="settings-layout">
+      <section class="section-block quiet-section">
+        <div class="section-head">
+          <div><p class="eyebrow">Organization</p><h2>Terms</h2></div>
+          <button class="button secondary" data-new-term="1">New Term</button>
+        </div>
+        <div class="settings-list">
+          ${allTerms.map((term) => `
+            <div>
+              <span>${escapeHtml(term.name)}${term.archived ? " (Archived)" : ""}</span>
+              <span class="settings-inline-actions">
+                <button class="button secondary" data-rename-term="${term.id}" data-term-name="${escapeHtml(term.name)}">Rename</button>
+                ${term.stable_id === "term_imported" || term.stable_id === "term_demo" ? "" : `<button class="button secondary" data-${term.archived ? "restore" : "archive"}-term="${term.id}">${term.archived ? "Restore" : "Archive"}</button>`}
+              </span>
+            </div>
+          `).join("")}
+        </div>
+      </section>
       <section class="section-block quiet-section">
         <div class="section-head">
           <div>
@@ -1362,7 +1530,7 @@ async function renderSettings() {
         </div>
         <div class="settings-actions">
           <button class="button primary" data-run-scan="1">Scan Library</button>
-          <button class="button secondary" data-open-upload="1">Add Material</button>
+          <button class="button secondary" data-open-upload="1" data-course-id="0">Add to Inbox</button>
           <button class="button secondary" data-view="courses">Browse Courses</button>
         </div>
         ${librarySetupForm()}
@@ -1415,6 +1583,19 @@ async function renderSettings() {
           <div><span>AI History</span><strong>Stored locally</strong></div>
         </div>
         <button class="button secondary" data-open-history="1">Manage AI History</button>
+      </section>
+      <section class="section-block quiet-section">
+        <div class="section-head">
+          <div><p class="eyebrow">Local data</p><h2>Storage controls</h2></div>
+        </div>
+        <div class="settings-actions">
+          <button class="button secondary" data-clear-cache="1">Clear and Rebuild Cache</button>
+          ${state.health.demoMode
+            ? '<button class="button secondary" data-exit-demo="1">Exit Demo</button>'
+            : '<button class="button secondary" data-switch-demo="1">Open Synthetic Demo</button>'}
+          <button class="button secondary" data-reset-studyhub="1">Reset Local Metadata</button>
+        </div>
+        <p class="muted">Cache and metadata actions never delete, rename, or move your original study files.</p>
       </section>
       <section class="section-block quiet-section">
         <div class="section-head">
@@ -1667,15 +1848,181 @@ async function scanLibrary() {
   }
 }
 
+function openCourseDialog(course = null) {
+  populateCourseTerms();
+  $("#courseDialogTitle").textContent = course ? "Edit Course" : "Create Course";
+  $("#courseEditId").value = course?.id || "";
+  $("#courseCode").value = course?.code || "";
+  $("#courseName").value = course?.name || "";
+  if (course?.term_id) $("#courseTerm").value = String(course.term_id);
+  $("#courseDialog").showModal();
+  $("#courseName").focus();
+}
+
+async function saveCourse(event) {
+  event.preventDefault();
+  const id = Number($("#courseEditId").value || 0);
+  await postJson("/api/courses/manage", {
+    action: id ? "update" : "create",
+    id: id || undefined,
+    term_id: Number($("#courseTerm").value || 0),
+    course_code: $("#courseCode").value.trim(),
+    display_name: $("#courseName").value.trim(),
+  });
+  $("#courseDialog").close();
+  localStorage.setItem("studyhub.onboardingDismissed", "true");
+  await loadBase();
+  await renderCourses();
+  toast(id ? "Course updated" : "Course created");
+}
+
+function openWeekDialog(courseId, week = null) {
+  $("#weekCourseId").value = String(courseId);
+  $("#weekEditId").value = week?.id || "";
+  $("#weekDialogTitle").textContent = week ? "Rename Week or Module" : "Add Week or Module";
+  $("#weekName").value = week?.week_label || "";
+  $("#weekKind").value = week?.kind || "week";
+  $("#weekDialog").showModal();
+  $("#weekName").focus();
+}
+
+async function saveWeek(event) {
+  event.preventDefault();
+  const courseId = Number($("#weekCourseId").value);
+  const id = Number($("#weekEditId").value || 0);
+  await postJson("/api/weeks/manage", {
+    action: id ? "rename" : "create",
+    id: id || undefined,
+    course_id: courseId,
+    label: $("#weekName").value.trim(),
+    kind: $("#weekKind").value,
+  });
+  $("#weekDialog").close();
+  await loadBase();
+  await renderCourse(courseId);
+  toast("Course structure updated");
+}
+
+function openAddMaterial(courseId = 0, weekLabel = "") {
+  state.nativeImportPaths = [];
+  populateUploadCourses();
+  if (courseId) $("#uploadCourse").value = String(courseId);
+  populateUploadWeeks();
+  if (weekLabel) {
+    const week = weeksFor(Number($("#uploadCourse").value)).find((item) => item.week_label === weekLabel);
+    if (week) $("#uploadWeek").value = String(week.id);
+  }
+  $("#uploadSelection").hidden = true;
+  $("#uploadFile").value = "";
+  $("#chooseNativeFiles").hidden = !state.health?.desktopMode;
+  $("#uploadFileLabel").textContent = state.health?.desktopMode
+    ? "Choose files from this Mac, or drop them into StudyHub"
+    : "Select files to copy into the configured study library";
+  $("#uploadDialog").showModal();
+}
+
+function showNativeSelection(paths) {
+  state.nativeImportPaths = paths || [];
+  const box = $("#uploadSelection");
+  box.hidden = !state.nativeImportPaths.length;
+  box.textContent = state.nativeImportPaths.length
+    ? `${state.nativeImportPaths.length} local file${state.nativeImportPaths.length === 1 ? "" : "s"} selected. Originals stay in place.`
+    : "";
+}
+
+async function chooseNativeMaterialFiles() {
+  const paths = await desktopInvoke("choose_study_files");
+  if (!paths?.length) return;
+  showNativeSelection(paths);
+  try {
+    const suggestion = await api(`/api/materials/suggest?path=${encodeURIComponent(paths[0])}`);
+    if (suggestion.course_id) {
+      $("#uploadCourse").value = String(suggestion.course_id);
+      populateUploadWeeks();
+    }
+    if (suggestion.week_label) {
+      const week = weeksFor(Number($("#uploadCourse").value)).find((item) => item.week_label === suggestion.week_label);
+      if (week) $("#uploadWeek").value = String(week.id);
+    }
+    if (suggestion.material_type) $("#uploadMaterialType").value = suggestion.material_type;
+  } catch (_error) {
+    // Suggestions are optional; the user-confirmed destination remains authoritative.
+  }
+}
+
+async function importCourseFolder() {
+  const selected = await desktopInvoke("choose_study_folder");
+  if (!selected) return;
+  if (state.preflight?.demoMode) {
+    localStorage.setItem("studyhub.pendingImportFolder", selected);
+    await postJson("/api/config/managed-workspace");
+    const restart = desktopInvoke("restart_backend");
+    if (restart) await restart;
+    return;
+  }
+  const result = await postJson("/api/materials/import-folder", { path: selected });
+  await loadBase();
+  await renderCourse(result.course.id);
+  toast(`${result.added} material${result.added === 1 ? "" : "s"} added`);
+}
+
+async function batchManageMaterials(action) {
+  const ids = [...state.selectedMaterialIds];
+  if (!ids.length) return;
+  if (action === "remove" && !confirm("Remove the selected items from StudyHub? Original files will stay untouched.")) return;
+  await postJson("/api/materials/manage", {
+    action,
+    ids,
+    course_id: Number($("#batchCourse")?.value || state.selectedCourseId),
+    week_id: Number($("#batchWeek")?.value || 0),
+    week_label: state.selectedWeek,
+    material_type: $("#batchMaterialType")?.value || "Other",
+  });
+  await renderWeek(state.selectedCourseId, state.selectedWeek);
+  toast(action === "remove" ? "Removed from StudyHub" : action === "star" ? "Selected materials starred" : "Classification updated");
+}
+
+async function submitNativeImport(duplicatePolicy = "skip") {
+  const result = await postJson("/api/materials/import-paths", {
+    paths: state.nativeImportPaths,
+    course_id: Number($("#uploadCourse").value || 0),
+    week_id: Number($("#uploadWeek").value || 0),
+    material_type: $("#uploadMaterialType").value,
+    duplicate_policy: duplicatePolicy,
+  });
+  const duplicates = result.items.filter((item) => item.status === "duplicate");
+  if (duplicates.length && duplicatePolicy === "skip") {
+    state.duplicateImport = { items: duplicates };
+    $("#duplicateMessage").textContent = `${duplicates.length} selected file${duplicates.length === 1 ? " has" : "s have"} matching content already in StudyHub.`;
+  }
+  return result;
+}
+
 async function uploadMaterial(event) {
   event.preventDefault();
+  if (state.health?.desktopMode) {
+    if (!state.nativeImportPaths.length) {
+      await chooseNativeMaterialFiles();
+      if (!state.nativeImportPaths.length) return;
+    }
+    const result = await submitNativeImport();
+    $("#uploadDialog").close();
+    if (result.items.some((item) => item.status === "duplicate")) $("#duplicateDialog").showModal();
+    await loadBase();
+    if (state.selectedCourseId && state.selectedWeek) await renderWeek(state.selectedCourseId, state.selectedWeek);
+    else await renderCourses();
+    toast(`${result.added} material${result.added === 1 ? "" : "s"} added`);
+    return;
+  }
   const files = $("#uploadFile").files;
   if (!files.length) return;
+  const materialType = $("#uploadMaterialType").value;
   const form = new FormData();
   form.append("course_id", $("#uploadCourse").value);
-  form.append("week", $("#uploadWeek").value);
-  form.append("section", $("#uploadSection").value);
-  form.append("category", $("#uploadCategory").value.trim() || "Uploaded");
+  const selectedWeek = weeksFor(Number($("#uploadCourse").value)).find((week) => Number(week.id) === Number($("#uploadWeek").value));
+  form.append("week", selectedWeek?.week_label || "Unclassified");
+  form.append("section", ["Tutorial", "Workshop", "Lab", "Quiz", "Assignment", "Exam"].includes(materialType) ? "02 Exercises" : "01 Course Materials");
+  form.append("category", materialType);
   Array.from(files).forEach((file) => form.append("files", file));
   await fetch("/api/upload", { method: "POST", headers: { "X-StudyHub-CSRF": state.csrfToken }, body: form }).then(async (response) => {
     if (!response.ok) throw new Error((await response.json()).error || "Upload failed");
@@ -1705,6 +2052,96 @@ document.addEventListener("click", async (event) => {
   }
   if (target.dataset.openLibrarySetup) {
     route("settings").then(() => $("#studyLibraryPathInput")?.focus());
+    return;
+  }
+  if (target.dataset.startDemo) {
+    localStorage.setItem("studyhub.onboardingDismissed", "true");
+    await route("courses");
+    return;
+  }
+  if (target.dataset.createFirstCourse) {
+    if (state.preflight?.demoMode && state.health?.desktopMode) {
+      localStorage.setItem("studyhub.pendingCreateCourse", "true");
+      await postJson("/api/config/managed-workspace");
+      const restart = desktopInvoke("restart_backend");
+      if (restart) await restart;
+    } else {
+      openCourseDialog();
+    }
+    return;
+  }
+  if (target.dataset.importFirstFolder || target.dataset.importCourseFolder) {
+    try {
+      await importCourseFolder();
+    } catch (error) {
+      toast(error.message || String(error));
+    }
+    return;
+  }
+  if (target.dataset.newTerm) {
+    const name = prompt("New term name", "Semester 1");
+    if (!name?.trim()) return;
+    await postJson("/api/terms/manage", { action: "create", name: name.trim() });
+    await loadBase();
+    await renderSettings();
+    toast("Term created");
+    return;
+  }
+  if (target.dataset.renameTerm) {
+    const name = prompt("Rename term", target.dataset.termName || "");
+    if (!name?.trim()) return;
+    await postJson("/api/terms/manage", { action: "rename", id: Number(target.dataset.renameTerm), name: name.trim() });
+    await loadBase();
+    await renderSettings();
+    toast("Term renamed");
+    return;
+  }
+  if (target.dataset.archiveTerm || target.dataset.restoreTerm) {
+    const id = Number(target.dataset.archiveTerm || target.dataset.restoreTerm);
+    const action = target.dataset.archiveTerm ? "archive" : "restore";
+    await postJson("/api/terms/manage", { action, id });
+    await loadBase();
+    await renderSettings();
+    toast(action === "archive" ? "Term archived" : "Term restored");
+    return;
+  }
+  if (target.dataset.clearCache) {
+    target.disabled = true;
+    try {
+      const result = await postJson("/api/cache/clear");
+      await loadBase();
+      await renderSettings();
+      toast(`${result.reindexed} material${result.reindexed === 1 ? "" : "s"} reindexed`);
+    } finally {
+      target.disabled = false;
+    }
+    return;
+  }
+  if (target.dataset.switchDemo) {
+    await postJson("/api/config/demo-workspace");
+    localStorage.removeItem("studyhub.onboardingDismissed");
+    const restart = desktopInvoke("restart_backend");
+    if (restart) await restart;
+    return;
+  }
+  if (target.dataset.exitDemo) {
+    await postJson("/api/config/managed-workspace");
+    localStorage.removeItem("studyhub.onboardingDismissed");
+    const restart = desktopInvoke("restart_backend");
+    if (restart) await restart;
+    return;
+  }
+  if (target.dataset.resetStudyhub) {
+    const confirmation = prompt("Type RESET STUDYHUB to clear local metadata and caches. Original files stay untouched.", "");
+    if (confirmation !== "RESET STUDYHUB") return;
+    await postJson("/api/reset", { confirmation });
+    localStorage.clear();
+    const restart = desktopInvoke("restart_backend");
+    if (restart) await restart;
+    else {
+      if (state.health?.demoMode) await api("/api/scan", { method: "POST" });
+      window.location.reload();
+    }
     return;
   }
   if (target.dataset.chooseStudyFolder) {
@@ -1740,8 +2177,87 @@ document.addEventListener("click", async (event) => {
     await scanLibrary();
     return;
   }
+  if (target.dataset.newCourse) {
+    openCourseDialog();
+    return;
+  }
+  if (target.dataset.editCourse) {
+    openCourseDialog(courseById(Number(target.dataset.editCourse)));
+    return;
+  }
+  if (target.dataset.archiveCourse) {
+    if (!confirm("Archive this course? Its files stay untouched and can be restored later.")) return;
+    await postJson("/api/courses/manage", { action: "archive", id: Number(target.dataset.archiveCourse) });
+    await loadBase();
+    await renderCourses();
+    toast("Course archived");
+    return;
+  }
+  if (target.dataset.restoreCourse) {
+    await postJson("/api/courses/manage", { action: "restore", id: Number(target.dataset.restoreCourse) });
+    await loadBase();
+    await renderCourses();
+    toast("Course restored");
+    return;
+  }
+  if (target.dataset.removeCourse) {
+    if (!confirm("Remove this course from StudyHub? Its original files will stay on your Mac.")) return;
+    await postJson("/api/courses/manage", { action: "remove", id: Number(target.dataset.removeCourse) });
+    await loadBase();
+    await renderCourses();
+    toast("Course removed from StudyHub");
+    return;
+  }
+  if (target.dataset.addWeek) {
+    openWeekDialog(Number(target.dataset.addWeek));
+    return;
+  }
+  if (target.dataset.editWeek) {
+    const courseId = Number(target.dataset.courseId);
+    const week = weeksFor(courseId).find((item) => Number(item.id) === Number(target.dataset.editWeek));
+    if (week) openWeekDialog(courseId, week);
+    return;
+  }
+  if (target.dataset.removeWeek) {
+    const courseId = Number(target.dataset.courseId);
+    if (!confirm("Remove this empty week or module from StudyHub?")) return;
+    await postJson("/api/weeks/manage", { action: "remove", id: Number(target.dataset.removeWeek) });
+    await loadBase();
+    await renderCourse(courseId);
+    toast("Empty course section removed");
+    return;
+  }
   if (target.dataset.openUpload) {
-    $("#uploadDialog").showModal();
+    const courseId = target.dataset.courseId !== undefined
+      ? Number(target.dataset.courseId)
+      : Number(state.selectedCourseId || 0);
+    openAddMaterial(courseId, target.dataset.weekLabel || (courseId ? state.selectedWeek : "") || "");
+    return;
+  }
+  if (target.dataset.renameMaterial) {
+    const displayName = prompt("Rename this material in StudyHub", target.dataset.materialName || "");
+    if (!displayName?.trim()) return;
+    await postJson("/api/materials/manage", { action: "rename", id: Number(target.dataset.renameMaterial), display_name: displayName.trim() });
+    await loadBase();
+    await route();
+    toast("Material name updated");
+    return;
+  }
+  if (target.dataset.removeMaterial) {
+    if (!confirm("Remove this material from StudyHub? The original file will stay on your Mac.")) return;
+    await postJson("/api/materials/manage", { action: "remove", id: Number(target.dataset.removeMaterial) });
+    await loadBase();
+    await route();
+    toast("Removed from StudyHub");
+    return;
+  }
+  if (target.dataset.relinkMaterial) {
+    const paths = await desktopInvoke("choose_study_files");
+    if (!paths?.length) return;
+    await postJson("/api/materials/manage", { action: "relink", id: Number(target.dataset.relinkMaterial), path: paths[0] });
+    await loadBase();
+    await route();
+    toast("Original file relinked");
     return;
   }
   if (target.dataset.openHistory) {
@@ -1843,6 +2359,19 @@ document.addEventListener("click", async (event) => {
   if (target.dataset.context) return copyContext(Number(target.dataset.context));
 });
 
+document.addEventListener("change", (event) => {
+  if (event.target.matches("[data-material-select]")) {
+    const id = Number(event.target.dataset.materialSelect);
+    if (event.target.checked) state.selectedMaterialIds.add(id);
+    else state.selectedMaterialIds.delete(id);
+    const disabled = state.selectedMaterialIds.size === 0;
+    if ($("#batchClassify")) $("#batchClassify").disabled = disabled;
+    if ($("#batchStar")) $("#batchStar").disabled = disabled;
+    if ($("#batchRemove")) $("#batchRemove").disabled = disabled;
+    if ($("#inboxAssign")) $("#inboxAssign").disabled = disabled;
+  }
+});
+
 $("#closeDrawer").addEventListener("click", () => {
   $("#fileDrawer").hidden = true;
   if (window.location.hash.startsWith("#/file/") && state.selectedFile?.course_id && state.selectedFile?.week_label) {
@@ -1879,8 +2408,24 @@ $("#askBtn").addEventListener("click", askAboutFile);
 $("#saveNote").addEventListener("click", saveNote);
 $("#sidebarToggle").addEventListener("click", () => setSidebarCollapsed(!state.sidebarCollapsed));
 $("#scanBtn").addEventListener("click", scanLibrary);
-$("#uploadBtn").addEventListener("click", () => $("#uploadDialog").showModal());
+$("#uploadBtn").addEventListener("click", () => openAddMaterial());
+$("#uploadCourse").addEventListener("change", populateUploadWeeks);
+$("#chooseNativeFiles").addEventListener("click", chooseNativeMaterialFiles);
 $("#uploadSubmit").addEventListener("click", uploadMaterial);
+$("#courseSubmit").addEventListener("click", saveCourse);
+$("#weekSubmit").addEventListener("click", saveWeek);
+$("#openDuplicate").addEventListener("click", () => {
+  const existingId = Number(state.duplicateImport?.items?.[0]?.id || 0);
+  $("#duplicateDialog").close();
+  if (existingId) route("file", { fileId: existingId });
+});
+$("#addDuplicateAnyway").addEventListener("click", async () => {
+  $("#duplicateDialog").close();
+  const result = await submitNativeImport("add_anyway");
+  await loadBase();
+  await route();
+  toast(`${result.added} duplicate material${result.added === 1 ? "" : "s"} added`);
+});
 
 document.querySelectorAll(".rail-tab").forEach((button) => {
   button.addEventListener("click", () => {
@@ -1925,9 +2470,21 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+async function enableDesktopFileDrop() {
+  const listen = window.__TAURI__?.event?.listen;
+  if (!state.health?.desktopMode || typeof listen !== "function") return;
+  await listen("tauri://drag-drop", (event) => {
+    const paths = event.payload?.paths || [];
+    if (!paths.length) return;
+    openAddMaterial(state.selectedCourseId || 0, state.selectedWeek || "");
+    showNativeSelection(paths);
+  });
+}
+
 loadBase()
   .then(async () => {
     appLoaded = true;
+    await enableDesktopFileDrop();
     if (!window.location.hash) history.replaceState({ studyhub: true, view: "home" }, "", routeHash({ view: "home" }));
     await restoreRouteFromLocation();
   })

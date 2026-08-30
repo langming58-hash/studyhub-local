@@ -7,7 +7,7 @@
     "dev": "python3 server.py serve",
     "lint": "python3 -m py_compile server.py bin/*.py",
     "typecheck": "python3 -m py_compile server.py bin/*.py",
-    "test": "python3 bin/privacy_acceptance.py && python3 bin/security_acceptance.py && python3 bin/bridge_acceptance.py && python3 bin/askgpt_acceptance.py && python3 bin/p2_acceptance.py && python3 bin/extraction_acceptance.py && python3 bin/document_preview_acceptance.py && python3 bin/ai_workspace_acceptance.py && python3 bin/ui_ia_acceptance.py && python3 bin/first_run_acceptance.py && python3 bin/ai_rendering_acceptance.py && python3 bin/desktop_acceptance.py",
+    "test": "python3 bin/privacy_acceptance.py && python3 bin/security_acceptance.py && python3 bin/bridge_acceptance.py && python3 bin/askgpt_acceptance.py && python3 bin/p2_acceptance.py && python3 bin/extraction_acceptance.py && python3 bin/document_preview_acceptance.py && python3 bin/ai_workspace_acceptance.py && python3 bin/ui_ia_acceptance.py && python3 bin/first_run_acceptance.py && python3 bin/ai_rendering_acceptance.py && python3 bin/product_completeness_acceptance.py && python3 bin/desktop_acceptance.py",
     "build": "python3 -m py_compile server.py bin/*.py",
     "ci": "python3 bin/privacy_check.py && npm run lint && npm run test && npm run build",
     "desktop:setup": "python3 bin/setup_desktop.py",

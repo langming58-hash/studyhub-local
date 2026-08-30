@@ -109,23 +109,69 @@
           <button class="icon-button" value="cancel" aria-label="Close">×</button>
         </div>
         <label>Course <select id="uploadCourse"></select></label>
-        <label>Week <select id="uploadWeek"></select></label>
-        <label>Section
-          <select id="uploadSection">
-            <option value="01 Course Materials">Course materials</option>
-            <option value="02 Exercises">Exercises</option>
-            <option value="My_Work">My work</option>
-            <option value="Review">Review</option>
-          </select>
-        </label>
-        <label>Category <input id="uploadCategory" value="Lecture" /></label>
+        <label>Week or module <select id="uploadWeek"></select></label>
+        <label>Material type <select id="uploadMaterialType"></select></label>
         <label class="dropzone">
           <input id="uploadFile" type="file" multiple />
-          <span>Select files to copy into the study library</span>
+          <span id="uploadFileLabel">Choose files from this Mac, or drop them into StudyHub</span>
+        </label>
+        <div class="notice compact" id="uploadSelection" hidden></div>
+        <menu>
+          <button value="cancel" class="button secondary">Cancel</button>
+          <button id="chooseNativeFiles" type="button" class="button secondary">Choose Files</button>
+          <button id="uploadSubmit" value="default" class="button primary">Add</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="duplicateDialog">
+      <form method="dialog" class="dialog-form">
+        <div class="drawer-head">
+          <div><p class="eyebrow">Duplicate detected</p><h2>Material Already Registered</h2></div>
+          <button class="icon-button" value="cancel" aria-label="Close">×</button>
+        </div>
+        <p id="duplicateMessage" class="muted"></p>
+        <menu>
+          <button value="cancel" class="button secondary">Cancel</button>
+          <button id="openDuplicate" type="button" class="button secondary">Open Existing</button>
+          <button id="addDuplicateAnyway" type="button" class="button primary">Add Anyway</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="courseDialog">
+      <form method="dialog" class="dialog-form" id="courseForm">
+        <div class="drawer-head">
+          <div><p class="eyebrow">Local metadata</p><h2 id="courseDialogTitle">Create Course</h2></div>
+          <button class="icon-button" value="cancel" aria-label="Close">×</button>
+        </div>
+        <input type="hidden" id="courseEditId" />
+        <label>Term <select id="courseTerm"></select></label>
+        <label>Course code <input id="courseCode" maxlength="40" placeholder="TEST1001" /></label>
+        <label>Course name <input id="courseName" maxlength="120" required placeholder="Introduction to Testing" /></label>
+        <p class="muted">This changes StudyHub metadata only. Your original files are not renamed or moved.</p>
+        <menu>
+          <button value="cancel" class="button secondary">Cancel</button>
+          <button id="courseSubmit" value="default" class="button primary">Save</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="weekDialog">
+      <form method="dialog" class="dialog-form" id="weekForm">
+        <div class="drawer-head">
+          <div><p class="eyebrow">Course structure</p><h2 id="weekDialogTitle">Add Week or Module</h2></div>
+          <button class="icon-button" value="cancel" aria-label="Close">×</button>
+        </div>
+        <input type="hidden" id="weekCourseId" />
+        <input type="hidden" id="weekEditId" />
+        <label>Name <input id="weekName" maxlength="80" required placeholder="Week 01 or Module A" /></label>
+        <label>Type
+          <select id="weekKind"><option value="week">Week</option><option value="module">Module</option></select>
         </label>
         <menu>
           <button value="cancel" class="button secondary">Cancel</button>
-          <button id="uploadSubmit" value="default" class="button primary">Upload</button>
+          <button id="weekSubmit" value="default" class="button primary">Add</button>
         </menu>
       </form>
     </dialog>
