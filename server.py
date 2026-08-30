@@ -243,6 +243,19 @@ ACADEMIC_EXTS = {
     ".jpeg",
     ".webp",
 }
+MATERIAL_TYPES = (
+    "Lecture",
+    "Tutorial",
+    "Workshop",
+    "Lab",
+    "Quiz",
+    "Assignment",
+    "Reading",
+    "Exam",
+    "Other",
+)
+EXERCISE_MATERIAL_TYPES = {"Tutorial", "Workshop", "Lab", "Quiz", "Assignment", "Exam"}
+SYSTEM_INBOX_FOLDER = "__studyhub_unclassified__"
 TEXT_EXTRACTABLE_EXTS = {
     ".pdf",
     ".docx",
@@ -442,16 +455,49 @@ def request_host_is_loopback(host_header: str) -> bool:
 def public_course(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     payload = {
         key: row[key]
-        for key in ("id", "code", "name", "folder_name", "created_at", "updated_at", "file_count", "latest_week")
+        for key in (
+            "id",
+            "stable_id",
+            "code",
+            "course_code",
+            "name",
+            "display_name",
+            "folder_name",
+            "term_id",
+            "term_name",
+            "archived",
+            "source_kind",
+            "sort_order",
+            "created_at",
+            "updated_at",
+            "file_count",
+            "latest_week",
+        )
         if key in row.keys()
     }
-    if "code" in payload:
-        payload["display_code"] = display_course_code(payload["code"])
+    payload["code"] = payload.get("course_code") or payload.get("code") or ""
+    payload["name"] = payload.get("display_name") or payload.get("name") or payload["code"]
+    payload["display_code"] = display_course_code(payload["code"])
     return payload
 
 
 def public_week(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    return {key: row[key] for key in ("id", "course_id", "week_label", "week_number", "has_materials", "file_count") if key in row.keys()}
+    return {
+        key: row[key]
+        for key in (
+            "id",
+            "stable_id",
+            "course_id",
+            "week_label",
+            "week_number",
+            "kind",
+            "origin",
+            "archived",
+            "has_materials",
+            "file_count",
+        )
+        if key in row.keys()
+    }
 
 
 def public_file(row: sqlite3.Row | dict[str, Any], include_text: str | None = None) -> dict[str, Any]:
@@ -478,6 +524,15 @@ def public_file(row: sqlite3.Row | dict[str, Any], include_text: str | None = No
         "is_official",
         "suspicious",
         "stable_id",
+        "display_name",
+        "material_type",
+        "import_mode",
+        "inbox",
+        "metadata_locked",
+        "source_missing",
+        "removed_at",
+        "material_created_at",
+        "material_updated_at",
         "source_type",
         "file_extension",
         "file_size",
@@ -497,6 +552,55 @@ def public_file(row: sqlite3.Row | dict[str, Any], include_text: str | None = No
     if include_text is not None:
         data["extractedText"] = include_text
     return data
+
+
+def clean_metadata_text(value: Any, field: str, *, required: bool = True, limit: int = 120) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if required and not text:
+        raise ValueError(f"{field} is required")
+    if len(text) > limit or any(ord(char) < 32 for char in text):
+        raise ValueError(f"{field} is not valid")
+    return text
+
+
+def new_stable_id(prefix: str) -> str:
+    return f"{prefix}_{secrets.token_urlsafe(12)}"
+
+
+def deterministic_stable_id(prefix: str, value: str) -> str:
+    return f"{prefix}_{hashlib.sha256(value.encode('utf-8')).hexdigest()[:20]}"
+
+
+def normalize_material_type(value: Any) -> str:
+    raw = clean_metadata_text(value or "Other", "Material type", required=False, limit=40) or "Other"
+    aliases = {
+        "slides": "Lecture",
+        "course materials": "Lecture",
+        "practice": "Quiz",
+        "revision": "Other",
+        "readings": "Reading",
+    }
+    lowered = raw.lower()
+    for item in MATERIAL_TYPES:
+        if item.lower() == lowered:
+            return item
+    return aliases.get(lowered, "Other")
+
+
+def section_for_material_type(material_type: str) -> str:
+    return "02 Exercises" if material_type in EXERCISE_MATERIAL_TYPES else "01 Course Materials"
+
+
+def material_path_allowed(row: sqlite3.Row | dict[str, Any], path: Path) -> bool:
+    resolved = path.expanduser().resolve()
+    if is_inside(resolved, DEFAULT_STUDY_ROOT):
+        return True
+    keys = row.keys()
+    import_mode = str(row["import_mode"] or "") if "import_mode" in keys else ""
+    if import_mode != "reference":
+        return False
+    stored = Path(str(row["original_path"])).expanduser().resolve()
+    return resolved == stored
 
 
 def public_solution(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -565,6 +669,18 @@ def extract_week(parts: list[str]) -> tuple[str, int | None]:
         if m:
             return part, int(m.group("num"))
     return "", None
+
+
+def extract_learning_unit(parts: list[str]) -> tuple[str, int | None, str]:
+    week_label, week_number = extract_week(parts)
+    if week_label:
+        return week_label, week_number, "week"
+    for part in parts:
+        match = re.match(r"^\s*Module[\s_-]*(?P<num>\d{1,3})?\b.*$", part, re.IGNORECASE)
+        if match:
+            number = int(match.group("num")) if match.group("num") else None
+            return part, number, "module"
+    return "Unclassified", None, "module"
 
 
 def parse_course_dir(path: Path) -> tuple[str, str]:
@@ -773,8 +889,8 @@ def convert_office_document_to_pdf(row: sqlite3.Row | dict[str, Any], source_pat
     ext = source_path.suffix.lower()
     if ext not in OFFICE_PDF_PREVIEW_EXTS:
         return OfficePreviewResult("unsupported", message="This file type does not use Office-to-PDF visual preview.")
-    if not is_inside(source_path, DEFAULT_STUDY_ROOT):
-        raise PermissionError("Preview source is outside the configured study folder.")
+    if not material_path_allowed(row, source_path):
+        raise PermissionError("Preview source is outside the StudyHub material allowlist.")
     if not source_path.exists():
         raise FileNotFoundError("Original file is missing. Scan Library to refresh your file list.")
 
@@ -1212,6 +1328,15 @@ def ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
+        CREATE TABLE IF NOT EXISTS terms (
+          id INTEGER PRIMARY KEY,
+          stable_id TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL,
+          archived INTEGER NOT NULL DEFAULT 0,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS courses (
           id INTEGER PRIMARY KEY,
           code TEXT NOT NULL,
@@ -1420,6 +1545,11 @@ def init_db(conn: sqlite3.Connection) -> None:
           metadata_json TEXT DEFAULT '{}',
           UNIQUE(file_id, provider)
         );
+        CREATE TABLE IF NOT EXISTS app_settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
         CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
           filename,
           course_code,
@@ -1430,6 +1560,36 @@ def init_db(conn: sqlite3.Connection) -> None:
           tokenize='unicode61'
         );
         """
+    )
+    ensure_columns(
+        conn,
+        "courses",
+        {
+            "stable_id": "TEXT DEFAULT ''",
+            "display_name": "TEXT DEFAULT ''",
+            "course_code": "TEXT DEFAULT ''",
+            "term_id": "INTEGER REFERENCES terms(id)",
+            "archived": "INTEGER NOT NULL DEFAULT 0",
+            "source_folder": "TEXT DEFAULT ''",
+            "source_kind": "TEXT NOT NULL DEFAULT 'folder'",
+            "active": "INTEGER NOT NULL DEFAULT 1",
+            "removed_at": "TEXT",
+            "sort_order": "INTEGER NOT NULL DEFAULT 0",
+            "metadata_locked": "INTEGER NOT NULL DEFAULT 0",
+        },
+    )
+    ensure_columns(
+        conn,
+        "weeks",
+        {
+            "stable_id": "TEXT DEFAULT ''",
+            "kind": "TEXT NOT NULL DEFAULT 'week'",
+            "origin": "TEXT NOT NULL DEFAULT 'scan'",
+            "archived": "INTEGER NOT NULL DEFAULT 0",
+            "removed_at": "TEXT",
+            "created_at": "TEXT DEFAULT ''",
+            "updated_at": "TEXT DEFAULT ''",
+        },
     )
     ensure_columns(
         conn,
@@ -1449,14 +1609,157 @@ def init_db(conn: sqlite3.Connection) -> None:
             "missing_at": "TEXT",
             "ai_index_status": "TEXT DEFAULT 'not_indexed'",
             "ai_index_error": "TEXT DEFAULT ''",
+            "display_name": "TEXT DEFAULT ''",
+            "material_type": "TEXT DEFAULT ''",
+            "import_mode": "TEXT NOT NULL DEFAULT 'scanned'",
+            "inbox": "INTEGER NOT NULL DEFAULT 0",
+            "metadata_locked": "INTEGER NOT NULL DEFAULT 0",
+            "source_missing": "INTEGER NOT NULL DEFAULT 0",
+            "removed_at": "TEXT",
+            "material_created_at": "TEXT DEFAULT ''",
+            "material_updated_at": "TEXT DEFAULT ''",
         },
     )
+    now = now_iso()
+    conn.execute(
+        "INSERT OR IGNORE INTO terms(stable_id, name, archived, sort_order, created_at, updated_at) VALUES ('term_imported', 'Imported Courses', 0, 0, ?, ?)",
+        (now, now),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO terms(stable_id, name, archived, sort_order, created_at, updated_at) VALUES ('term_demo', 'Demo Term', 0, 0, ?, ?)",
+        (now, now),
+    )
+    imported_term_id = conn.execute("SELECT id FROM terms WHERE stable_id='term_imported'").fetchone()["id"]
+    course_rows = conn.execute("SELECT id, folder_name, created_at, code, name, path, stable_id FROM courses").fetchall()
+    for row in course_rows:
+        stable_id = row["stable_id"] or deterministic_stable_id("course", f"{row['folder_name']}|{row['created_at']}")
+        conn.execute(
+            """
+            UPDATE courses SET stable_id=?, display_name=COALESCE(NULLIF(display_name, ''), name),
+              course_code=COALESCE(NULLIF(course_code, ''), code), term_id=COALESCE(term_id, ?),
+              source_folder=COALESCE(NULLIF(source_folder, ''), path)
+            WHERE id=?
+            """,
+            (stable_id, imported_term_id, row["id"]),
+        )
+    week_rows = conn.execute("SELECT id, course_id, week_label, stable_id, created_at, updated_at FROM weeks").fetchall()
+    for row in week_rows:
+        stable_id = row["stable_id"] or deterministic_stable_id("week", f"{row['course_id']}|{row['week_label']}")
+        conn.execute(
+            "UPDATE weeks SET stable_id=?, created_at=COALESCE(NULLIF(created_at, ''), ?), updated_at=COALESCE(NULLIF(updated_at, ''), ?) WHERE id=?",
+            (stable_id, now, now, row["id"]),
+        )
     conn.execute("UPDATE files SET stable_id=COALESCE(NULLIF(stable_id, ''), hash) WHERE stable_id='' OR stable_id IS NULL")
     conn.execute("UPDATE files SET absolute_path=original_path WHERE absolute_path='' OR absolute_path IS NULL")
     conn.execute("UPDATE files SET file_extension=extension WHERE file_extension='' OR file_extension IS NULL")
     conn.execute("UPDATE files SET file_size=size WHERE file_size=0 OR file_size IS NULL")
     conn.execute("UPDATE files SET sha256=hash WHERE sha256='' OR sha256 IS NULL")
+    conn.execute("UPDATE files SET display_name=filename WHERE display_name='' OR display_name IS NULL")
+    conn.execute("UPDATE files SET material_created_at=indexed_at WHERE material_created_at='' OR material_created_at IS NULL")
+    conn.execute("UPDATE files SET material_updated_at=indexed_at WHERE material_updated_at='' OR material_updated_at IS NULL")
+    conn.execute("UPDATE files SET material_type=CASE WHEN category IN ('Lecture','Tutorial','Workshop','Lab','Quiz','Assignment','Reading','Exam') THEN category ELSE 'Other' END WHERE material_type='' OR material_type IS NULL")
+    conn.execute("UPDATE files SET source_missing=CASE WHEN active=0 AND missing_at IS NOT NULL THEN 1 ELSE source_missing END")
+    conn.execute("UPDATE courses SET active=0 WHERE source_kind IN ('folder','demo') AND removed_at IS NULL AND NOT EXISTS (SELECT 1 FROM files WHERE files.course_id=courses.id AND files.active=1)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_courses_stable_id ON courses(stable_id)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_weeks_stable_id ON weeks(stable_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_courses_term_active ON courses(term_id, archived, active)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_files_management ON files(course_id, week_id, material_type, inbox, active)")
     conn.commit()
+
+
+def ensure_term(conn: sqlite3.Connection, name: str, *, stable_id: str | None = None) -> sqlite3.Row:
+    clean_name = clean_metadata_text(name, "Term name")
+    if stable_id:
+        row = conn.execute("SELECT * FROM terms WHERE stable_id=?", (stable_id,)).fetchone()
+        if row:
+            return row
+    existing = conn.execute("SELECT * FROM terms WHERE lower(name)=lower(?) AND archived=0", (clean_name,)).fetchone()
+    if existing:
+        return existing
+    now = now_iso()
+    conn.execute(
+        "INSERT INTO terms(stable_id, name, archived, sort_order, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?)",
+        (stable_id or new_stable_id("term"), clean_name, now, now),
+    )
+    return conn.execute("SELECT * FROM terms WHERE id=last_insert_rowid()").fetchone()
+
+
+def ensure_week_record(
+    conn: sqlite3.Connection,
+    course_id: int,
+    label: str,
+    *,
+    number: int | None = None,
+    path: str = "",
+    origin: str = "managed",
+    kind: str | None = None,
+) -> sqlite3.Row:
+    clean_label = clean_metadata_text(label, "Week or module name", limit=80)
+    row = conn.execute(
+        "SELECT * FROM weeks WHERE course_id=? AND week_label=? AND removed_at IS NULL",
+        (course_id, clean_label),
+    ).fetchone()
+    if row:
+        if path:
+            conn.execute("UPDATE weeks SET path=?, updated_at=? WHERE id=?", (path, now_iso(), row["id"]))
+            row = conn.execute("SELECT * FROM weeks WHERE id=?", (row["id"],)).fetchone()
+        return row
+    detected_number = number
+    if detected_number is None:
+        match = re.search(r"\b(\d{1,3})\b", clean_label)
+        detected_number = int(match.group(1)) if match else None
+    week_kind = kind or ("week" if detected_number is not None and clean_label.lower().startswith("week") else "module")
+    now = now_iso()
+    conn.execute(
+        """
+        INSERT INTO weeks(stable_id, course_id, week_label, week_number, path, has_materials, file_count,
+          kind, origin, archived, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, 0, ?, ?)
+        """,
+        (new_stable_id("week"), course_id, clean_label, detected_number, path, week_kind, origin, now, now),
+    )
+    return conn.execute("SELECT * FROM weeks WHERE id=last_insert_rowid()").fetchone()
+
+
+def refresh_course_week_counts(conn: sqlite3.Connection) -> None:
+    conn.execute("UPDATE weeks SET has_materials=0, file_count=0")
+    conn.execute(
+        """
+        UPDATE weeks SET
+          file_count=(SELECT COUNT(*) FROM files WHERE files.week_id=weeks.id AND files.active=1 AND files.removed_at IS NULL),
+          has_materials=CASE WHEN (SELECT COUNT(*) FROM files WHERE files.week_id=weeks.id AND files.active=1 AND files.removed_at IS NULL) > 0 THEN 1 ELSE 0 END
+        WHERE removed_at IS NULL
+        """
+    )
+    conn.execute(
+        """
+        UPDATE courses SET active=CASE
+          WHEN source_kind IN ('managed','system') AND removed_at IS NULL THEN 1
+          WHEN source_kind='demo' AND ?=1 AND removed_at IS NULL THEN 1
+          WHEN EXISTS (SELECT 1 FROM files WHERE files.course_id=courses.id AND files.active=1 AND files.removed_at IS NULL) THEN 1
+          ELSE 0 END
+        """,
+        (1 if DEMO_MODE else 0,),
+    )
+
+
+def ensure_inbox_course(conn: sqlite3.Connection) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM courses WHERE source_kind='system' AND folder_name=?", (SYSTEM_INBOX_FOLDER,)).fetchone()
+    if row:
+        return row
+    term = ensure_term(conn, "Imported Courses", stable_id="term_imported")
+    now = now_iso()
+    conn.execute(
+        """
+        INSERT INTO courses(stable_id, code, course_code, name, display_name, folder_name, path, source_folder,
+          source_kind, term_id, archived, active, created_at, updated_at)
+        VALUES (?, '', '', 'Unclassified', 'Unclassified', ?, '', '', 'system', ?, 0, 1, ?, ?)
+        """,
+        ("course_inbox", SYSTEM_INBOX_FOLDER, term["id"], now, now),
+    )
+    course = conn.execute("SELECT * FROM courses WHERE id=last_insert_rowid()").fetchone()
+    ensure_week_record(conn, course["id"], "Unclassified", origin="system", kind="module")
+    return course
 
 
 @dataclass
@@ -1717,7 +2020,7 @@ def seed_demo_records(conn: sqlite3.Connection) -> None:
     )
 
 
-def scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
+def _legacy_scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
     study_root = study_root.expanduser().resolve()
     if not study_root.exists():
         raise FileNotFoundError(f"Study library not found: {study_root}")
@@ -1930,6 +2233,736 @@ def scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
     return stats
 
 
+def index_material_content(conn: sqlite3.Connection, file_id: int, path: Path, *, force: bool = False) -> dict[str, Any]:
+    path = path.expanduser().resolve()
+    row = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
+    if row is None:
+        raise FileNotFoundError("Material record was not found")
+    if not path.exists() or not path.is_file():
+        conn.execute(
+            "UPDATE files SET source_missing=1, missing_at=COALESCE(missing_at, ?), ai_index_status='missing', ai_index_error='Original file missing' WHERE id=?",
+            (now_iso(), file_id),
+        )
+        return {"indexed": False, "missing": True, "updated": False, "questions": 0, "solutions": 0}
+    digest = sha256_file(path)
+    stat = path.stat()
+    modified = datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds")
+    ext = path.suffix.lower()
+    suspicious = is_suspicious_file(path)
+    chunk_count = conn.execute("SELECT COUNT(*) AS c FROM document_chunks WHERE file_id=?", (file_id,)).fetchone()["c"]
+    ai_seen = conn.execute("SELECT status, error FROM ai_index_state WHERE file_id=? AND provider='local'", (file_id,)).fetchone()
+    same_file = row["sha256"] == digest and row["modified_at"] == modified
+    needs_reindex = force or not same_file or should_retry_incomplete_index(row, ext, chunk_count, ai_seen, digest)
+    text_cache = row["text_cache_path"] or ""
+    text = ""
+    chunks: list[dict[str, Any]] = []
+    extraction_error = ""
+    if needs_reindex and not suspicious:
+        text = extract_text(path)
+        extraction_error = extraction_error_for(path, text)
+        if text:
+            text_cache_path = expected_text_cache_path(digest)
+            text_cache_path.write_text(text, encoding="utf-8", errors="ignore")
+            text_cache = str(text_cache_path)
+            chunks = extract_document_chunks(path, text)
+        else:
+            text_cache = ""
+    elif text_cache_available(text_cache):
+        cache_path = safe_cache_path(text_cache)
+        text = cache_path.read_text(encoding="utf-8", errors="ignore") if cache_path else ""
+    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    stable_id = row["stable_id"] or new_stable_id("material")
+    conn.execute(
+        """
+        UPDATE files SET filename=?, hash=?, size=?, modified_at=?, indexed_at=?, extension=?, mime_type=?,
+          suspicious=?, text_cache_path=?, stable_id=?, absolute_path=?, file_extension=?, file_size=?, sha256=?,
+          source_missing=0, missing_at=NULL, active=1, ai_index_error=? WHERE id=?
+        """,
+        (path.name, digest, stat.st_size, modified, now_iso(), ext, mime, suspicious, text_cache, stable_id,
+         str(path), ext, stat.st_size, digest, extraction_error, file_id),
+    )
+    upsert_file_version(conn, file_id, stable_id, digest, stat.st_size, modified, text_cache)
+    question_count = solution_count = 0
+    if needs_reindex:
+        current = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
+        _chunk_count, question_count, solution_count = rebuild_file_index(conn, file_id, text, chunks, current)
+    return {
+        "indexed": bool(text),
+        "missing": False,
+        "updated": needs_reindex,
+        "questions": question_count,
+        "solutions": solution_count,
+    }
+
+
+def scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
+    study_root = study_root.expanduser().resolve()
+    if not study_root.exists():
+        raise FileNotFoundError(f"Study library not found: {study_root}")
+    ensure_dirs()
+    conn = connect_db()
+    init_db(conn)
+    stats = ScanStats()
+    src_index = source_index_map(study_root)
+    indexed_paths: set[str] = set()
+    demo_scan = DEMO_MODE and study_root == DEMO_DATA_DIR.expanduser().resolve()
+    source_kind = "demo" if demo_scan else "folder"
+    term = ensure_term(conn, "Demo Term" if demo_scan else "Imported Courses", stable_id="term_demo" if demo_scan else "term_imported")
+
+    for course_dir in sorted(path for path in study_root.iterdir() if path.is_dir()):
+        if course_dir.name.startswith(".") or course_dir.name == "Needs Review":
+            continue
+        code, name = parse_course_dir(course_dir)
+        now = now_iso()
+        resolved_course = str(course_dir.resolve())
+        course = conn.execute("SELECT * FROM courses WHERE source_folder=?", (resolved_course,)).fetchone()
+        if course is not None and course["removed_at"]:
+            continue
+        if course is None:
+            folder_key = course_dir.name
+            if conn.execute("SELECT 1 FROM courses WHERE folder_name=?", (folder_key,)).fetchone():
+                folder_key = f"{course_dir.name}__{hashlib.sha256(resolved_course.encode()).hexdigest()[:10]}"
+            conn.execute(
+                """
+                INSERT INTO courses(stable_id, code, course_code, name, display_name, folder_name, path,
+                  source_folder, source_kind, term_id, archived, active, metadata_locked, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 0, ?, ?)
+                """,
+                (new_stable_id("course"), code, code, name, name, folder_key, resolved_course,
+                 resolved_course, source_kind, term["id"], now, now),
+            )
+            course_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+        else:
+            course_id = int(course["id"])
+            conn.execute(
+                """
+                UPDATE courses SET code=CASE WHEN metadata_locked=1 THEN code ELSE ? END,
+                  course_code=CASE WHEN metadata_locked=1 THEN course_code ELSE ? END,
+                  name=CASE WHEN metadata_locked=1 THEN name ELSE ? END,
+                  display_name=CASE WHEN metadata_locked=1 THEN display_name ELSE ? END,
+                  path=?, source_folder=?, source_kind=?, term_id=CASE WHEN metadata_locked=1 THEN term_id ELSE ? END, active=1,
+                  removed_at=NULL, updated_at=? WHERE id=?
+                """,
+                (code, code, name, name, resolved_course, resolved_course, source_kind, term["id"], now, course_id),
+            )
+        stats.courses += 1
+
+        for child in sorted(path for path in course_dir.iterdir() if path.is_dir()):
+            unit_label, unit_number, unit_kind = extract_learning_unit([child.name])
+            if unit_label != "Unclassified":
+                ensure_week_record(conn, course_id, unit_label, number=unit_number, path=str(child.resolve()), origin="scan", kind=unit_kind)
+
+        for path in sorted(course_dir.rglob("*")):
+            if not path.is_file() or path.name.startswith((".", "~$", ".~")):
+                continue
+            if path.name.lower() in INTERNAL_FILENAMES or "Needs Review" in path.parts or path.suffix.lower() not in ACADEMIC_EXTS:
+                continue
+            resolved_path = str(path.resolve())
+            indexed_paths.add(resolved_path)
+            rel = safe_relative(path, study_root)
+            rel_parts = list(Path(rel).parts)
+            week_label, week_number, week_kind = extract_learning_unit(rel_parts)
+            week = ensure_week_record(conn, course_id, week_label, number=week_number, origin="scan", kind=week_kind)
+            section, category, source_label = human_category(rel_parts)
+            category = category or normalize_material_type(path.parent.name)
+            source_row = src_index.get(rel, {})
+            if source_row.get("Original or Saved Page"):
+                source_label = "Official Canvas Material" if "official" in source_row.get("Original or Saved Page", "").lower() else source_label
+            source = "official" if guess_is_official(rel, source_label) else "user"
+            exercise_type = category if section == "02 Exercises" else ""
+            existing = conn.execute("SELECT * FROM files WHERE original_path=?", (resolved_path,)).fetchone()
+            if existing is None:
+                digest = sha256_file(path)
+                stat = path.stat()
+                modified = datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds")
+                ext = path.suffix.lower()
+                mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+                conn.execute(
+                    """
+                    INSERT INTO files(course_id, week_id, course_code, week_label, section, category, exercise_type,
+                      filename, original_path, rel_path, source, source_label, hash, size, modified_at, indexed_at,
+                      extension, mime_type, is_official, suspicious, text_cache_path, stable_id, course_name,
+                      week_number, absolute_path, source_type, file_extension, file_size, sha256, is_solution,
+                      is_question_source, active, missing_at, display_name, material_type, import_mode, inbox,
+                      metadata_locked, source_missing, removed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, 'scanned', 0, 0, 0, NULL)
+                    """,
+                    (course_id, week["id"], code, week_label, section, category, exercise_type, path.name,
+                     resolved_path, rel, source, source_label, digest, stat.st_size, modified, now_iso(), ext, mime,
+                     1 if source == "official" else 0, new_stable_id("material"), name, week_number, resolved_path,
+                     source_type_for(source_label), ext, stat.st_size, digest, is_solution_file(path, category),
+                     is_question_source_file(path, section, category), path.name, normalize_material_type(category)),
+                )
+                file_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+                stats.new_files += 1
+                force = True
+            else:
+                file_id = int(existing["id"])
+                locked = int(bool(existing["metadata_locked"]))
+                conn.execute(
+                    """
+                    UPDATE files SET course_id=CASE WHEN ?=1 THEN course_id ELSE ? END,
+                      week_id=CASE WHEN ?=1 THEN week_id ELSE ? END,
+                      course_code=CASE WHEN ?=1 THEN course_code ELSE ? END,
+                      course_name=CASE WHEN ?=1 THEN course_name ELSE ? END,
+                      week_label=CASE WHEN ?=1 THEN week_label ELSE ? END,
+                      week_number=CASE WHEN ?=1 THEN week_number ELSE ? END,
+                      section=CASE WHEN ?=1 THEN section ELSE ? END,
+                      category=CASE WHEN ?=1 THEN category ELSE ? END,
+                      exercise_type=CASE WHEN ?=1 THEN exercise_type ELSE ? END,
+                      material_type=CASE WHEN ?=1 THEN material_type ELSE ? END,
+                      rel_path=?, source=?, source_label=?, is_official=?, import_mode='scanned', active=1,
+                      source_missing=0, missing_at=NULL, removed_at=NULL WHERE id=?
+                    """,
+                    (locked, course_id, locked, week["id"], locked, code, locked, name, locked, week_label,
+                     locked, week_number, locked, section, locked, category, locked, exercise_type, locked,
+                     normalize_material_type(category), rel, source, source_label, 1 if source == "official" else 0, file_id),
+                )
+                force = False
+            conn.execute(
+                "UPDATE files SET material_created_at=COALESCE(NULLIF(material_created_at, ''), indexed_at), material_updated_at=? WHERE id=?",
+                (now_iso(), file_id),
+            )
+            indexed = index_material_content(conn, file_id, path, force=force)
+            stats.files += 1
+            if indexed["updated"] and not force:
+                stats.updated_files += 1
+            elif not indexed["updated"]:
+                stats.unchanged_files += 1
+            if indexed["indexed"]:
+                stats.indexed_text += 1
+            stats.questions_detected += int(indexed["questions"])
+            stats.solutions_detected += int(indexed["solutions"])
+            if is_suspicious_file(path):
+                stats.suspicious += 1
+                stats.failed_files += 1
+
+    for row in conn.execute("SELECT id, original_path, import_mode, removed_at FROM files").fetchall():
+        if row["removed_at"]:
+            continue
+        original = Path(row["original_path"]).expanduser().resolve()
+        if row["import_mode"] == "reference":
+            missing = not original.exists()
+            conn.execute(
+                "UPDATE files SET active=1, source_missing=?, missing_at=CASE WHEN ? THEN COALESCE(missing_at, ?) ELSE NULL END WHERE id=?",
+                (1 if missing else 0, missing, now_iso(), row["id"]),
+            )
+            continue
+        if row["original_path"] not in indexed_paths:
+            same_workspace = is_inside(original, study_root)
+            conn.execute("DELETE FROM files_fts WHERE rowid=?", (row["id"],))
+            conn.execute(
+                "UPDATE files SET active=?, source_missing=?, missing_at=COALESCE(missing_at, ?) WHERE id=?",
+                (1 if same_workspace else 0, 1 if same_workspace else 0, now_iso(), row["id"]),
+            )
+            conn.execute("UPDATE file_versions SET active=0 WHERE file_id=?", (row["id"],))
+            conn.execute("UPDATE ai_index_state SET status='missing', error='Original file missing', last_synced_at=? WHERE file_id=?", (now_iso(), row["id"]))
+            stats.removed_files += 1
+    refresh_course_week_counts(conn)
+    for week in conn.execute("SELECT id, path, has_materials, origin FROM weeks WHERE removed_at IS NULL").fetchall():
+        if week["origin"] == "scan" and not week["has_materials"] and week["path"] and not Path(week["path"]).exists():
+            conn.execute("UPDATE weeks SET removed_at=?, updated_at=? WHERE id=?", (now_iso(), now_iso(), week["id"]))
+    conn.execute("INSERT INTO sync_events(event_type, detail, created_at) VALUES (?, ?, ?)", ("scan", json.dumps(stats.__dict__), now_iso()))
+    seed_demo_records(conn)
+    conn.commit()
+    conn.close()
+    log_event("scan", json.dumps({"files": stats.files, "root": "configured-study-library"}, ensure_ascii=False))
+    return stats
+
+
+def course_row_with_counts(conn: sqlite3.Connection, course_id: int) -> sqlite3.Row:
+    row = conn.execute(
+        f"""
+        SELECT c.*, t.name AS term_name, COUNT(DISTINCT f.id) AS file_count,
+          MAX(CASE WHEN w.has_materials=1 THEN w.week_number ELSE NULL END) AS latest_week
+        FROM courses c LEFT JOIN terms t ON t.id=c.term_id
+        LEFT JOIN files f ON f.course_id=c.id AND f.active=1 AND f.removed_at IS NULL
+        LEFT JOIN weeks w ON w.course_id=c.id AND w.removed_at IS NULL
+        WHERE c.id=? GROUP BY c.id
+        """,
+        (course_id,),
+    ).fetchone()
+    if row is None:
+        raise FileNotFoundError("Course was not found")
+    return row
+
+
+def manage_term(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
+    action = str(body.get("action") or "create")
+    now = now_iso()
+    if action == "create":
+        term = ensure_term(conn, str(body.get("name") or ""))
+    else:
+        term_id = int(body.get("id") or 0)
+        term = conn.execute("SELECT * FROM terms WHERE id=?", (term_id,)).fetchone()
+        if term is None:
+            raise FileNotFoundError("Term was not found")
+        if term["stable_id"] in {"term_imported", "term_demo"} and action == "archive":
+            raise PermissionError("The built-in term cannot be archived")
+        if action == "rename":
+            name = clean_metadata_text(body.get("name"), "Term name")
+            conn.execute("UPDATE terms SET name=?, updated_at=? WHERE id=?", (name, now, term_id))
+        elif action in {"archive", "restore"}:
+            conn.execute("UPDATE terms SET archived=?, updated_at=? WHERE id=?", (1 if action == "archive" else 0, now, term_id))
+        else:
+            raise ValueError("Unknown term action")
+        term = conn.execute("SELECT * FROM terms WHERE id=?", (term_id,)).fetchone()
+    conn.commit()
+    return dict(term)
+
+
+def manage_course(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
+    action = str(body.get("action") or "create")
+    now = now_iso()
+    if action == "create":
+        display_name = clean_metadata_text(body.get("display_name") or body.get("name"), "Course name")
+        course_code = clean_metadata_text(body.get("course_code") or body.get("code"), "Course code", required=False, limit=40)
+        term_id = int(body.get("term_id") or 0)
+        if term_id:
+            term = conn.execute("SELECT * FROM terms WHERE id=? AND archived=0", (term_id,)).fetchone()
+            if term is None:
+                raise ValueError("Choose an active term")
+        else:
+            default_term_name = "Demo Term" if DEMO_MODE else "Imported Courses"
+            default_term_id = "term_demo" if DEMO_MODE else "term_imported"
+            term = ensure_term(conn, str(body.get("term_name") or default_term_name), stable_id=default_term_id if not body.get("term_name") else None)
+            term_id = int(term["id"])
+        stable_id = new_stable_id("course")
+        source_kind = "demo" if DEMO_MODE else "managed"
+        conn.execute(
+            """
+            INSERT INTO courses(stable_id, code, course_code, name, display_name, folder_name, path,
+              source_folder, source_kind, term_id, archived, active, removed_at, sort_order,
+              metadata_locked, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, '', '', ?, ?, 0, 1, NULL, 0, 1, ?, ?)
+            """,
+            (stable_id, course_code, course_code, display_name, display_name, f"managed-{stable_id}", source_kind, term_id, now, now),
+        )
+        course_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+    else:
+        course_id = int(body.get("id") or 0)
+        course = conn.execute("SELECT * FROM courses WHERE id=? AND source_kind!='system'", (course_id,)).fetchone()
+        if course is None:
+            raise FileNotFoundError("Course was not found")
+        if action == "update":
+            display_name = clean_metadata_text(body.get("display_name") or body.get("name") or course["display_name"], "Course name")
+            course_code = clean_metadata_text(body.get("course_code") if "course_code" in body else course["course_code"], "Course code", required=False, limit=40)
+            term_id = int(body.get("term_id") or course["term_id"] or 0)
+            if not conn.execute("SELECT 1 FROM terms WHERE id=?", (term_id,)).fetchone():
+                raise ValueError("Term was not found")
+            conn.execute(
+                "UPDATE courses SET code=?, course_code=?, name=?, display_name=?, term_id=?, metadata_locked=1, updated_at=? WHERE id=?",
+                (course_code, course_code, display_name, display_name, term_id, now, course_id),
+            )
+            conn.execute("UPDATE files SET course_code=?, course_name=? WHERE course_id=?", (course_code, display_name, course_id))
+            conn.execute("UPDATE document_chunks SET course_code=? WHERE file_id IN (SELECT id FROM files WHERE course_id=?)", (course_code, course_id))
+            conn.execute("UPDATE questions SET course_code=? WHERE file_id IN (SELECT id FROM files WHERE course_id=?)", (course_code, course_id))
+            conn.execute("UPDATE solutions SET course_code=? WHERE file_id IN (SELECT id FROM files WHERE course_id=?)", (course_code, course_id))
+            conn.execute("UPDATE ai_conversations SET course_code=? WHERE course_code=?", (course_code, course["course_code"]))
+            conn.execute("UPDATE files_fts SET course_code=? WHERE rowid IN (SELECT id FROM files WHERE course_id=?)", (course_code, course_id))
+        elif action in {"archive", "restore"}:
+            conn.execute("UPDATE courses SET archived=?, updated_at=? WHERE id=?", (1 if action == "archive" else 0, now, course_id))
+        elif action == "remove":
+            conn.execute("UPDATE courses SET active=0, removed_at=?, updated_at=? WHERE id=?", (now, now, course_id))
+            conn.execute("UPDATE files SET active=0, removed_at=COALESCE(removed_at, ?) WHERE course_id=?", (now, course_id))
+            conn.execute("DELETE FROM files_fts WHERE rowid IN (SELECT id FROM files WHERE course_id=?)", (course_id,))
+        elif action == "reorder":
+            conn.execute("UPDATE courses SET sort_order=?, updated_at=? WHERE id=?", (int(body.get("sort_order") or 0), now, course_id))
+        else:
+            raise ValueError("Unknown course action")
+    refresh_course_week_counts(conn)
+    conn.commit()
+    return public_course(course_row_with_counts(conn, course_id))
+
+
+def manage_week(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
+    action = str(body.get("action") or "create")
+    if action == "create":
+        course_id = int(body.get("course_id") or 0)
+        if not conn.execute("SELECT 1 FROM courses WHERE id=? AND removed_at IS NULL", (course_id,)).fetchone():
+            raise FileNotFoundError("Course was not found")
+        row = ensure_week_record(conn, course_id, str(body.get("label") or body.get("week_label") or ""), number=body.get("number"), origin="managed", kind=str(body.get("kind") or "") or None)
+    else:
+        week_id = int(body.get("id") or 0)
+        row = conn.execute("SELECT * FROM weeks WHERE id=? AND removed_at IS NULL", (week_id,)).fetchone()
+        if row is None:
+            raise FileNotFoundError("Week or module was not found")
+        if action == "rename":
+            label = clean_metadata_text(body.get("label") or body.get("week_label"), "Week or module name", limit=80)
+            if conn.execute("SELECT 1 FROM weeks WHERE course_id=? AND week_label=? AND id!=? AND removed_at IS NULL", (row["course_id"], label, week_id)).fetchone():
+                raise ValueError("That week or module already exists")
+            number = body.get("number")
+            if number is None:
+                match = re.search(r"\b(\d{1,3})\b", label)
+                number = int(match.group(1)) if match else None
+            conn.execute("UPDATE weeks SET week_label=?, week_number=?, kind=?, origin='managed', updated_at=? WHERE id=?", (label, number, body.get("kind") or row["kind"], now_iso(), week_id))
+            conn.execute("UPDATE files SET week_label=?, week_number=?, metadata_locked=1 WHERE week_id=?", (label, number, week_id))
+            for table in ("document_chunks", "questions", "solutions"):
+                conn.execute(f"UPDATE {table} SET week_label=? WHERE file_id IN (SELECT id FROM files WHERE week_id=?)", (label, week_id))
+            conn.execute("UPDATE notes SET week_label=? WHERE course_id=? AND week_label=?", (label, row["course_id"], row["week_label"]))
+            conn.execute("UPDATE wrong_questions SET week_label=? WHERE course_id=? AND week_label=?", (label, row["course_id"], row["week_label"]))
+            conn.execute("UPDATE files_fts SET week_label=? WHERE rowid IN (SELECT id FROM files WHERE week_id=?)", (label, week_id))
+        elif action == "remove":
+            count = conn.execute("SELECT COUNT(*) AS c FROM files WHERE week_id=? AND active=1 AND removed_at IS NULL", (week_id,)).fetchone()["c"]
+            if count:
+                raise ValueError("Only an empty week or module can be removed")
+            conn.execute("UPDATE weeks SET removed_at=?, updated_at=? WHERE id=?", (now_iso(), now_iso(), week_id))
+        else:
+            raise ValueError("Unknown week action")
+        row = conn.execute("SELECT * FROM weeks WHERE id=?", (week_id,)).fetchone()
+    refresh_course_week_counts(conn)
+    conn.commit()
+    return public_week(row)
+
+
+def classification_suggestion(conn: sqlite3.Connection, path: Path) -> dict[str, Any]:
+    haystack = " ".join(path.parts[-5:])
+    course = None
+    for row in conn.execute("SELECT * FROM courses WHERE active=1 AND archived=0 AND removed_at IS NULL AND source_kind!='system'").fetchall():
+        code = str(row["course_code"] or "")
+        if code and re.search(rf"(?<![A-Za-z0-9]){re.escape(code)}(?![A-Za-z0-9])", haystack, re.IGNORECASE):
+            course = row
+            break
+    week_label, week_number, week_kind = extract_learning_unit(list(path.parts[-5:]))
+    lowered = haystack.lower()
+    material_type = "Other"
+    for candidate in MATERIAL_TYPES[:-1]:
+        if candidate.lower() in lowered:
+            material_type = candidate
+            break
+    return {
+        "course_id": int(course["id"]) if course else None,
+        "course_code": course["course_code"] if course else "",
+        "week_label": "" if week_label == "Unclassified" else week_label,
+        "week_number": week_number,
+        "week_kind": week_kind,
+        "material_type": material_type,
+    }
+
+
+def validate_reference_path(raw: Any) -> Path:
+    text = str(raw or "")
+    if not text or "\x00" in text:
+        raise ValueError("Choose a normal local file")
+    path = Path(text).expanduser()
+    if not path.is_absolute() or not path.exists() or not path.is_file():
+        raise FileNotFoundError("Selected file was not found")
+    if path.suffix.lower() not in ACADEMIC_EXTS:
+        raise ValueError("That file type is not supported")
+    return path.resolve()
+
+
+def register_material_paths(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
+    raw_paths = body.get("paths") or []
+    if not isinstance(raw_paths, list) or not raw_paths or len(raw_paths) > 200:
+        raise ValueError("Choose between 1 and 200 files")
+    course_id = int(body.get("course_id") or 0)
+    week_id = int(body.get("week_id") or 0)
+    week_label = str(body.get("week_label") or "").strip()
+    duplicate_policy = str(body.get("duplicate_policy") or "skip")
+    is_official = bool(body.get("is_official", False))
+    if course_id:
+        course = conn.execute("SELECT * FROM courses WHERE id=? AND active=1 AND removed_at IS NULL", (course_id,)).fetchone()
+        if course is None:
+            raise FileNotFoundError("Course was not found")
+        inbox = 0
+    else:
+        course = ensure_inbox_course(conn)
+        course_id = int(course["id"])
+        inbox = 1
+    if week_id:
+        week = conn.execute("SELECT * FROM weeks WHERE id=? AND course_id=? AND removed_at IS NULL", (week_id, course_id)).fetchone()
+        if week is None:
+            raise ValueError("Week or module does not belong to this course")
+    else:
+        week = ensure_week_record(conn, course_id, week_label or "Unclassified", origin="managed", kind="module" if not week_label else None)
+    material_type = normalize_material_type(body.get("material_type") or "Other")
+    section = section_for_material_type(material_type)
+    exercise_type = material_type if section == "02 Exercises" else ""
+    results = []
+    for raw_path in raw_paths:
+        path = validate_reference_path(raw_path)
+        existing_path = conn.execute("SELECT * FROM files WHERE original_path=?", (str(path),)).fetchone()
+        if existing_path:
+            if existing_path["removed_at"]:
+                conn.execute("UPDATE files SET active=1, removed_at=NULL, source_missing=0, missing_at=NULL WHERE id=?", (existing_path["id"],))
+            results.append({"status": "existing", "id": existing_path["id"], "filename": existing_path["filename"]})
+            continue
+        digest = sha256_file(path)
+        duplicate = conn.execute("SELECT id, filename, course_code, week_label, material_type FROM files WHERE sha256=? AND active=1 AND removed_at IS NULL ORDER BY id LIMIT 1", (digest,)).fetchone()
+        if duplicate and duplicate_policy != "add_anyway":
+            results.append({"status": "duplicate", "id": duplicate["id"], "filename": path.name, "existing": public_file(duplicate)})
+            continue
+        stable_id = new_stable_id("material")
+        stat = path.stat()
+        modified = datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds")
+        ext = path.suffix.lower()
+        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        rel_path = f"references/{stable_id}/{path.name}"
+        conn.execute(
+            """
+            INSERT INTO files(course_id, week_id, course_code, week_label, section, category, exercise_type,
+              filename, original_path, rel_path, source, source_label, hash, size, modified_at, indexed_at,
+              extension, mime_type, is_official, suspicious, text_cache_path, stable_id, course_name,
+              week_number, absolute_path, source_type, file_extension, file_size, sha256, is_solution,
+              is_question_source, active, missing_at, display_name, material_type, import_mode, inbox,
+              metadata_locked, source_missing, removed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, NULL, ?, ?, 'reference', ?, 1, 0, NULL)
+            """,
+            (course_id, week["id"], course["course_code"], week["week_label"], section, material_type,
+             exercise_type, path.name, str(path), rel_path, "official" if is_official else "user",
+             "Teacher-provided material" if is_official else "User-selected local file", digest, stat.st_size,
+             modified, now_iso(), ext, mime, 1 if is_official else 0, stable_id, course["display_name"],
+             week["week_number"], str(path), "Local Reference", ext, stat.st_size, digest, path.name,
+             material_type, inbox),
+        )
+        file_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+        conn.execute(
+            "UPDATE files SET material_created_at=?, material_updated_at=? WHERE id=?",
+            (now_iso(), now_iso(), file_id),
+        )
+        indexed = index_material_content(conn, file_id, path, force=True)
+        results.append({"status": "added", "id": file_id, "filename": path.name, "indexed": indexed["indexed"]})
+    refresh_course_week_counts(conn)
+    conn.commit()
+    return {"ok": True, "items": results, "added": sum(item["status"] == "added" for item in results)}
+
+
+def import_course_folder(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
+    raw = str(body.get("path") or "")
+    if not raw or "\x00" in raw:
+        raise ValueError("Choose a normal local course folder")
+    folder = Path(raw).expanduser()
+    if not folder.is_absolute() or not folder.exists() or not folder.is_dir():
+        raise FileNotFoundError("Selected course folder was not found")
+    folder = folder.resolve()
+    candidates = sorted(
+        path for path in folder.rglob("*")
+        if path.is_file()
+        and not path.name.startswith((".", "~$", ".~"))
+        and path.suffix.lower() in ACADEMIC_EXTS
+    )
+    if len(candidates) > 500:
+        raise ValueError("Choose a course folder with no more than 500 supported files")
+
+    existing = conn.execute(
+        "SELECT * FROM courses WHERE source_folder=? AND removed_at IS NULL",
+        (str(folder),),
+    ).fetchone()
+    if existing:
+        course_id = int(existing["id"])
+        conn.execute("UPDATE courses SET active=1, archived=0, updated_at=? WHERE id=?", (now_iso(), course_id))
+    else:
+        code, inferred_name = parse_course_dir(folder)
+        display_name = clean_metadata_text(body.get("display_name") or inferred_name or folder.name, "Course name")
+        course_code = clean_metadata_text(body.get("course_code") or code, "Course code", required=False, limit=40)
+        term_id = int(body.get("term_id") or 0)
+        if term_id and not conn.execute("SELECT 1 FROM terms WHERE id=? AND archived=0", (term_id,)).fetchone():
+            raise ValueError("Choose an active term")
+        if not term_id:
+            term_id = int(ensure_term(conn, "Imported Courses", stable_id="term_imported")["id"])
+        stable_id = new_stable_id("course")
+        now = now_iso()
+        conn.execute(
+            """
+            INSERT INTO courses(stable_id, code, course_code, name, display_name, folder_name, path,
+              source_folder, source_kind, term_id, archived, active, removed_at, sort_order,
+              metadata_locked, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'managed', ?, 0, 1, NULL, 0, 1, ?, ?)
+            """,
+            (stable_id, course_code, course_code, display_name, display_name, f"folder-{stable_id}",
+             str(folder), str(folder), term_id, now, now),
+        )
+        course_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+
+    results: list[dict[str, Any]] = []
+    for path in candidates:
+        relative_parts = list(path.relative_to(folder).parts)
+        week_label, week_number, week_kind = extract_learning_unit(relative_parts)
+        week = ensure_week_record(
+            conn,
+            course_id,
+            week_label,
+            number=week_number,
+            origin="folder-import",
+            kind=week_kind,
+        )
+        _section, detected_category, _source = human_category(relative_parts)
+        material_type = normalize_material_type(detected_category or classification_suggestion(conn, path)["material_type"])
+        item = register_material_paths(
+            conn,
+            {
+                "paths": [str(path)],
+                "course_id": course_id,
+                "week_id": int(week["id"]),
+                "material_type": material_type,
+                "duplicate_policy": body.get("duplicate_policy") or "skip",
+                "is_official": bool(body.get("is_official", False)),
+            },
+        )["items"][0]
+        results.append(item)
+    refresh_course_week_counts(conn)
+    conn.commit()
+    course = public_course(course_row_with_counts(conn, course_id))
+    return {
+        "ok": True,
+        "course": course,
+        "items": results,
+        "detected": len(candidates),
+        "added": sum(item["status"] == "added" for item in results),
+        "duplicates": sum(item["status"] in {"duplicate", "existing"} for item in results),
+    }
+
+
+def manage_materials(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
+    action = str(body.get("action") or "")
+    ids = body.get("ids") or ([body.get("id")] if body.get("id") else [])
+    if not isinstance(ids, list) or not ids or len(ids) > 200:
+        raise ValueError("Choose one or more materials")
+    material_ids = [int(value) for value in ids]
+    rows = conn.execute(f"SELECT * FROM files WHERE id IN ({','.join('?' for _ in material_ids)}) AND removed_at IS NULL", material_ids).fetchall()
+    if len(rows) != len(set(material_ids)):
+        raise FileNotFoundError("One or more materials were not found")
+    if action in {"move", "classify"}:
+        course_id = int(body.get("course_id") or rows[0]["course_id"])
+        course = conn.execute("SELECT * FROM courses WHERE id=? AND active=1 AND removed_at IS NULL", (course_id,)).fetchone()
+        if course is None:
+            raise FileNotFoundError("Course was not found")
+        week_id = int(body.get("week_id") or 0)
+        if week_id:
+            week = conn.execute("SELECT * FROM weeks WHERE id=? AND course_id=? AND removed_at IS NULL", (week_id, course_id)).fetchone()
+            if week is None:
+                raise ValueError("Week or module does not belong to this course")
+        else:
+            week = ensure_week_record(conn, course_id, str(body.get("week_label") or rows[0]["week_label"] or "Unclassified"), origin="managed")
+        material_type = normalize_material_type(body.get("material_type") or rows[0]["material_type"] or rows[0]["category"])
+        section = section_for_material_type(material_type)
+        exercise_type = material_type if section == "02 Exercises" else ""
+        placeholders = ",".join("?" for _ in material_ids)
+        params = [course_id, week["id"], course["course_code"], course["display_name"], week["week_label"], week["week_number"], section, material_type, exercise_type, material_type, *material_ids]
+        conn.execute(
+            f"UPDATE files SET course_id=?, week_id=?, course_code=?, course_name=?, week_label=?, week_number=?, section=?, category=?, exercise_type=?, material_type=?, inbox=0, metadata_locked=1 WHERE id IN ({placeholders})",
+            params,
+        )
+        for table in ("document_chunks", "questions", "solutions"):
+            conn.execute(
+                f"UPDATE {table} SET course_code=?, week_label=?, exercise_type=? WHERE file_id IN ({placeholders})",
+                [course["course_code"], week["week_label"], exercise_type, *material_ids],
+            )
+        conn.execute(
+            f"UPDATE files_fts SET course_code=?, week_label=?, category=? WHERE rowid IN ({placeholders})",
+            [course["course_code"], week["week_label"], material_type, *material_ids],
+        )
+    elif action == "rename":
+        if len(material_ids) != 1:
+            raise ValueError("Rename one material at a time")
+        display_name = clean_metadata_text(body.get("display_name"), "Material name", limit=180)
+        conn.execute("UPDATE files SET display_name=?, metadata_locked=1 WHERE id=?", (display_name, material_ids[0]))
+    elif action == "remove":
+        placeholders = ",".join("?" for _ in material_ids)
+        conn.execute(f"UPDATE files SET active=0, removed_at=? WHERE id IN ({placeholders})", [now_iso(), *material_ids])
+        conn.execute(f"DELETE FROM files_fts WHERE rowid IN ({placeholders})", material_ids)
+    elif action in {"star", "unstar"}:
+        if action == "star":
+            conn.executemany(
+                "INSERT OR IGNORE INTO stars(target_type, target_id, created_at) VALUES ('file', ?, ?)",
+                [(material_id, now_iso()) for material_id in material_ids],
+            )
+        else:
+            placeholders = ",".join("?" for _ in material_ids)
+            conn.execute(f"DELETE FROM stars WHERE target_type='file' AND target_id IN ({placeholders})", material_ids)
+    elif action == "relink":
+        if len(material_ids) != 1:
+            raise ValueError("Relink one material at a time")
+        path = validate_reference_path(body.get("path"))
+        conflict = conn.execute("SELECT id FROM files WHERE original_path=? AND id!=?", (str(path), material_ids[0])).fetchone()
+        if conflict:
+            raise ValueError("That file is already registered in StudyHub")
+        conn.execute("UPDATE files SET original_path=?, absolute_path=?, import_mode='reference', source_missing=0, missing_at=NULL, active=1 WHERE id=?", (str(path), str(path), material_ids[0]))
+        index_material_content(conn, material_ids[0], path, force=True)
+    else:
+        raise ValueError("Unknown material action")
+    placeholders = ",".join("?" for _ in material_ids)
+    conn.execute(f"UPDATE files SET material_updated_at=? WHERE id IN ({placeholders})", [now_iso(), *material_ids])
+    refresh_course_week_counts(conn)
+    conn.commit()
+    return {"ok": True, "ids": material_ids}
+
+
+def clear_recreatable_cache(conn: sqlite3.Connection) -> dict[str, Any]:
+    for child in CACHE_DIR.iterdir() if CACHE_DIR.exists() else []:
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink(missing_ok=True)
+    ensure_dirs()
+    conn.execute("DELETE FROM files_fts")
+    conn.execute("DELETE FROM document_chunks")
+    conn.execute("DELETE FROM questions")
+    conn.execute("DELETE FROM solutions")
+    conn.execute("DELETE FROM ai_index_state WHERE provider='local'")
+    conn.execute("UPDATE files SET text_cache_path='', ai_index_status='not_indexed', ai_index_error='' WHERE active=1")
+    reindexed = 0
+    for row in conn.execute("SELECT * FROM files WHERE active=1 AND removed_at IS NULL").fetchall():
+        path = Path(row["original_path"])
+        if material_path_allowed(row, path) and path.exists():
+            index_material_content(conn, row["id"], path, force=True)
+            reindexed += 1
+    conn.commit()
+    return {"ok": True, "reindexed": reindexed}
+
+
+def reset_studyhub_state(conn: sqlite3.Connection) -> dict[str, Any]:
+    for table in (
+        "ai_messages", "ai_conversations", "ai_interactions", "wrong_questions", "attempts", "bookmarks",
+        "study_sessions", "notes", "stars", "questions", "solutions", "document_chunks", "file_versions",
+        "ai_index_state", "sync_events", "files", "weeks", "courses", "terms", "app_settings",
+    ):
+        conn.execute(f"DELETE FROM {table}")
+    conn.execute("DELETE FROM files_fts")
+    conn.commit()
+    for child in CACHE_DIR.iterdir() if CACHE_DIR.exists() else []:
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink(missing_ok=True)
+    ensure_dirs()
+    init_db(conn)
+    return {"ok": True, "originalFilesChanged": False}
+
+
+def configure_managed_workspace() -> dict[str, Any]:
+    managed_root = DATA_DIR / "managed-library"
+    managed_root.mkdir(parents=True, exist_ok=True)
+    entries = read_local_env_entries()
+    entries["DEMO_MODE"] = "false"
+    entries["STUDY_LIBRARY_PATH"] = str(managed_root)
+    entries.setdefault("HOST", "127.0.0.1")
+    write_local_env_entries(entries)
+    return {"ok": True, "restartRequired": True, "message": "Your private StudyHub workspace is ready."}
+
+
+def configure_demo_workspace() -> dict[str, Any]:
+    entries = read_local_env_entries()
+    entries["DEMO_MODE"] = "true"
+    entries.pop("STUDY_LIBRARY_PATH", None)
+    entries.setdefault("HOST", "127.0.0.1")
+    write_local_env_entries(entries)
+    return {"ok": True, "restartRequired": True, "message": "Demo Mode will reopen with synthetic courses."}
+
+
+def course_visibility_sql(
+    alias: str = "c",
+    *,
+    include_system: bool = False,
+    include_archived_term: bool = False,
+) -> str:
+    mode = f"{alias}.source_kind='demo'" if DEMO_MODE else f"{alias}.source_kind!='demo'"
+    system = "" if include_system else f" AND {alias}.source_kind!='system'"
+    term = "" if include_archived_term else f" AND EXISTS (SELECT 1 FROM terms visible_term WHERE visible_term.id={alias}.term_id AND visible_term.archived=0)"
+    return f"{mode}{system} AND {alias}.removed_at IS NULL{term}"
+
+
 def rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
@@ -1957,19 +2990,21 @@ def has_context_scope(context: dict[str, Any]) -> bool:
 
 def get_file(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row:
     row = conn.execute(
-        """
+        f"""
         SELECT f.*, s.id AS star_id
         FROM files f
+        JOIN courses c ON c.id=f.course_id
         LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
-        WHERE f.id=?
+        WHERE f.id=? AND f.active=1 AND f.removed_at IS NULL AND f.source_missing=0
+          AND c.archived=0 AND {course_visibility_sql('c', include_system=True)}
         """,
         (file_id,),
     ).fetchone()
     if row is None:
         raise FileNotFoundError("File was not found. Scan Library to refresh your file list.")
     path = Path(row["original_path"]).expanduser().resolve()
-    if not is_inside(path, DEFAULT_STUDY_ROOT):
-        raise PermissionError("file outside study root")
+    if not material_path_allowed(row, path):
+        raise PermissionError("file outside StudyHub material allowlist")
     if not path.exists():
         raise FileNotFoundError("Original file is missing. Scan Library to refresh your file list.")
     return row
@@ -2025,11 +3060,22 @@ def unique_path_for_upload(target_dir: Path, filename: str, digest: str) -> tupl
 
 
 def api_health(conn: sqlite3.Connection) -> dict[str, Any]:
-    file_count = conn.execute("SELECT COUNT(*) AS c FROM files WHERE active=1").fetchone()["c"]
-    suspicious = conn.execute("SELECT COUNT(*) AS c FROM files WHERE active=1 AND suspicious != ''").fetchone()["c"]
-    ai_indexed = conn.execute("SELECT COUNT(*) AS c FROM ai_index_state WHERE provider='local' AND status='indexed'").fetchone()["c"]
-    questions = conn.execute("SELECT COUNT(*) AS c FROM questions").fetchone()["c"]
-    chunks = conn.execute("SELECT COUNT(*) AS c FROM document_chunks").fetchone()["c"]
+    visibility = course_visibility_sql("c", include_system=True)
+    file_count = conn.execute(
+        f"SELECT COUNT(*) AS c FROM files f JOIN courses c ON c.id=f.course_id WHERE f.active=1 AND f.removed_at IS NULL AND c.archived=0 AND {visibility}"
+    ).fetchone()["c"]
+    suspicious = conn.execute(
+        f"SELECT COUNT(*) AS c FROM files f JOIN courses c ON c.id=f.course_id WHERE f.active=1 AND f.removed_at IS NULL AND f.suspicious != '' AND c.archived=0 AND {visibility}"
+    ).fetchone()["c"]
+    ai_indexed = conn.execute(
+        f"SELECT COUNT(*) AS c FROM ai_index_state ai JOIN files f ON f.id=ai.file_id JOIN courses c ON c.id=f.course_id WHERE ai.provider='local' AND ai.status='indexed' AND f.active=1 AND c.archived=0 AND {visibility}"
+    ).fetchone()["c"]
+    questions = conn.execute(
+        f"SELECT COUNT(*) AS c FROM questions q JOIN files f ON f.id=q.file_id JOIN courses c ON c.id=f.course_id WHERE f.active=1 AND c.archived=0 AND {visibility}"
+    ).fetchone()["c"]
+    chunks = conn.execute(
+        f"SELECT COUNT(*) AS c FROM document_chunks dc JOIN files f ON f.id=dc.file_id JOIN courses c ON c.id=f.course_id WHERE f.active=1 AND c.archived=0 AND {visibility}"
+    ).fetchone()["c"]
     last_scan = conn.execute("SELECT created_at FROM sync_events WHERE event_type='scan' ORDER BY id DESC LIMIT 1").fetchone()
     last_ai = conn.execute("SELECT MAX(last_synced_at) AS ts FROM ai_index_state").fetchone()
     vector_store_id = current_vector_store_id(conn)
@@ -2080,7 +3126,9 @@ def api_preflight(conn: sqlite3.Connection) -> dict[str, Any]:
     health = api_health(conn)
     items: list[dict[str, str]] = []
     file_count = int(health["filesIndexed"] or 0)
-    pdf_count = conn.execute("SELECT COUNT(*) AS c FROM files WHERE active=1 AND lower(extension)='.pdf'").fetchone()["c"]
+    pdf_count = conn.execute(
+        f"SELECT COUNT(*) AS c FROM files f JOIN courses c ON c.id=f.course_id WHERE f.active=1 AND f.removed_at IS NULL AND lower(f.extension)='.pdf' AND c.archived=0 AND {course_visibility_sql('c', include_system=True)}"
+    ).fetchone()["c"]
     root_exists = bool(health["studyLibraryConnected"])
     openai_configured = bool(os.environ.get("OPENAI_API_KEY"))
     database_parent = DB_PATH.expanduser().resolve().parent
@@ -2193,15 +3241,7 @@ def api_preflight(conn: sqlite3.Connection) -> dict[str, Any]:
         "demoMode": DEMO_MODE,
         "fileCount": file_count,
         "courseCount": conn.execute(
-            """
-            SELECT COUNT(*) AS c
-            FROM (
-              SELECT c.id
-              FROM courses c
-              JOIN files f ON f.course_id=c.id AND f.active=1
-              GROUP BY c.id
-            )
-            """
+            f"SELECT COUNT(*) AS c FROM courses c WHERE c.active=1 AND c.archived=0 AND {course_visibility_sql('c')}"
         ).fetchone()["c"],
         "items": items,
     }
@@ -2251,8 +3291,11 @@ def search_local_context(conn: sqlite3.Connection, prompt: str, context: dict[st
     SELECT dc.*, f.id AS source_file_id, f.rel_path, f.is_official
     FROM document_chunks dc
     JOIN files f ON f.id=dc.file_id
-    WHERE f.active=1 AND f.is_official=1
+    JOIN courses c ON c.id=f.course_id
+    WHERE f.active=1 AND f.removed_at IS NULL AND f.is_official=1
+      AND c.archived=0 AND {visibility}
     """
+    sql = sql.format(visibility=course_visibility_sql("c"))
     if context.get("course"):
         sql += " AND f.course_code=?"
         params.append(context["course"])
@@ -2340,9 +3383,11 @@ def teacher_questions_for_context(conn: sqlite3.Connection, context: dict[str, A
     params: list[Any] = []
     sql = """
     SELECT q.*, f.filename, f.rel_path, f.text_cache_path, f.stable_id, f.sha256
-    FROM questions q JOIN files f ON f.id=q.file_id
-    WHERE f.active=1 AND q.official_source=1
+    FROM questions q JOIN files f ON f.id=q.file_id JOIN courses c ON c.id=f.course_id
+    WHERE f.active=1 AND f.removed_at IS NULL AND q.official_source=1
+      AND c.archived=0 AND {visibility}
     """
+    sql = sql.format(visibility=course_visibility_sql("c"))
     if context.get("questionId"):
         sql += " AND q.id=?"
         params.append(int(context["questionId"]))
@@ -2391,9 +3436,11 @@ def official_solutions_for_context(conn: sqlite3.Connection, context: dict[str, 
     params: list[Any] = []
     sql = """
     SELECT s.*, f.filename, f.rel_path, f.text_cache_path
-    FROM solutions s JOIN files f ON f.id=s.file_id
-    WHERE f.active=1 AND s.official_source=1
+    FROM solutions s JOIN files f ON f.id=s.file_id JOIN courses c ON c.id=f.course_id
+    WHERE f.active=1 AND f.removed_at IS NULL AND s.official_source=1
+      AND c.archived=0 AND {visibility}
     """
+    sql = sql.format(visibility=course_visibility_sql("c"))
     if context.get("course"):
         sql += " AND s.course_code=?"
         params.append(context["course"])
@@ -2483,16 +3530,17 @@ def resolve_mcp_file(conn: sqlite3.Connection, file_id: str) -> sqlite3.Row:
     prefix = file_id.removeprefix("file_")
     row = conn.execute(
         """
-        SELECT * FROM files
-        WHERE active=1 AND (stable_id LIKE ? OR sha256 LIKE ? OR hash LIKE ?)
-        ORDER BY id LIMIT 1
+        SELECT f.* FROM files f JOIN courses c ON c.id=f.course_id
+        WHERE f.active=1 AND f.removed_at IS NULL AND c.archived=0
+          AND {visibility} AND (f.stable_id LIKE ? OR f.sha256 LIKE ? OR f.hash LIKE ?)
+        ORDER BY f.id LIMIT 1
         """,
         (f"{prefix}%", f"{prefix}%", f"{prefix}%"),
     ).fetchone()
     if row is None:
         raise FileNotFoundError("NOT FOUND")
     path = Path(row["original_path"]).expanduser().resolve()
-    if not is_inside(path, DEFAULT_STUDY_ROOT):
+    if not material_path_allowed(row, path):
         raise PermissionError("DENY")
     if not path.exists():
         raise FileNotFoundError("NOT FOUND")
@@ -2501,7 +3549,7 @@ def resolve_mcp_file(conn: sqlite3.Connection, file_id: str) -> sqlite3.Row:
 
 def mcp_file_filters(args: dict[str, Any]) -> tuple[str, list[Any]]:
     params: list[Any] = []
-    sql = " FROM files f WHERE f.active=1"
+    sql = f" FROM files f JOIN courses c ON c.id=f.course_id WHERE f.active=1 AND f.removed_at IS NULL AND c.archived=0 AND {course_visibility_sql('c')}"
     course = normalize_course(str(args.get("course", "") or ""))
     week = mcp_week(args.get("week"))
     category = str(args.get("category", "") or "").strip()
@@ -2529,12 +3577,13 @@ def mcp_list_courses(_args: dict[str, Any]) -> dict[str, Any]:
     conn = connect_db()
     init_db(conn)
     rows = conn.execute(
-        """
+        f"""
         SELECT c.code, c.name, c.folder_name, COUNT(f.id) AS file_count,
           MAX(w.week_number) AS latest_week
         FROM courses c
         LEFT JOIN files f ON f.course_id=c.id AND f.active=1
         LEFT JOIN weeks w ON w.course_id=c.id AND w.has_materials=1
+        WHERE c.archived=0 AND {course_visibility_sql('c')}
         GROUP BY c.id
         HAVING file_count > 0
         ORDER BY c.code
@@ -2551,10 +3600,11 @@ def mcp_list_weeks(args: dict[str, Any]) -> dict[str, Any]:
     if not course:
         raise ValueError("course is required")
     rows = conn.execute(
-        """
+        f"""
         SELECT w.week_label, w.week_number, w.has_materials, w.file_count
         FROM weeks w JOIN courses c ON c.id=w.course_id
-        WHERE c.code LIKE ? ORDER BY w.week_number
+        WHERE c.code LIKE ? AND c.archived=0 AND w.removed_at IS NULL AND {course_visibility_sql('c')}
+        ORDER BY CASE WHEN w.week_number IS NULL THEN 1 ELSE 0 END, w.week_number, w.week_label
         """,
         (f"%{course}%",),
     ).fetchall()
@@ -3468,6 +4518,19 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.send_json(sync_openai_vector_store())
             elif parsed.path == "/api/config/study-library":
                 self.handle_study_library_config()
+            elif parsed.path in {
+                "/api/terms/manage",
+                "/api/courses/manage",
+                "/api/weeks/manage",
+                "/api/materials/import-paths",
+                "/api/materials/import-folder",
+                "/api/materials/manage",
+                "/api/cache/clear",
+                "/api/reset",
+                "/api/config/managed-workspace",
+                "/api/config/demo-workspace",
+            }:
+                self.handle_product_management(parsed.path)
             else:
                 self.send_error_json(404, "Not found")
         except Exception as exc:
@@ -3476,6 +4539,43 @@ class StudyHubHandler(BaseHTTPRequestHandler):
     def handle_study_library_config(self) -> None:
         body = self.parse_body_json()
         self.send_json(save_study_library_config(str(body.get("path") or "")))
+
+    def handle_product_management(self, path: str) -> None:
+        body = self.parse_body_json()
+        if path == "/api/config/managed-workspace":
+            self.send_json(configure_managed_workspace())
+            return
+        if path == "/api/config/demo-workspace":
+            self.send_json(configure_demo_workspace())
+            return
+        if path in {"/api/materials/import-paths", "/api/materials/import-folder"} and not DESKTOP_MODE:
+            raise PermissionError("Native file and folder import is available in the desktop app")
+        conn = connect_db()
+        init_db(conn)
+        try:
+            if path == "/api/terms/manage":
+                result = manage_term(conn, body)
+            elif path == "/api/courses/manage":
+                result = manage_course(conn, body)
+            elif path == "/api/weeks/manage":
+                result = manage_week(conn, body)
+            elif path == "/api/materials/import-paths":
+                result = register_material_paths(conn, body)
+            elif path == "/api/materials/import-folder":
+                result = import_course_folder(conn, body)
+            elif path == "/api/materials/manage":
+                result = manage_materials(conn, body)
+            elif path == "/api/cache/clear":
+                result = clear_recreatable_cache(conn)
+            elif path == "/api/reset":
+                if body.get("confirmation") != "RESET STUDYHUB":
+                    raise ValueError("Type RESET STUDYHUB to confirm the local metadata reset")
+                result = reset_studyhub_state(conn)
+            else:
+                raise FileNotFoundError("Not found")
+            self.send_json(result)
+        finally:
+            conn.close()
 
     def handle_mcp_rpc(self) -> None:
         body = self.parse_body_json(MAX_MCP_BODY_SIZE)
@@ -3534,24 +4634,36 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.send_json(api_health(conn))
             elif path == "/api/preflight":
                 self.send_json(api_preflight(conn))
+            elif path == "/api/terms":
+                include_archived = qs.get("include_archived", ["0"])[0] == "1"
+                sql = "SELECT * FROM terms"
+                if not include_archived:
+                    sql += " WHERE archived=0"
+                sql += " ORDER BY sort_order, name"
+                self.send_json(rows_to_dicts(conn.execute(sql).fetchall()))
+            elif path == "/api/material-types":
+                self.send_json({"types": list(MATERIAL_TYPES)})
             elif path == "/api/courses":
+                include_archived = qs.get("include_archived", ["0"])[0] == "1"
                 rows = conn.execute(
-                    """
-                    SELECT c.*, COUNT(DISTINCT f.id) AS file_count,
+                    f"""
+                    SELECT c.*, t.name AS term_name, COUNT(DISTINCT f.id) AS file_count,
                       MAX(CASE WHEN w.has_materials=1 THEN w.week_number ELSE NULL END) AS latest_week
                     FROM courses c
-                    LEFT JOIN files f ON f.course_id=c.id AND f.active=1
-                    LEFT JOIN weeks w ON w.course_id=c.id
+                    LEFT JOIN terms t ON t.id=c.term_id
+                    LEFT JOIN files f ON f.course_id=c.id AND f.active=1 AND f.removed_at IS NULL
+                    LEFT JOIN weeks w ON w.course_id=c.id AND w.removed_at IS NULL
+                    WHERE {course_visibility_sql('c', include_archived_term=include_archived)} {' ' if include_archived else 'AND c.archived=0'}
                     GROUP BY c.id
-                    HAVING file_count > 0
-                    ORDER BY c.code
+                    ORDER BY t.sort_order, t.name, c.sort_order, c.course_code, c.display_name
                     """
                 ).fetchall()
                 self.send_json([public_course(row) for row in rows])
             elif path == "/api/weeks":
                 course_id = int(qs.get("course_id", ["0"])[0])
+                include_archived = qs.get("include_archived", ["0"])[0] == "1"
                 rows = conn.execute(
-                    "SELECT * FROM weeks WHERE course_id=? ORDER BY week_number",
+                    f"SELECT w.* FROM weeks w JOIN courses c ON c.id=w.course_id WHERE w.course_id=? AND w.removed_at IS NULL AND c.archived=0 AND {course_visibility_sql('c')} {' ' if include_archived else 'AND w.archived=0'} ORDER BY CASE WHEN w.week_number IS NULL THEN 1 ELSE 0 END, w.week_number, w.week_label",
                     (course_id,),
                 ).fetchall()
                 self.send_json([public_week(row) for row in rows])
@@ -3559,12 +4671,27 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 course_id = int(qs.get("course_id", ["0"])[0])
                 week_label = qs.get("week", [""])[0]
                 params: list[Any] = [course_id]
-                sql = "SELECT f.*, s.id AS star_id FROM files f LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id WHERE f.course_id=? AND f.active=1"
+                sql = f"SELECT f.*, s.id AS star_id FROM files f JOIN courses c ON c.id=f.course_id LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id WHERE f.course_id=? AND f.active=1 AND f.removed_at IS NULL AND c.archived=0 AND {course_visibility_sql('c')}"
                 if week_label:
                     sql += " AND f.week_label=?"
                     params.append(week_label)
                 sql += " ORDER BY f.week_label, f.section, f.category, f.filename"
                 self.send_json([public_file(row) for row in conn.execute(sql, params).fetchall()])
+            elif path == "/api/inbox":
+                rows = conn.execute(
+                    """
+                    SELECT f.*, s.id AS star_id FROM files f
+                    LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
+                    WHERE f.active=1 AND f.removed_at IS NULL AND f.inbox=1
+                    ORDER BY f.indexed_at DESC
+                    """
+                ).fetchall()
+                self.send_json([public_file(row) for row in rows])
+            elif path == "/api/materials/suggest":
+                if not DESKTOP_MODE:
+                    raise PermissionError("Native classification suggestions are available in the desktop app")
+                raw = qs.get("path", [""])[0]
+                self.send_json(classification_suggestion(conn, validate_reference_path(raw)))
             elif path == "/api/file":
                 file_id = int(qs.get("id", ["0"])[0])
                 row = get_file(conn, file_id)
@@ -3580,23 +4707,29 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 course_id = qs.get("course_id", [""])[0]
                 week = qs.get("week", [""])[0]
                 scope = qs.get("scope", [""])[0]
+                include_archived = qs.get("include_archived", ["0"])[0] == "1"
+                archive_clause = "" if include_archived else "AND c.archived=0"
+                visibility = course_visibility_sql("c", include_archived_term=include_archived)
                 params: list[Any] = []
                 normalized_query = fts_query(query)
                 if normalized_query:
                     sql = """
                     SELECT f.*, s.id AS star_id, bm25(files_fts) AS rank
                     FROM files_fts JOIN files f ON files_fts.rowid=f.id
+                    JOIN courses c ON c.id=f.course_id
                     LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
-                    WHERE files_fts MATCH ? AND f.active=1
+                    WHERE files_fts MATCH ? AND f.active=1 AND f.removed_at IS NULL {archive_clause} AND {visibility}
                     """
+                    sql = sql.format(archive_clause=archive_clause, visibility=visibility)
                     params.append(normalized_query)
                 else:
                     sql = """
                     SELECT f.*, s.id AS star_id, 0 AS rank
-                    FROM files f
+                    FROM files f JOIN courses c ON c.id=f.course_id
                     LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
-                    WHERE f.active=1
+                    WHERE f.active=1 AND f.removed_at IS NULL {archive_clause} AND {visibility}
                     """
+                    sql = sql.format(archive_clause=archive_clause, visibility=visibility)
                 if course_id:
                     sql += " AND f.course_id=?"
                     params.append(int(course_id))
@@ -3612,17 +4745,18 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 rows = conn.execute(
                     """
                     SELECT f.*, s.id AS star_id
-                    FROM files f
+                    FROM files f JOIN courses c ON c.id=f.course_id
                     LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
-                    WHERE f.active=1
+                    WHERE f.active=1 AND f.removed_at IS NULL AND c.archived=0 AND {visibility}
                     ORDER BY f.indexed_at DESC
                     LIMIT 20
                     """
+                    .format(visibility=course_visibility_sql("c"))
                 ).fetchall()
                 self.send_json([public_file(row) for row in rows])
             elif path == "/api/starred":
                 rows = conn.execute(
-                    "SELECT f.*, s.id AS star_id FROM stars s JOIN files f ON f.id=s.target_id WHERE s.target_type='file' AND f.active=1 ORDER BY s.created_at DESC"
+                    f"SELECT f.*, s.id AS star_id FROM stars s JOIN files f ON f.id=s.target_id JOIN courses c ON c.id=f.course_id WHERE s.target_type='file' AND f.active=1 AND f.removed_at IS NULL AND c.archived=0 AND {course_visibility_sql('c')} ORDER BY s.created_at DESC"
                 ).fetchall()
                 self.send_json([public_file(row) for row in rows])
             elif path == "/api/context":
@@ -3822,8 +4956,11 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         SELECT q.*, f.filename, f.rel_path, f.id AS source_file_id
         FROM questions q
         JOIN files f ON f.id=q.file_id
-        WHERE f.active=1 AND q.official_source=1
+        JOIN courses c ON c.id=f.course_id
+        WHERE f.active=1 AND f.removed_at IS NULL AND q.official_source=1
+          AND c.archived=0 AND {visibility}
         """
+        sql = sql.format(visibility=course_visibility_sql("c"))
         course = qs.get("course", [""])[0]
         week = qs.get("week", [""])[0]
         exercise_type = qs.get("type", [""])[0]
@@ -4041,8 +5178,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         try:
             row = get_file(conn, file_id)
             path = Path(row["original_path"]).resolve()
-            if not is_inside(path, DEFAULT_STUDY_ROOT):
-                raise PermissionError("Original file is outside the configured study folder.")
+            if not material_path_allowed(row, path):
+                raise PermissionError("Original file is outside the StudyHub material allowlist.")
             if not path.exists():
                 raise FileNotFoundError("Original file is missing. Scan Library to refresh your file list.")
             subprocess.Popen(["open", str(path)])
