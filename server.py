@@ -3559,10 +3559,13 @@ def resolve_mcp_file(conn: sqlite3.Connection, file_id: str) -> sqlite3.Row:
         SELECT f.* FROM files f JOIN courses c ON c.id=f.course_id
         WHERE f.active=1 AND f.removed_at IS NULL AND c.archived=0
           AND {course_visibility_sql('c', include_system=True)}
-          AND (f.stable_id LIKE ? OR f.sha256 LIKE ? OR f.hash LIKE ?)
+          AND (
+            f.stable_id LIKE ? OR REPLACE(f.stable_id, '-', '') LIKE ?
+            OR f.sha256 LIKE ? OR f.hash LIKE ?
+          )
         ORDER BY f.id LIMIT 1
         """,
-        (f"{prefix}%", f"{prefix}%", f"{prefix}%"),
+        (f"{prefix}%", f"{prefix}%", f"{prefix}%", f"{prefix}%"),
     ).fetchone()
     if row is None:
         raise FileNotFoundError("NOT FOUND")
