@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -28,6 +29,15 @@ def main() -> int:
         return backend.returncode
 
     env = os.environ.copy()
+    project_cargo_home = ROOT / ".tools" / "cargo"
+    project_rustup_home = ROOT / ".tools" / "rustup"
+    project_cargo_bin = project_cargo_home / "bin"
+    if project_cargo_bin.is_dir():
+        env["PATH"] = f"{project_cargo_bin}{os.pathsep}{env.get('PATH', '')}"
+        env.setdefault("CARGO_HOME", str(project_cargo_home))
+        env.setdefault("RUSTUP_HOME", str(project_rustup_home))
+    if not shutil.which("cargo", path=env.get("PATH")):
+        raise SystemExit("Cargo is unavailable. Install Rust or provide the project-local .tools toolchain.")
     remap = f"--remap-path-prefix={Path.home()}=/build-home"
     existing = env.get("RUSTFLAGS", "").strip()
     env["RUSTFLAGS"] = f"{existing} {remap}".strip()

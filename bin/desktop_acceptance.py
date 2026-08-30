@@ -198,6 +198,8 @@ def source_checks() -> dict[str, bool]:
         "public_bind_not_present": "0.0.0.0" not in rust,
         "release_build_remaps_private_home": "--remap-path-prefix=" in builder,
         "release_build_uses_no_shell": "subprocess.run" in builder and "shell=True" not in builder,
+        "release_build_uses_project_rust_toolchain": 'ROOT / ".tools" / "cargo"' in builder
+        and 'ROOT / ".tools" / "rustup"' in builder,
         "release_has_no_system_python_fallback": 'resolve("backend/studyhub-backend"' in rust
         and "cfg(not(debug_assertions))" in rust,
         "packaged_backend_uses_one_folder": '"--onedir"' in backend_builder,
