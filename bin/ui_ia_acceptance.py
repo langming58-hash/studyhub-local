@@ -67,6 +67,13 @@ def main() -> int:
         "ai_workspace_preserved": 't("ai.workspace")' in js and "source-card" in js and "availableScopes" in js,
         "ai_async_response_respects_current_route": 'if (state.view === "ai") renderAskGpt();' in js,
         "responsive_rules_present": "@media (max-width: 920px)" in css and ".settings-layout" in css and ".primary-search" in css,
+        "skip_link_moves_focus_without_changing_route": 'class="skip-link"' in html
+        and '$(".skip-link")?.addEventListener("click"' in js
+        and 'main?.focus({ preventScroll: true })' in js,
+        "responsive_navigation_is_compact": "grid-template-columns: repeat(6, minmax(0, 1fr))" in css
+        and "grid-template-columns: repeat(3, minmax(0, 1fr))" in css,
+        "focus_and_motion_preferences_present": ":focus-visible" in css
+        and "@media (prefers-reduced-motion: reduce)" in css,
     }
     for name, ok in checks.items():
         print(f"{name}: {'PASS' if ok else 'FAIL'}")

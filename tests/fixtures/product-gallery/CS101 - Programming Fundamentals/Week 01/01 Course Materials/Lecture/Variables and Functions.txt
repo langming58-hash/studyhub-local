@@ -1,0 +1,10 @@
+CS101 Programming Fundamentals
+Week 01: Variables and Functions
+
+A variable gives a name to a value. A function groups a reusable operation behind a clear input and output contract.
+
+Example:
+def calculate_total(price, quantity):
+    return price * quantity
+
+This is newly written synthetic material for StudyHub product testing.

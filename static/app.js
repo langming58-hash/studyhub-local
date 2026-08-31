@@ -17,7 +17,7 @@ const state = {
   selectedMaterialIds: new Set(),
   nativeImportPaths: [],
   duplicateImport: null,
-  studyMode: "practice",
+  studyMode: "plan",
   searchFiltersOpen: false,
   sidebarCollapsed: localStorage.getItem("studyhub.sidebarCollapsed") === "true",
   ask: {
@@ -78,7 +78,7 @@ function routeFromLocation() {
   if (parts[0] === "course" && parts[1]) return { view: "course", courseId: Number(parts[1]) };
   if (parts[0] === "week" && parts[1] && parts[2]) return { view: "week", courseId: Number(parts[1]), week: parts[2] };
   if (parts[0] === "file" && parts[1]) return { view: "file", fileId: Number(parts[1]), page: Number(parts[2] || 0) };
-  if (parts[0] === "study") return { view: "study", mode: parts[1] || "practice" };
+  if (parts[0] === "study") return { view: "study", mode: parts[1] || "plan" };
   if (["home", "courses", "search", "ai", "settings"].includes(parts[0])) return { view: parts[0] };
   return { view: "home" };
 }
@@ -90,7 +90,7 @@ async function restoreRouteFromLocation() {
     if (next.view === "course" && next.courseId) return await renderCourse(next.courseId);
     if (next.view === "week" && next.courseId && next.week) return await renderWeek(next.courseId, next.week);
     if (next.view === "file" && next.fileId) return await route("file", { fileId: next.fileId, page: next.page, history: false });
-    if (next.view === "study") return await renderStudy(next.mode || "practice");
+    if (next.view === "study") return await renderStudy(next.mode || "plan");
     return await route(next.view || "home", { history: false });
   } finally {
     restoringRoute = false;
@@ -531,6 +531,17 @@ function extensionIcon(ext = "") {
   return "FILE";
 }
 
+function studyStatusLabel(file) {
+  if (Number(file.needs_review || 0)) return t("study.needsReview");
+  return t(`study.status.${file.study_status || "not_started"}`);
+}
+
+function studyStatusBadge(file) {
+  const status = Number(file.needs_review || 0) ? "review" : (file.study_status || "not_started");
+  if (status === "not_started") return "";
+  return `<span class="chip study-status ${escapeHtml(status)}">${escapeHtml(studyStatusLabel(file))}</span>`;
+}
+
 function fileCard(file, selectable = false) {
   const suspicious = file.suspicious ? `<span class="chip warn">${escapeHtml(file.suspicious)}</span>` : "";
   const missing = file.source_missing ? `<span class="chip warn">${escapeHtml(t("file.originalMissing"))}</span>` : "";
@@ -543,7 +554,8 @@ function fileCard(file, selectable = false) {
         <span class="file-row-text">
           <strong class="file-name">${escapeHtml(file.display_name || file.filename)}</strong>
           <span class="muted">${escapeHtml(fileMetaLine(file))}</span>
-          ${missing}${suspicious}
+          ${file.snippet ? `<span class="search-snippet">${escapeHtml(file.snippet)}</span>` : ""}
+          <span class="chips inline-chips">${studyStatusBadge(file)}${missing}${suspicious}</span>
         </span>
       </button>
       <div class="file-row-actions">
@@ -678,11 +690,11 @@ async function resumePendingFirstRunAction() {
 
 async function renderHome() {
   setTitle(t("nav.home"));
-  const recent = await api("/api/recent");
-  const wrong = await api("/api/wrong-questions");
+  const [recent, overview] = await Promise.all([api("/api/recent"), api("/api/study/overview")]);
   const lastFileId = Number(localStorage.getItem("studyhub.lastFileId") || 0);
-  const continueFile = recent.find((file) => Number(file.id) === lastFileId) || recent[0];
+  const continueFile = overview.queue.find((file) => Number(file.id) === lastFileId) || overview.queue[0] || recent[0];
   const activeCourses = state.courses.filter((course) => Number(course.file_count || 0) > 0);
+  const progressByCourse = new Map(overview.courses.map((item) => [Number(item.course_id), item]));
   view.innerHTML = `
     ${firstRunPanel()}
     ${recoveryCards(2)}
@@ -707,7 +719,7 @@ async function renderHome() {
         </div>
         <button class="button secondary" data-view="courses">${escapeHtml(t("common.viewAll"))}</button>
       </div>
-      <div class="course-list-main">${activeCourses.length ? activeCourses.slice(0, 8).map(courseSummary).join("") : empty(t("home.noCourses"))}</div>
+      <div class="course-list-main">${activeCourses.length ? activeCourses.slice(0, 8).map((course) => courseSummary(course, progressByCourse.get(Number(course.id)))).join("") : empty(t("home.noCourses"))}</div>
     </section>
     <section class="section-block quiet-section">
       <div class="section-head">
@@ -725,9 +737,9 @@ async function renderHome() {
           <p class="eyebrow">${escapeHtml(t("home.review"))}</p>
           <h2>${escapeHtml(t("home.studyQueue"))}</h2>
         </div>
-        <button class="button secondary" data-view="study" data-study-mode="wrong">${escapeHtml(t("home.openStudy"))}</button>
+        <button class="button secondary" data-view="study" data-study-mode="plan">${escapeHtml(t("home.openStudy"))}</button>
       </div>
-      ${wrong.length ? `<div class="study-list">${wrong.slice(0, 4).map(wrongRow).join("")}</div>` : empty(t("home.noWrong"))}
+      ${overview.queue.length ? `<div class="file-list">${overview.queue.slice(0, 4).map((file) => fileCard(file)).join("")}</div>` : empty(t("study.queueEmpty"))}
     </section>
   `;
   bindLibrarySetupForm();
@@ -779,17 +791,19 @@ function focusCourseCard(course) {
   `;
 }
 
-function courseSummary(course) {
+function courseSummary(course, progress = null) {
   const week = latestWeek(course);
+  const pct = Number(progress?.progress_percent || 0);
   return `
     <article class="course-row">
       <button class="course-row-main" data-course="${course.id}">
         <strong>${escapeHtml(courseLabel(course))}</strong>
         <span>${escapeHtml(course.name || "")}</span>
         <span class="course-row-sub">${week ? escapeHtml(t("course.latestMaterial", { week: learningUnitLabel(week.week_label, week.kind) })) : escapeHtml(t("course.noFilesYet"))}</span>
+        ${progress ? `<span class="mini-progress"><span style="width:${pct}%"></span></span>` : ""}
       </button>
       <div class="course-row-meta">
-        <span>${escapeHtml(weeksWithMaterialLabel(course))}</span>
+        <span>${progress ? escapeHtml(t("study.progressPercent", { percent: pct })) : escapeHtml(weeksWithMaterialLabel(course))}</span>
         <details class="row-more">
           <summary aria-label="${escapeHtml(t("courses.actions"))}">${escapeHtml(t("common.more"))}</summary>
           <div>
@@ -924,13 +938,18 @@ async function renderCourse(courseId) {
   recordRoute({ view: "course", courseId });
   setTitle(course?.name || courseLabel(course) || t("dialog.course"));
   const weeks = weeksFor(courseId);
-  const files = await api(`/api/files?course_id=${courseId}`);
+  const [files, overview] = await Promise.all([
+    api(`/api/files?course_id=${courseId}`),
+    api(`/api/study/overview?course_id=${courseId}`),
+  ]);
   const activeWeeks = weeks.filter((week) => week.has_materials);
+  const progressByWeek = new Map(overview.weeks.map((item) => [item.week_label, item]));
   view.innerHTML = `
     <section class="course-header">
       <div>
         <p class="eyebrow">${escapeHtml(courseLabel(course))}</p>
-        <p class="muted">${files.length} file${files.length === 1 ? "" : "s"} · ${activeWeeks.length} week${activeWeeks.length === 1 ? "" : "s"} with material</p>
+        <p class="muted">${escapeHtml(t("study.courseProgress", { completed: overview.summary.completed, total: overview.summary.total }))}</p>
+        <div class="progress-track course-progress" aria-label="${escapeHtml(t("study.progressPercent", { percent: overview.summary.progress_percent }))}"><span style="width:${overview.summary.progress_percent}%"></span></div>
       </div>
       <div class="course-actions">
         <button class="button secondary" data-add-week="${courseId}">${escapeHtml(t("courses.addWeek"))}</button>
@@ -945,11 +964,14 @@ async function renderCourse(courseId) {
         <span class="muted">${activeWeeks.length} week${activeWeeks.length === 1 ? "" : "s"} with material</span>
       </div>
       <div class="week-list">
-        ${weeks.map((week) => `
+        ${weeks.map((week) => {
+          const progress = progressByWeek.get(week.week_label);
+          return `
           <article class="week-row ${week.has_materials ? "has-materials" : "empty-week"}">
             <button class="week-row-main" data-week="${week.week_label}" data-course="${courseId}">
               <strong>${escapeHtml(learningUnitLabel(week.week_label, week.kind))}</strong>
-              <span class="muted">${escapeHtml(t(Number(week.file_count || 0) === 1 ? "week.fileCount" : "week.fileCountPlural", { count: week.file_count || 0 }))}</span>
+              <span class="muted">${progress ? escapeHtml(t("study.weekProgress", { completed: progress.completed, total: progress.total })) : escapeHtml(t(Number(week.file_count || 0) === 1 ? "week.fileCount" : "week.fileCountPlural", { count: week.file_count || 0 }))}</span>
+              ${progress ? `<span class="mini-progress"><span style="width:${progress.progress_percent}%"></span></span>` : ""}
             </button>
             <details class="row-more">
               <summary aria-label="${escapeHtml(t("week.actions"))}">${escapeHtml(t("common.more"))}</summary>
@@ -958,8 +980,8 @@ async function renderCourse(courseId) {
                 ${week.has_materials ? "" : `<button class="button secondary" data-remove-week="${week.id}" data-course-id="${courseId}">${escapeHtml(t("common.remove"))}</button>`}
               </div>
             </details>
-          </article>
-        `).join("")}
+          </article>`;
+        }).join("")}
       </div>
     </section>
     <section class="section-block quiet-section">
@@ -975,7 +997,11 @@ async function renderWeek(courseId, weekLabel) {
   state.selectedCourseId = courseId;
   state.selectedWeek = weekLabel;
   recordRoute({ view: "week", courseId, week: weekLabel });
-  state.weekFiles = await api(`/api/files?course_id=${courseId}&week=${encodeURIComponent(weekLabel)}`);
+  const [weekFiles, overview] = await Promise.all([
+    api(`/api/files?course_id=${courseId}&week=${encodeURIComponent(weekLabel)}`),
+    api(`/api/study/overview?course_id=${courseId}&week=${encodeURIComponent(weekLabel)}`),
+  ]);
+  state.weekFiles = weekFiles;
   state.weekFilter = "all";
   state.weekSort = "section";
   state.selectedMaterialIds.clear();
@@ -986,6 +1012,7 @@ async function renderWeek(courseId, weekLabel) {
         <div>
           <p class="eyebrow">${escapeHtml(course?.name || "")}</p>
           <h2>${escapeHtml(learningUnitLabel(weekLabel))}</h2>
+          <p class="muted">${escapeHtml(t("study.weekProgress", { completed: overview.summary.completed, total: overview.summary.total }))}</p>
         </div>
         <div class="top-actions">
           <button class="button secondary" id="weekPreviewGpt">${escapeHtml(t("week.prepareAi"))}</button>
@@ -1103,15 +1130,16 @@ async function renderSearch() {
   view.innerHTML = `
     <section class="search-hero">
       <div class="searchbar primary-search">
-        <input id="searchInput" placeholder="${escapeHtml(t("search.placeholder"))}" autofocus />
+        <label class="sr-only" for="searchInput">${escapeHtml(t("nav.search"))}</label>
+        <input id="searchInput" name="studyhub-search" placeholder="${escapeHtml(t("search.placeholder"))}" autocomplete="off" />
         <button class="button secondary" id="toggleSearchFilters">${escapeHtml(t(state.searchFiltersOpen ? "common.hideFilters" : "common.filters"))}</button>
       </div>
       <div class="search-filters ${state.searchFiltersOpen ? "open" : ""}">
-        <select id="searchCourse">
+        <select id="searchCourse" name="search-course" aria-label="${escapeHtml(t("search.allCourses"))}">
           <option value="">${escapeHtml(t("search.allCourses"))}</option>
           ${state.courses.map((course) => `<option value="${course.id}">${escapeHtml(courseLabel(course))}</option>`).join("")}
         </select>
-        <select id="searchScope">
+        <select id="searchScope" name="search-material-type" aria-label="${escapeHtml(t("search.allMaterial"))}">
           <option value="">${escapeHtml(t("search.allMaterial"))}</option>
           <option value="01 Course Materials">${escapeHtml(t("week.courseMaterials"))}</option>
           <option value="02 Exercises">${escapeHtml(t("week.exercises"))}</option>
@@ -1149,7 +1177,9 @@ async function runSearch() {
     $("#searchResults").innerHTML = empty(t("search.help"));
     return;
   }
-  const results = await api(`/api/search?q=${encodeURIComponent(q)}&course_id=${course}&scope=${encodeURIComponent(scope)}&include_archived=${archived}`);
+  const contextCourse = Number(state.selectedCourseId || 0);
+  const contextWeek = state.selectedWeek || "";
+  const results = await api(`/api/search?q=${encodeURIComponent(q)}&course_id=${course}&scope=${encodeURIComponent(scope)}&include_archived=${archived}&context_course_id=${contextCourse}&context_week=${encodeURIComponent(contextWeek)}`);
   $("#searchResults").innerHTML = results.length ? results.map((file) => fileCard(file)).join("") : empty(t("search.noMatch"));
 }
 
@@ -1377,6 +1407,7 @@ async function renderStarred() {
 
 function studyTabs() {
   const tabs = [
+    ["plan", t("study.plan")],
     ["practice", t("study.practice")],
     ["wrong", t("study.wrong")],
     ["exam", t("study.exam")],
@@ -1392,7 +1423,8 @@ async function renderStudy(mode = state.studyMode) {
   state.studyMode = mode;
   setTitle(t("nav.study"), t("study.eyebrow"));
   let body = "";
-  if (mode === "wrong") body = await studyWrongPanel();
+  if (mode === "plan") body = await studyPlanPanel();
+  else if (mode === "wrong") body = await studyWrongPanel();
   else if (mode === "exam") body = studyExamPanel();
   else body = studyPracticePanel();
   view.innerHTML = `
@@ -1407,6 +1439,46 @@ async function renderStudy(mode = state.studyMode) {
     $("#practiceType").addEventListener("change", loadPracticeQuestions);
     await loadPracticeQuestions();
   }
+}
+
+async function studyPlanPanel() {
+  const overview = await api("/api/study/overview");
+  const summary = overview.summary;
+  return `
+    <section class="study-overview" aria-labelledby="study-overview-heading">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">${escapeHtml(t("study.localRecords"))}</p>
+          <h2 id="study-overview-heading">${escapeHtml(t("study.overview"))}</h2>
+        </div>
+        <span class="progress-ring" style="--progress:${summary.progress_percent}" aria-label="${escapeHtml(t("study.progressPercent", { percent: summary.progress_percent }))}">${summary.progress_percent}%</span>
+      </div>
+      <div class="metric-grid study-metrics">
+        <article class="metric-card"><strong>${summary.completed}</strong><span>${escapeHtml(t("study.completed"))}</span></article>
+        <article class="metric-card"><strong>${summary.in_progress}</strong><span>${escapeHtml(t("study.inProgress"))}</span></article>
+        <article class="metric-card"><strong>${summary.needs_review}</strong><span>${escapeHtml(t("study.needsReview"))}</span></article>
+        <article class="metric-card"><strong>${summary.total}</strong><span>${escapeHtml(t("study.totalMaterials"))}</span></article>
+      </div>
+    </section>
+    <section class="section-block quiet-section">
+      <div class="section-head"><div><p class="eyebrow">${escapeHtml(t("study.next"))}</p><h2>${escapeHtml(t("study.queue"))}</h2></div></div>
+      <div class="file-list">${overview.queue.length ? overview.queue.map((file) => fileCard(file)).join("") : empty(t("study.queueEmpty"))}</div>
+    </section>
+    <section class="section-block quiet-section">
+      <div class="section-head"><h2>${escapeHtml(t("study.courseProgressHeading"))}</h2></div>
+      <div class="course-list-main">
+        ${overview.courses.length ? overview.courses.map((item) => `
+          <article class="course-row">
+            <button class="course-row-main" data-course="${item.course_id}">
+              <strong>${escapeHtml(item.course_code || item.course_name || "")}</strong>
+              <span>${escapeHtml(item.course_name || "")}</span>
+              <span class="mini-progress"><span style="width:${item.progress_percent}%"></span></span>
+            </button>
+            <div class="course-row-meta"><span>${escapeHtml(t("study.courseProgress", { completed: item.completed, total: item.total }))}</span></div>
+          </article>`).join("") : empty(t("home.noCourses"))}
+      </div>
+    </section>
+  `;
 }
 
 function studyPracticePanel() {
@@ -1641,7 +1713,7 @@ function empty(text) {
 
 async function route(viewName = state.view, options = {}) {
   if (viewName === "askgpt") viewName = "ai";
-  if (["practice", "wrong", "exam"].includes(viewName)) {
+  if (["plan", "practice", "wrong", "exam"].includes(viewName)) {
     state.studyMode = viewName === "exam" ? "exam" : viewName;
     viewName = "study";
   }
@@ -1678,7 +1750,11 @@ async function route(viewName = state.view, options = {}) {
 }
 
 async function openFileDrawer(fileId, page = 0, options = {}) {
-  const file = await api(`/api/file?id=${fileId}`);
+  let file = await api(`/api/file?id=${fileId}`);
+  if ((file.study_status || "not_started") === "not_started") {
+    const studyState = await postJson("/api/study/material", { file_id: file.id, action: "open" });
+    file = { ...file, ...studyState, study_status: studyState.status || "in_progress" };
+  }
   state.selectedFile = file;
   rememberFile(file);
   $("#drawerMeta").textContent = `${courseLabel(file)} · ${file.week_label || ""} · ${file.category || ""}`;
@@ -1692,6 +1768,7 @@ async function openFileDrawer(fileId, page = 0, options = {}) {
     <div><span>${escapeHtml(t("week.type"))}</span><strong>${escapeHtml(file.mime_type || file.extension || t("common.unknown"))}</strong></div>
     <div><span>${escapeHtml(t("file.aiReadiness"))}</span><strong>${escapeHtml(file.ai_index_status || t("common.unknown"))}</strong></div>
     <div><span>${escapeHtml(t("common.source"))}</span><strong>${escapeHtml(file.source_label || file.source || t("file.local"))}</strong></div>
+    <div><span>${escapeHtml(t("study.statusLabel"))}</span><strong id="fileStudyStatus">${escapeHtml(studyStatusLabel(file))}</strong></div>
   `;
   $("#extractedText").textContent = file.extractedText || t("file.noReadableText");
   const pageHash = page ? `#page=${page}` : "";
@@ -1700,10 +1777,41 @@ async function openFileDrawer(fileId, page = 0, options = {}) {
   $("#askPrompt").value = "";
   $("#noteBody").value = "";
   await loadFileNotes(file.id);
+  updateFileStudyControls();
   $("#fileDrawer").hidden = false;
   const savedWidth = localStorage.getItem("studyhub.previewWidth");
   if (savedWidth) document.querySelector(".drawer-panel").style.setProperty("--studyhub-preview-width", savedWidth);
   if (options.history !== false) recordRoute({ view: "file", fileId, page: Number(page || 0) }, options.replace);
+}
+
+function updateFileStudyControls() {
+  const file = state.selectedFile;
+  if (!file) return;
+  const completeButton = $("#studyCompleteFile");
+  const reviewButton = $("#studyReviewFile");
+  const completed = file.study_status === "completed";
+  const needsReview = Boolean(Number(file.needs_review || 0));
+  completeButton.textContent = t(completed ? "study.reopen" : "study.markComplete");
+  completeButton.dataset.studyAction = completed ? "reopen" : "complete";
+  completeButton.setAttribute("aria-pressed", String(completed));
+  reviewButton.textContent = t(needsReview ? "study.markReviewed" : "study.markForReview");
+  reviewButton.dataset.studyAction = needsReview ? "review" : "needs_review";
+  reviewButton.setAttribute("aria-pressed", String(needsReview));
+  const label = $("#fileStudyStatus");
+  if (label) label.textContent = studyStatusLabel(file);
+}
+
+async function setMaterialStudyState(action) {
+  if (!state.selectedFile) return;
+  const result = await postJson("/api/study/material", { file_id: state.selectedFile.id, action });
+  state.selectedFile = {
+    ...state.selectedFile,
+    ...result,
+    study_status: result.status || result.study_status || state.selectedFile.study_status,
+  };
+  state.weekFiles = state.weekFiles.map((file) => Number(file.id) === Number(state.selectedFile.id) ? { ...file, ...state.selectedFile } : file);
+  updateFileStudyControls();
+  toast(t(action === "complete" ? "toast.studyCompleted" : action === "reopen" ? "toast.studyReopened" : action === "review" ? "toast.studyReviewed" : "toast.studyNeedsReview"));
 }
 
 async function loadFileNotes(fileId) {
@@ -2389,6 +2497,8 @@ $("#toggleAiExpanded").addEventListener("click", () => {
   $("#toggleAiExpanded").textContent = t(panel.classList.contains("ai-expanded") ? "file.compact" : "file.splitAi");
 });
 $("#starFile").addEventListener("click", () => state.selectedFile && toggleStar(state.selectedFile.id));
+$("#studyCompleteFile").addEventListener("click", (event) => setMaterialStudyState(event.currentTarget.dataset.studyAction));
+$("#studyReviewFile").addEventListener("click", (event) => setMaterialStudyState(event.currentTarget.dataset.studyAction));
 $("#copyContext").addEventListener("click", () => state.selectedFile && copyContext(state.selectedFile.id));
 $("#askBtn").addEventListener("click", askAboutFile);
 $("#saveNote").addEventListener("click", saveNote);
@@ -2441,6 +2551,17 @@ $("#drawerSplitHandle").addEventListener("pointerdown", (event) => {
   document.addEventListener("pointerup", up);
 });
 
+$("#drawerSplitHandle").addEventListener("keydown", (event) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  const panel = document.querySelector(".drawer-panel");
+  if (!panel.classList.contains("ai-expanded")) return;
+  event.preventDefault();
+  const current = parseFloat(getComputedStyle(panel).getPropertyValue("--studyhub-preview-width")) || 55;
+  const next = event.key === "Home" ? 35 : event.key === "End" ? 70 : Math.min(70, Math.max(35, current + (event.key === "ArrowLeft" ? -2 : 2)));
+  panel.style.setProperty("--studyhub-preview-width", `${next}%`);
+  localStorage.setItem("studyhub.previewWidth", `${next}%`);
+});
+
 document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "a") {
     event.preventDefault();
@@ -2466,6 +2587,13 @@ async function enableDesktopFileDrop() {
     showNativeSelection(paths);
   });
 }
+
+$(".skip-link")?.addEventListener("click", (event) => {
+  event.preventDefault();
+  const main = $("#mainContent");
+  main?.focus({ preventScroll: true });
+  main?.scrollIntoView({ block: "start" });
+});
 
 loadBase()
   .then(async () => {

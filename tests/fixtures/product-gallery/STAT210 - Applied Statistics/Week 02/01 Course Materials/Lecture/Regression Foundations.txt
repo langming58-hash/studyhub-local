@@ -1,0 +1,6 @@
+STAT210 Applied Statistics
+Week 02: Regression Foundations
+
+Simple linear regression describes how a response changes with one explanatory variable. The slope is interpreted in context and does not, by itself, establish causation.
+
+This is newly written synthetic material for StudyHub product testing.

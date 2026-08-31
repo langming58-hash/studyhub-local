@@ -1,0 +1,11 @@
+CS101 Synthetic Tutorial 02
+
+Q1. What is the difference between iterating over a list and changing the list while iterating?
+
+Q2. Explain when a dictionary is a clearer choice than a list.
+
+Official Teacher Solution
+Q1. Iteration reads each current item, while structural changes can shift positions and make results harder to predict.
+Q2. A dictionary is clearer when values are retrieved by meaningful keys rather than position.
+
+All questions and solutions are synthetic public test content.

@@ -1,0 +1,5 @@
+STAT210 Synthetic Workshop 02
+
+Compare two fictional regression summaries. Explain why a larger coefficient does not automatically imply a better model, and identify one diagnostic you would inspect next.
+
+This exercise is synthetic and exists only for public product testing.

@@ -17,6 +17,7 @@ StudyHub Local is a local-first study library.
 Configured study folder
   -> filesystem scanner
   -> SQLite metadata and FTS index
+  -> local study state, notes, search, and review queue
   -> local web UI / CLI / MCP
   -> optional OpenAI Responses API and vector store
 ```
@@ -25,6 +26,24 @@ The original file in `STUDY_LIBRARY_PATH` remains the source of truth. The datab
 
 With no configured folder, StudyHub creates an empty managed workspace. It does
 not seed sample courses or scan unrelated user directories.
+
+## Study Engine
+
+The local SQLite database stores a small lifecycle for each material:
+`not_started`, `in_progress`, or `completed`, plus an independent
+`needs_review` flag. The backend aggregates these rows across active files for
+course, week, and library progress and produces a deterministic study queue.
+
+Study records are private, recreatable metadata. They never modify the original
+file and are not embedded into course documents. See [Study Engine](STUDY_ENGINE.md)
+for the state transitions, queue ordering, and API privacy boundary.
+
+## Search Ranking
+
+SQLite FTS ranks filename, course, week, category, and readable-content matches
+with explicit weights. Search may apply a small current-course/current-week
+boost, while still returning only allowlisted metadata and short source
+snippets. The original file remains authoritative.
 
 ## Preview Pipeline
 
