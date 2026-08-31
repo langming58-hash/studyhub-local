@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add a local Study Engine with material lifecycle, review flags, progress rollups, and a deterministic study queue.
+- Improve local full-text ranking with weighted fields, context boosts, and privacy-safe snippets.
+- Surface material progress across Home, Course, Week, Search, file details, and Study views.
+- Add keyboard focus, reduced-motion, skip-link, form-label, and resizable-workspace accessibility improvements.
+- Add synthetic populated product screenshots without bundling demo data into production.
+- Add Study Engine regression coverage to the normal CI suite.
+
 ## v0.2.0
 
 - Redesign the main product IA around Home, Courses, Search, Study, AI, and Settings.

@@ -1,0 +1,5 @@
+CS101 Synthetic Lab 01
+
+Inspect a short program that calculates an order total. Identify the incorrect variable name, explain the resulting error, and verify the corrected output with two inputs.
+
+This exercise is synthetic and exists only for public product testing.

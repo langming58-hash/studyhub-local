@@ -7,45 +7,57 @@
 
 [简体中文](README.zh-CN.md)
 
-StudyHub Local is an early-stage, local-first workspace for course files from any university. It organizes material by Course -> Week, supports local preview and search, keeps notes and study records, and can optionally answer questions with citations from your own indexed material.
+StudyHub Local turns a folder of university course files into a private, searchable study workspace with progress, review queues, notes, and optional source-grounded AI.
 
-Your original files remain in a folder you control. The app starts with a clean, empty workspace: no sample courses, teacher material, test database, extracted text, or API credentials are bundled into the production runtime.
+![StudyHub Local populated home using synthetic data](docs/assets/screenshots/product-home.png)
 
-## v0.2.0
+## Why StudyHub Local
 
-- Clean first run: create a course or import a folder
-- English and Simplified Chinese UI with system detection and a local preference
-- Home, Courses, Search, Study, AI, and Settings product architecture
-- Local AI conversation history, citations, notes, and teacher-question safeguards
-- Tauri macOS prototype with a bundled backend and no end-user Python requirement
-- Strict production/test fixture separation
+- **One structure for scattered files.** Browse Course -> Week -> Materials / Exercises without replacing or converting the originals.
+- **A study loop, not just a file browser.** Track started and completed material, mark items for review, and return through a local study queue.
+- **AI that stays accountable.** Ask within the current file, week, or course and follow citations back to indexed source material. OpenAI is optional.
 
-No signed or notarized `.app` or DMG is published with this release. Desktop distribution remains blocked until signing, notarization, and clean-Mac validation are complete.
+## Core Capabilities
 
-## Screenshots
+- Local course and week organization for PDF, Office, text, code, CSV, R, and notebooks
+- Filename and extracted-content search with course, week, and material filters
+- Material progress, review flags, course/week rollups, practice, and wrong-question records
+- Private notes, stars, recent files, and locally stored AI conversations
+- Source-grounded AI with narrow context and teacher-question safeguards
+- Clean first run, English and Simplified Chinese UI, and no telemetry by default
 
-![Clean first run in English](docs/assets/screenshots/first-run-en.png)
+## Product Tour
 
-![Clean first run in Simplified Chinese](docs/assets/screenshots/first-run-zh-CN.png)
+Every populated screenshot below was generated from synthetic fixtures under `tests/fixtures/`. No real course material, account data, API key, or private path is shown.
 
-These screenshots show an empty production workspace and contain no course material or personal information.
+<table>
+  <tr>
+    <td width="50%"><strong>Course and week progress</strong><br><img src="docs/assets/screenshots/product-course.png" alt="Synthetic course and week progress" width="640"></td>
+    <td width="50%"><strong>Local full-text search</strong><br><img src="docs/assets/screenshots/product-search.png" alt="Synthetic local search results" width="640"></td>
+  </tr>
+  <tr>
+    <td width="50%"><strong>Study plan and review queue</strong><br><img src="docs/assets/screenshots/product-study.png" alt="Synthetic study plan and review queue" width="640"></td>
+    <td width="50%"><strong>AI answer with source context</strong><br><img src="docs/assets/screenshots/product-ai-citations.png" alt="Synthetic AI answer with source citation" width="640"></td>
+  </tr>
+  <tr>
+    <td width="50%"><strong>Readable text and private notes</strong><br><img src="docs/assets/screenshots/product-notes.png" alt="Synthetic readable text and private note" width="640"></td>
+    <td width="50%"><strong>Local-first health and settings</strong><br><img src="docs/assets/screenshots/product-settings.png" alt="Synthetic local-first settings" width="640"></td>
+  </tr>
+</table>
 
-## Features
+## Local-First Model
 
-- Organize files by course, week/module, material type, and exercise type
-- Preview PDF, text, code, images, and supported Office documents
-- Search filenames and readable extracted text
-- Ask AI within the current question, file, week, or course scope
-- Follow citations to the source file and page/slide when reliably available
-- Keep local notes, stars, conversations, practice records, and wrong-question records
-- Retrieve teacher-provided questions only; StudyHub does not generate practice questions
-- Run without OpenAI for local organization, preview, search, notes, and study records
+```text
+Your StudyLibrary folder (source of truth)
+  -> local scanner and text extraction
+  -> local SQLite metadata, search, notes, and progress
+  -> localhost UI
+  -> optional server-side OpenAI Responses API / file search
+```
 
-## Requirements
+Original files stay in a folder you control. Runtime databases, extracted text, previews, and AI history remain local and are ignored by Git. Vector search, when configured, is a retrieval layer rather than a second authoritative library.
 
-- Git, Node.js/npm, and Python 3
-- Poppler (`pdftotext` and `pdfinfo`) recommended for PDF text extraction
-- LibreOffice optional for higher-fidelity PowerPoint and Word previews
+Read [Architecture](docs/ARCHITECTURE.md) and [Study Engine](docs/STUDY_ENGINE.md) for the data model and trust boundaries.
 
 ## Quick Start
 
@@ -57,9 +69,11 @@ python3 -m pip install -r requirements.txt
 npm run dev
 ```
 
-Open the printed loopback URL, usually `http://127.0.0.1:8765`. On first launch, create a course or import an existing course folder. StudyHub does not scan unrelated folders automatically.
+Open the printed loopback URL, usually `http://127.0.0.1:8765`, then create a course or select a study-library folder. StudyHub never scans unrelated folders automatically.
 
-On macOS, `Start StudyHub Local.command` is a convenience launcher for the source install. It is not a signed desktop release.
+Requirements: Git, Node.js/npm, and Python 3. Poppler (`pdftotext` and `pdfinfo`) is recommended for PDF text extraction; LibreOffice is optional for higher-fidelity PowerPoint and Word previews.
+
+The current public release is **v0.2.0**. It is source-only: no unsigned or unnotarized macOS app or DMG is attached. `Start StudyHub Local.command` is a source-install convenience launcher, not a signed desktop release.
 
 ## Study Library
 
@@ -75,7 +89,7 @@ Keep real study files outside the repository. A typical structure is:
 └── ECON201 - Macroeconomics/
 ```
 
-Common formats include PDF, DOCX, PPTX, TXT, CSV, Python, R, and IPYNB where local extraction support is available. Original files remain authoritative and are never converted into unrelated study formats.
+Original files remain authoritative and are never converted into unrelated study formats.
 
 ## Optional OpenAI
 
@@ -86,36 +100,36 @@ OPENAI_API_KEY=
 OPENAI_MODEL=gpt-5.4
 ```
 
-Never place keys in frontend code, screenshots, logs, issues, or commits. AI uses the narrowest reasonable context first: current question, file, week, then course. If sources do not support an answer, StudyHub returns a no-source response instead of inventing course content. Vector search is an optional retrieval layer; the local original file remains the source of truth.
+Never place keys in frontend code, screenshots, logs, issues, or commits. AI starts with the narrowest reasonable scope: current question, file, week, then course. If indexed sources do not support an answer, StudyHub returns a no-source response instead of inventing course content. It never generates new practice questions.
+
+## Clean First Run
+
+Production starts empty: no sample courses, teacher material, test database, extracted text, or credentials are bundled.
+
+| English | 简体中文 |
+| --- | --- |
+| ![Clean first run in English](docs/assets/screenshots/first-run-en.png) | ![Clean first run in Simplified Chinese](docs/assets/screenshots/first-run-zh-CN.png) |
 
 ## Privacy And Security
 
 - Loopback-only by default, with no telemetry by default
-- Host, exact same-origin, CSRF, request-size, and file-root checks
-- Runtime databases, extracted text, previews, logs, secrets, and study files stay out of Git
+- Host, exact same-origin, CSRF, request-size, and filesystem-root checks
+- Runtime data, secrets, logs, and academic files rejected by privacy CI
+- Active-content previews isolated from the trusted application origin
 - Read-only MCP boundary for local integrations
-- Privacy and security acceptance suites run in normal CI
 
-Read [SECURITY.md](SECURITY.md), [PRIVACY.md](PRIVACY.md), and [Architecture](docs/ARCHITECTURE.md) before changing trust boundaries.
+Read [SECURITY.md](SECURITY.md) and [PRIVACY.md](docs/PRIVACY.md) before changing trust boundaries.
 
 ## Development
 
-Synthetic fixtures live only under `tests/fixtures/` and are injected by tests. They must never be bundled into production resources.
+Synthetic fixtures live only under `tests/fixtures/` and must never be bundled into production resources.
 
 ```bash
 npm run ci
 npm run desktop:check
 ```
 
-Desktop prototype build and packaged acceptance:
-
-```bash
-npm run desktop:setup
-npm run desktop:build
-npm run desktop:test:packaged
-```
-
-See [Development](docs/DEVELOPMENT.md), [Desktop Architecture](docs/DESKTOP_ARCHITECTURE.md), and [Contributing](CONTRIBUTING.md).
+See [Development](docs/DEVELOPMENT.md), [Desktop Architecture](docs/DESKTOP_ARCHITECTURE.md), [Roadmap](docs/ROADMAP.md), and [Contributing](CONTRIBUTING.md).
 
 ## License
 

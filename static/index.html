@@ -3,11 +3,13 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f6f5f1" />
     <title>StudyHub Local</title>
     <link rel="stylesheet" href="/vendor/katex/katex.min.css" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
+    <a class="skip-link" href="#mainContent" data-i18n="aria.skipMain">Skip to main content</a>
     <div class="app-shell" id="appShell">
       <aside class="sidebar">
         <div class="brand">
@@ -28,7 +30,7 @@
         </nav>
       </aside>
 
-      <main class="main">
+      <main class="main" id="mainContent" tabindex="-1">
         <header class="topbar">
           <div>
             <p class="eyebrow" id="pageEyebrow" hidden></p>
@@ -54,6 +56,8 @@
           <button class="icon-button" id="closeDrawer" data-i18n-aria-label="common.close" aria-label="Close">×</button>
         </div>
         <div class="drawer-actions">
+          <button id="studyCompleteFile" class="button primary" aria-pressed="false" data-i18n="study.markComplete">Mark Complete</button>
+          <button id="studyReviewFile" class="button secondary" aria-pressed="false" data-i18n="study.markForReview">Mark for Review</button>
           <button id="askFileFull" class="button secondary" data-i18n="ai.openFull">Open full AI workspace</button>
           <button id="toggleAiExpanded" class="button secondary" data-i18n="file.splitAi">Split preview + AI</button>
           <button id="starFile" class="button secondary" data-i18n="file.star">Star</button>
@@ -67,7 +71,7 @@
         </div>
         <div class="drawer-body">
           <div class="preview-frame" id="previewFrame"></div>
-          <div class="split-handle" id="drawerSplitHandle" title="Resize AI workspace"></div>
+          <div class="split-handle" id="drawerSplitHandle" role="separator" tabindex="0" aria-orientation="vertical" data-i18n-aria-label="aria.resizeAi" data-i18n-title="aria.resizeAi" aria-label="Resize AI workspace" title="Resize AI workspace"></div>
           <aside class="context-panel">
             <div class="rail-tabs" role="tablist" data-i18n-aria-label="file.details" aria-label="File side rail">
               <button class="rail-tab active" data-rail-tab="context" data-i18n="common.source">Source</button>
@@ -88,10 +92,12 @@
             </div>
             <h3 data-i18n="file.userNotes">User Notes</h3>
             <div id="fileNotes" class="notes-list"></div>
-            <textarea id="noteBody" data-i18n-placeholder="file.notePlaceholder" placeholder="Add a private note for this file."></textarea>
+            <label class="sr-only" for="noteBody" data-i18n="file.userNotes">User Notes</label>
+            <textarea id="noteBody" name="file-note" autocomplete="off" data-i18n-placeholder="file.notePlaceholder" placeholder="Add a private note for this file."></textarea>
             <button id="saveNote" class="button secondary full" data-i18n="file.saveNote">Save Note</button>
             <h3 data-i18n="settings.askAi">Ask AI</h3>
-            <textarea id="askPrompt" data-i18n-placeholder="file.askPlaceholder" placeholder="Ask about this selected file."></textarea>
+            <label class="sr-only" for="askPrompt" data-i18n="settings.askAi">Ask AI</label>
+            <textarea id="askPrompt" name="file-ai-prompt" autocomplete="off" data-i18n-placeholder="file.askPlaceholder" placeholder="Ask about this selected file."></textarea>
             <button id="askBtn" class="button secondary full" data-i18n="courses.askAi">Ask AI</button>
             <div id="askResponse" class="notice"></div>
           </aside>
@@ -193,7 +199,7 @@
       </div>
     </div>
 
-    <div id="toast" class="toast" hidden></div>
+    <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
     <script src="/i18n/catalog.js"></script>
     <script src="/i18n.js"></script>
     <script src="/vendor/katex/katex.min.js"></script>

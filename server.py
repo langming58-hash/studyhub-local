@@ -283,7 +283,7 @@ INTERNAL_FILENAMES = {
     "sync-state.json",
     "readme.txt",
 }
-COURSE_RE = re.compile(r"^(?P<code>[A-Z]{3,5}\d{4}(?:\s+[A-Z]{3,5}\d{4})*)\s+-\s+(?P<name>.+)$")
+COURSE_RE = re.compile(r"^(?P<code>[A-Z]{2,5}\d{3,4}(?:\s+[A-Z]{2,5}\d{3,4})*)\s+-\s+(?P<name>.+)$")
 WEEK_RE = re.compile(r"^Week\s+(?P<num>\d{2})$")
 SAFE_COMPONENT_RE = re.compile(r"^[\w .(),&+-]{1,120}$", re.UNICODE)
 ALLOWED_SECTIONS = {"00 Course Information", "01 Course Materials", "02 Exercises", "My_Work", "Review"}
@@ -539,8 +539,18 @@ def public_file(row: sqlite3.Row | dict[str, Any], include_text: str | None = No
         "ai_index_error",
         "star_id",
         "rank",
+        "snippet",
+        "study_status",
+        "needs_review",
+        "started_at",
+        "completed_at",
+        "last_opened_at",
+        "reviewed_at",
+        "study_updated_at",
     )
     data = {key: row[key] for key in allowed if key in row.keys()}
+    data.setdefault("study_status", "not_started")
+    data.setdefault("needs_review", 0)
     if "course_code" in data:
         data["display_course_code"] = display_course_code(data["course_code"])
     if include_text is not None:
@@ -688,7 +698,7 @@ def parse_course_dir(path: Path) -> tuple[str, str]:
 
 
 def display_course_code(code: str) -> str:
-    codes = re.findall(r"\b([A-Z]{3,5})(\d{4})\b", code or "")
+    codes = re.findall(r"\b([A-Z]{2,5})(\d{3,4})\b", code or "")
     if len(codes) <= 1:
         return code
     prefix = codes[0][0]
@@ -1491,6 +1501,16 @@ def init_db(conn: sqlite3.Connection) -> None:
           started_at TEXT NOT NULL,
           ended_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS material_study_state (
+          file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+          status TEXT NOT NULL DEFAULT 'not_started',
+          needs_review INTEGER NOT NULL DEFAULT 0,
+          started_at TEXT,
+          completed_at TEXT,
+          last_opened_at TEXT,
+          reviewed_at TEXT,
+          updated_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS ai_interactions (
           id INTEGER PRIMARY KEY,
           context_json TEXT NOT NULL,
@@ -1670,6 +1690,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_weeks_stable_id ON weeks(stable_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_courses_term_active ON courses(term_id, archived, active)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_files_management ON files(course_id, week_id, material_type, inbox, active)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_material_study_queue ON material_study_state(needs_review, status, updated_at)")
     conn.commit()
 
 
@@ -2872,6 +2893,138 @@ def manage_materials(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str
     return {"ok": True, "ids": material_ids}
 
 
+def update_material_study_state(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
+    file_id = int(body.get("file_id") or body.get("fileId") or 0)
+    if not file_id:
+        raise ValueError("Choose a material")
+    get_file(conn, file_id)
+    action = str(body.get("action") or "open").strip().lower()
+    if action not in {"open", "complete", "reopen", "review", "needs_review", "clear_review", "reset"}:
+        raise ValueError("Unknown study action")
+    if action == "reset":
+        conn.execute("DELETE FROM material_study_state WHERE file_id=?", (file_id,))
+        conn.commit()
+        return {"ok": True, "file_id": file_id, "study_status": "not_started", "needs_review": 0}
+
+    existing = conn.execute("SELECT * FROM material_study_state WHERE file_id=?", (file_id,)).fetchone()
+    now = now_iso()
+    status = str(existing["status"] if existing else "not_started")
+    needs_review = int(existing["needs_review"] if existing else 0)
+    started_at = existing["started_at"] if existing else None
+    completed_at = existing["completed_at"] if existing else None
+    last_opened_at = existing["last_opened_at"] if existing else None
+    reviewed_at = existing["reviewed_at"] if existing else None
+
+    if action == "open":
+        status = "in_progress" if status == "not_started" else status
+        started_at = started_at or now
+        last_opened_at = now
+    elif action == "complete":
+        status = "completed"
+        started_at = started_at or now
+        completed_at = now
+    elif action == "reopen":
+        status = "in_progress"
+        started_at = started_at or now
+        completed_at = None
+        last_opened_at = now
+    elif action == "needs_review":
+        needs_review = 1
+    elif action == "clear_review":
+        needs_review = 0
+    elif action == "review":
+        needs_review = 0
+        reviewed_at = now
+
+    conn.execute(
+        """
+        INSERT INTO material_study_state(
+          file_id, status, needs_review, started_at, completed_at,
+          last_opened_at, reviewed_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(file_id) DO UPDATE SET
+          status=excluded.status, needs_review=excluded.needs_review,
+          started_at=excluded.started_at, completed_at=excluded.completed_at,
+          last_opened_at=excluded.last_opened_at, reviewed_at=excluded.reviewed_at,
+          updated_at=excluded.updated_at
+        """,
+        (file_id, status, needs_review, started_at, completed_at, last_opened_at, reviewed_at, now),
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM material_study_state WHERE file_id=?", (file_id,)).fetchone()
+    return {"ok": True, "file_id": file_id, **dict(row)}
+
+
+def study_overview(conn: sqlite3.Connection, course_id: int = 0, week_label: str = "") -> dict[str, Any]:
+    params: list[Any] = []
+    filters = ""
+    if course_id:
+        filters += " AND f.course_id=?"
+        params.append(course_id)
+    if week_label:
+        filters += " AND f.week_label=?"
+        params.append(week_label)
+    rows = conn.execute(
+        f"""
+        SELECT f.*, s.id AS star_id,
+          COALESCE(ms.status, 'not_started') AS study_status,
+          COALESCE(ms.needs_review, 0) AS needs_review,
+          ms.started_at, ms.completed_at, ms.last_opened_at, ms.reviewed_at,
+          ms.updated_at AS study_updated_at
+        FROM files f
+        JOIN courses c ON c.id=f.course_id
+        LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
+        LEFT JOIN material_study_state ms ON ms.file_id=f.id
+        WHERE f.active=1 AND f.removed_at IS NULL AND f.source_missing=0
+          AND c.archived=0 AND {course_visibility_sql('c')} {filters}
+        ORDER BY
+          CASE WHEN COALESCE(ms.needs_review, 0)=1 THEN 0
+               WHEN COALESCE(ms.status, 'not_started')='in_progress' THEN 1
+               WHEN COALESCE(ms.status, 'not_started')='not_started' THEN 2 ELSE 3 END,
+          COALESCE(ms.last_opened_at, f.material_updated_at, f.indexed_at) DESC,
+          f.course_code, f.week_number, f.week_label, f.filename
+        """,
+        params,
+    ).fetchall()
+
+    totals = {"total": len(rows), "not_started": 0, "in_progress": 0, "completed": 0, "needs_review": 0}
+    course_groups: dict[int, dict[str, Any]] = {}
+    week_groups: dict[tuple[int, str], dict[str, Any]] = {}
+    queue: list[dict[str, Any]] = []
+    for row in rows:
+        status = str(row["study_status"] or "not_started")
+        if status not in {"not_started", "in_progress", "completed"}:
+            status = "not_started"
+        totals[status] += 1
+        totals["needs_review"] += int(bool(row["needs_review"]))
+        course = course_groups.setdefault(
+            int(row["course_id"]),
+            {"course_id": int(row["course_id"]), "course_code": row["course_code"], "course_name": row["course_name"], "total": 0, "completed": 0, "in_progress": 0, "needs_review": 0},
+        )
+        week_key = (int(row["course_id"]), str(row["week_label"] or ""))
+        week = week_groups.setdefault(
+            week_key,
+            {"course_id": int(row["course_id"]), "course_code": row["course_code"], "week_label": row["week_label"], "total": 0, "completed": 0, "in_progress": 0, "needs_review": 0},
+        )
+        for group in (course, week):
+            group["total"] += 1
+            group["completed"] += int(status == "completed")
+            group["in_progress"] += int(status == "in_progress")
+            group["needs_review"] += int(bool(row["needs_review"]))
+        if len(queue) < 12 and (row["needs_review"] or status != "completed"):
+            queue.append(public_file(row))
+
+    for group in [*course_groups.values(), *week_groups.values()]:
+        group["progress_percent"] = round((group["completed"] / max(group["total"], 1)) * 100)
+    totals["progress_percent"] = round((totals["completed"] / max(totals["total"], 1)) * 100)
+    return {
+        "summary": totals,
+        "queue": queue,
+        "courses": list(course_groups.values()),
+        "weeks": list(week_groups.values()),
+    }
+
+
 def clear_recreatable_cache(conn: sqlite3.Connection) -> dict[str, Any]:
     visibility = course_visibility_sql("c", include_system=True)
     visible_rows = conn.execute(
@@ -2924,7 +3077,7 @@ def clear_recreatable_cache(conn: sqlite3.Connection) -> dict[str, Any]:
 def reset_studyhub_state(conn: sqlite3.Connection) -> dict[str, Any]:
     for table in (
         "ai_messages", "ai_conversations", "ai_interactions", "wrong_questions", "attempts", "bookmarks",
-        "study_sessions", "notes", "stars", "questions", "solutions", "document_chunks", "file_versions",
+        "study_sessions", "material_study_state", "notes", "stars", "questions", "solutions", "document_chunks", "file_versions",
         "ai_index_state", "sync_events", "files", "weeks", "courses", "terms", "app_settings",
     ):
         conn.execute(f"DELETE FROM {table}")
@@ -2991,10 +3144,15 @@ def has_context_scope(context: dict[str, Any]) -> bool:
 def get_file(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row:
     row = conn.execute(
         f"""
-        SELECT f.*, s.id AS star_id
+        SELECT f.*, s.id AS star_id,
+          COALESCE(ms.status, 'not_started') AS study_status,
+          COALESCE(ms.needs_review, 0) AS needs_review,
+          ms.started_at, ms.completed_at, ms.last_opened_at, ms.reviewed_at,
+          ms.updated_at AS study_updated_at
         FROM files f
         JOIN courses c ON c.id=f.course_id
         LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
+        LEFT JOIN material_study_state ms ON ms.file_id=f.id
         WHERE f.id=? AND f.active=1 AND f.removed_at IS NULL AND f.source_missing=0
           AND c.archived=0 AND {course_visibility_sql('c', include_system=True)}
         """,
@@ -4524,6 +4682,7 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 "/api/cache/clear",
                 "/api/reset",
                 "/api/config/managed-workspace",
+                "/api/study/material",
             }:
                 self.handle_product_management(parsed.path)
             else:
@@ -4563,6 +4722,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 if body.get("confirmation") != "RESET STUDYHUB":
                     raise ValueError("Type RESET STUDYHUB to confirm the local metadata reset")
                 result = reset_studyhub_state(conn)
+            elif path == "/api/study/material":
+                result = update_material_study_state(conn, body)
             else:
                 raise FileNotFoundError("Not found")
             self.send_json(result)
@@ -4663,7 +4824,16 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 course_id = int(qs.get("course_id", ["0"])[0])
                 week_label = qs.get("week", [""])[0]
                 params: list[Any] = [course_id]
-                sql = f"SELECT f.*, s.id AS star_id FROM files f JOIN courses c ON c.id=f.course_id LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id WHERE f.course_id=? AND f.active=1 AND f.removed_at IS NULL AND c.archived=0 AND {course_visibility_sql('c')}"
+                sql = f"""SELECT f.*, s.id AS star_id,
+                    COALESCE(ms.status, 'not_started') AS study_status,
+                    COALESCE(ms.needs_review, 0) AS needs_review,
+                    ms.started_at, ms.completed_at, ms.last_opened_at, ms.reviewed_at,
+                    ms.updated_at AS study_updated_at
+                  FROM files f JOIN courses c ON c.id=f.course_id
+                  LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
+                  LEFT JOIN material_study_state ms ON ms.file_id=f.id
+                  WHERE f.course_id=? AND f.active=1 AND f.removed_at IS NULL
+                    AND c.archived=0 AND {course_visibility_sql('c')}"""
                 if week_label:
                     sql += " AND f.week_label=?"
                     params.append(week_label)
@@ -4699,6 +4869,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 course_id = qs.get("course_id", [""])[0]
                 week = qs.get("week", [""])[0]
                 scope = qs.get("scope", [""])[0]
+                context_course_id = int(qs.get("context_course_id", ["0"])[0] or 0)
+                context_week = qs.get("context_week", [""])[0]
                 include_archived = qs.get("include_archived", ["0"])[0] == "1"
                 archive_clause = "" if include_archived else "AND c.archived=0"
                 visibility = course_visibility_sql("c", include_archived_term=include_archived)
@@ -4706,19 +4878,33 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 normalized_query = fts_query(query)
                 if normalized_query:
                     sql = """
-                    SELECT f.*, s.id AS star_id, bm25(files_fts) AS rank
+                    SELECT f.*, s.id AS star_id,
+                      COALESCE(ms.status, 'not_started') AS study_status,
+                      COALESCE(ms.needs_review, 0) AS needs_review,
+                      ms.started_at, ms.completed_at, ms.last_opened_at, ms.reviewed_at,
+                      ms.updated_at AS study_updated_at,
+                      bm25(files_fts, 8.0, 4.0, 3.0, 2.5, 1.0, 1.0)
+                        - CASE WHEN ? != 0 AND f.course_id=? THEN 4.0 ELSE 0 END
+                        - CASE WHEN ? != '' AND f.week_label=? THEN 2.0 ELSE 0 END AS rank,
+                      snippet(files_fts, 5, '', '', ' … ', 20) AS snippet
                     FROM files_fts JOIN files f ON files_fts.rowid=f.id
                     JOIN courses c ON c.id=f.course_id
                     LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
+                    LEFT JOIN material_study_state ms ON ms.file_id=f.id
                     WHERE files_fts MATCH ? AND f.active=1 AND f.removed_at IS NULL {archive_clause} AND {visibility}
                     """
                     sql = sql.format(archive_clause=archive_clause, visibility=visibility)
-                    params.append(normalized_query)
+                    params.extend([context_course_id, context_course_id, context_week, context_week, normalized_query])
                 else:
                     sql = """
-                    SELECT f.*, s.id AS star_id, 0 AS rank
+                    SELECT f.*, s.id AS star_id, 0 AS rank, '' AS snippet,
+                      COALESCE(ms.status, 'not_started') AS study_status,
+                      COALESCE(ms.needs_review, 0) AS needs_review,
+                      ms.started_at, ms.completed_at, ms.last_opened_at, ms.reviewed_at,
+                      ms.updated_at AS study_updated_at
                     FROM files f JOIN courses c ON c.id=f.course_id
                     LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
+                    LEFT JOIN material_study_state ms ON ms.file_id=f.id
                     WHERE f.active=1 AND f.removed_at IS NULL {archive_clause} AND {visibility}
                     """
                     sql = sql.format(archive_clause=archive_clause, visibility=visibility)
@@ -4736,11 +4922,16 @@ class StudyHubHandler(BaseHTTPRequestHandler):
             elif path == "/api/recent":
                 rows = conn.execute(
                     """
-                    SELECT f.*, s.id AS star_id
+                    SELECT f.*, s.id AS star_id,
+                      COALESCE(ms.status, 'not_started') AS study_status,
+                      COALESCE(ms.needs_review, 0) AS needs_review,
+                      ms.started_at, ms.completed_at, ms.last_opened_at, ms.reviewed_at,
+                      ms.updated_at AS study_updated_at
                     FROM files f JOIN courses c ON c.id=f.course_id
                     LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
+                    LEFT JOIN material_study_state ms ON ms.file_id=f.id
                     WHERE f.active=1 AND f.removed_at IS NULL AND c.archived=0 AND {visibility}
-                    ORDER BY f.indexed_at DESC
+                    ORDER BY COALESCE(ms.last_opened_at, f.indexed_at) DESC
                     LIMIT 20
                     """
                     .format(visibility=course_visibility_sql("c"))
@@ -4748,7 +4939,15 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.send_json([public_file(row) for row in rows])
             elif path == "/api/starred":
                 rows = conn.execute(
-                    f"SELECT f.*, s.id AS star_id FROM stars s JOIN files f ON f.id=s.target_id JOIN courses c ON c.id=f.course_id WHERE s.target_type='file' AND f.active=1 AND f.removed_at IS NULL AND c.archived=0 AND {course_visibility_sql('c')} ORDER BY s.created_at DESC"
+                    f"""SELECT f.*, s.id AS star_id,
+                      COALESCE(ms.status, 'not_started') AS study_status,
+                      COALESCE(ms.needs_review, 0) AS needs_review,
+                      ms.started_at, ms.completed_at, ms.last_opened_at, ms.reviewed_at,
+                      ms.updated_at AS study_updated_at
+                    FROM stars s JOIN files f ON f.id=s.target_id JOIN courses c ON c.id=f.course_id
+                    LEFT JOIN material_study_state ms ON ms.file_id=f.id
+                    WHERE s.target_type='file' AND f.active=1 AND f.removed_at IS NULL
+                      AND c.archived=0 AND {course_visibility_sql('c')} ORDER BY s.created_at DESC"""
                 ).fetchall()
                 self.send_json([public_file(row) for row in rows])
             elif path == "/api/context":
@@ -4763,6 +4962,10 @@ class StudyHubHandler(BaseHTTPRequestHandler):
             elif path == "/api/wrong-questions":
                 rows = conn.execute("SELECT * FROM wrong_questions ORDER BY created_at DESC LIMIT 100").fetchall()
                 self.send_json(rows_to_dicts(rows))
+            elif path == "/api/study/overview":
+                course_id = int(qs.get("course_id", ["0"])[0] or 0)
+                week = qs.get("week", [""])[0]
+                self.send_json(study_overview(conn, course_id, week))
             else:
                 self.send_error_json(404, "Not found")
         finally:

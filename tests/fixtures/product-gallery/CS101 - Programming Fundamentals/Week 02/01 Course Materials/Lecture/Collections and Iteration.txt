@@ -1,0 +1,6 @@
+CS101 Programming Fundamentals
+Week 02: Collections and Iteration
+
+Lists preserve an ordered collection of values. A loop applies an operation to each item while keeping the source data structure explicit.
+
+This is newly written synthetic material for StudyHub product testing.

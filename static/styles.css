@@ -37,6 +37,53 @@ body {
   color: var(--text);
 }
 
+html {
+  color-scheme: light dark;
+  scroll-behavior: smooth;
+}
+
+button,
+summary,
+select,
+input,
+textarea,
+[tabindex] {
+  touch-action: manipulation;
+}
+
+:where(button, summary, select, input, textarea, a, [tabindex]):focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent-2) 72%, transparent);
+  outline-offset: 2px;
+}
+
+.skip-link {
+  position: fixed;
+  left: 16px;
+  top: 12px;
+  z-index: 100;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: var(--text);
+  color: var(--bg);
+  transform: translateY(-160%);
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 button,
 input,
 select,
@@ -172,10 +219,12 @@ p {
 
 h1 {
   font-size: 28px;
+  text-wrap: balance;
 }
 
 h2 {
   font-size: 20px;
+  text-wrap: balance;
 }
 
 h3 {
@@ -205,6 +254,12 @@ menu {
   background: var(--accent);
   color: white;
   border-color: var(--accent);
+}
+
+.button:disabled,
+.icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .button.secondary:hover,
@@ -365,7 +420,7 @@ menu {
 .progress-track span {
   display: block;
   height: 100%;
-  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  background: var(--accent-2);
 }
 
 .metric {
@@ -1351,6 +1406,54 @@ textarea {
   min-width: 0;
 }
 
+.inline-chips:empty {
+  display: none;
+}
+
+.search-snippet {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.chip.study-status.in_progress {
+  color: var(--accent-2);
+}
+
+.chip.study-status.completed {
+  color: var(--ok);
+}
+
+.chip.study-status.review {
+  color: var(--warn);
+}
+
+.mini-progress {
+  display: block;
+  width: min(240px, 100%);
+  height: 4px;
+  margin-top: 5px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--panel-2);
+}
+
+.mini-progress span {
+  display: block;
+  height: 100%;
+  background: var(--accent-2);
+}
+
+.course-progress {
+  width: min(360px, 100%);
+  margin-top: 10px;
+}
+
 .file-row-text .file-name,
 .course-row-main strong {
   overflow-wrap: anywhere;
@@ -1437,13 +1540,53 @@ textarea {
   gap: 12px;
 }
 
+.study-overview {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 18px;
+}
+
+.study-metrics {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.study-metrics .metric-card {
+  display: grid;
+  gap: 4px;
+}
+
+.study-metrics strong {
+  font-size: 26px;
+  font-variant-numeric: tabular-nums;
+}
+
+.study-metrics span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.progress-ring {
+  width: 58px;
+  height: 58px;
+  display: grid;
+  place-items: center;
+  border: 5px solid var(--accent-2);
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+
 .segmented-tabs {
   border: 1px solid var(--line);
   background: var(--panel);
   border-radius: 8px;
   padding: 4px;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
 }
 
@@ -1576,7 +1719,18 @@ label {
   }
 
   .nav {
+    display: grid;
     min-height: 0;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .nav-settings {
+    margin-top: 0;
+  }
+
+  .nav-item {
+    justify-content: center;
+    text-align: center;
   }
 
   .sidebar-toggle {
@@ -1590,5 +1744,29 @@ label {
   .library-actions,
   .course-actions {
     justify-content: flex-start;
+  }
+}
+
+@media (max-width: 560px) {
+  .nav {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .study-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }
