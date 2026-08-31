@@ -84,20 +84,21 @@ npm --version
 
 StudyHub Local uses npm scripts as a simple task runner.
 
-## Demo Mode Not Showing
+## Empty First Run
 
-For a clean first run, Demo Mode appears automatically when no local study folder
-has been configured.
+With no local configuration, StudyHub opens an empty workspace. Create a course
+or import a course folder from the Home screen.
 
-Advanced check: if `.env.local` exists, confirm:
+Advanced check: if `.env.local` exists, confirm any configured folder is an
+intended local path:
 
 ```text
-DEMO_MODE=true
+STUDY_LIBRARY_PATH=~/StudyLibrary
 ```
 
-If `STUDY_LIBRARY_PATH` is set, unset it temporarily to use the bundled synthetic demo fixtures.
+StudyHub does not bundle sample courses and does not scan unrelated folders.
 
-## Reset Demo Mode Database
+## Reset Local Metadata
 
 Stop the server, then move the local runtime database aside. Do not commit runtime database files.
 
@@ -128,6 +129,6 @@ If enabled, keep the key server-side in `.env.local` and never paste it into iss
 - Node/npm version
 - command run
 - error output with private paths redacted
-- whether Demo Mode is enabled
+- whether this is a clean first run or an existing library
 
 Do not ask users to upload private course files.

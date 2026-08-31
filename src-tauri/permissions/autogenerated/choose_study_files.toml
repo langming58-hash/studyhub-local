@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-choose-study-files"
+description = "Enables the choose_study_files command without any pre-configured scope."
+commands.allow = ["choose_study_files"]
+
+[[permission]]
+identifier = "deny-choose-study-files"
+description = "Denies the choose_study_files command without any pre-configured scope."
+commands.deny = ["choose_study_files"]

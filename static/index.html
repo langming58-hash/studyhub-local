@@ -16,15 +16,15 @@
             <strong>StudyHub Local</strong>
             <span id="libraryState" hidden></span>
           </div>
-          <button class="icon-button sidebar-toggle" id="sidebarToggle" aria-label="Collapse sidebar" title="Collapse sidebar">‹</button>
+          <button class="icon-button sidebar-toggle" id="sidebarToggle" data-i18n-aria-label="sidebar.collapse" data-i18n-title="sidebar.collapse" aria-label="Collapse sidebar" title="Collapse sidebar">‹</button>
         </div>
-        <nav class="nav" aria-label="Primary">
-          <button class="nav-item active" data-view="home" title="Home">⌂ <span>Home</span></button>
-          <button class="nav-item" data-view="courses" title="Courses">▦ <span>Courses</span></button>
-          <button class="nav-item" data-view="search" title="Search">⌕ <span>Search</span></button>
-          <button class="nav-item" data-view="study" title="Study">✓ <span>Study</span></button>
-          <button class="nav-item" data-view="ai" title="AI">✦ <span>AI</span></button>
-          <button class="nav-item nav-settings" data-view="settings" title="Settings">⚙ <span>Settings</span></button>
+        <nav class="nav" data-i18n-aria-label="nav.primary" aria-label="Primary">
+          <button class="nav-item active" data-view="home" data-i18n-title="nav.home" title="Home">⌂ <span data-i18n="nav.home">Home</span></button>
+          <button class="nav-item" data-view="courses" data-i18n-title="nav.courses" title="Courses">▦ <span data-i18n="nav.courses">Courses</span></button>
+          <button class="nav-item" data-view="search" data-i18n-title="nav.search" title="Search">⌕ <span data-i18n="nav.search">Search</span></button>
+          <button class="nav-item" data-view="study" data-i18n-title="nav.study" title="Study">✓ <span data-i18n="nav.study">Study</span></button>
+          <button class="nav-item" data-view="ai" data-i18n-title="nav.ai" title="AI">✦ <span data-i18n="nav.ai">AI</span></button>
+          <button class="nav-item nav-settings" data-view="settings" data-i18n-title="nav.settings" title="Settings">⚙ <span data-i18n="nav.settings">Settings</span></button>
         </nav>
       </aside>
 
@@ -35,8 +35,8 @@
             <h1 id="pageTitle">Home</h1>
           </div>
           <div class="top-actions">
-            <button id="uploadBtn" class="button secondary" hidden>＋ Add Material</button>
-            <button id="scanBtn" class="button secondary" hidden>↻ Scan Library</button>
+            <button id="uploadBtn" class="button secondary" hidden>＋ <span data-i18n="courses.addMaterial">Add Material</span></button>
+            <button id="scanBtn" class="button secondary" hidden>↻ <span data-i18n="courses.scan">Scan Library</span></button>
           </div>
         </header>
 
@@ -51,17 +51,17 @@
             <p class="eyebrow" id="drawerMeta"></p>
             <h2 id="drawerTitle"></h2>
           </div>
-          <button class="icon-button" id="closeDrawer" aria-label="Close">×</button>
+          <button class="icon-button" id="closeDrawer" data-i18n-aria-label="common.close" aria-label="Close">×</button>
         </div>
         <div class="drawer-actions">
-          <button id="askFileFull" class="button secondary">Open full AI workspace</button>
-          <button id="toggleAiExpanded" class="button secondary">Split preview + AI</button>
-          <button id="starFile" class="button secondary">Star</button>
+          <button id="askFileFull" class="button secondary" data-i18n="ai.openFull">Open full AI workspace</button>
+          <button id="toggleAiExpanded" class="button secondary" data-i18n="file.splitAi">Split preview + AI</button>
+          <button id="starFile" class="button secondary" data-i18n="file.star">Star</button>
           <details class="toolbar-more">
-            <summary>More</summary>
+            <summary data-i18n="common.more">More</summary>
             <div>
-              <button id="openOriginal" class="button secondary">Open original file</button>
-              <button id="copyContext" class="button secondary">Copy source details</button>
+              <button id="openOriginal" class="button secondary" data-i18n="file.openOriginal">Open original file</button>
+              <button id="copyContext" class="button secondary" data-i18n="file.copySource">Copy source details</button>
             </div>
           </details>
         </div>
@@ -69,30 +69,30 @@
           <div class="preview-frame" id="previewFrame"></div>
           <div class="split-handle" id="drawerSplitHandle" title="Resize AI workspace"></div>
           <aside class="context-panel">
-            <div class="rail-tabs" role="tablist" aria-label="File side rail">
-              <button class="rail-tab active" data-rail-tab="context">Source</button>
-              <button class="rail-tab" data-rail-tab="text">Readable Text</button>
-              <button class="rail-tab" data-rail-tab="details">Details</button>
+            <div class="rail-tabs" role="tablist" data-i18n-aria-label="file.details" aria-label="File side rail">
+              <button class="rail-tab active" data-rail-tab="context" data-i18n="common.source">Source</button>
+              <button class="rail-tab" data-rail-tab="text" data-i18n="file.readableText">Readable Text</button>
+              <button class="rail-tab" data-rail-tab="details" data-i18n="common.details">Details</button>
             </div>
             <div class="rail-panel active" id="rail-context">
-              <h3>Source</h3>
+              <h3 data-i18n="common.source">Source</h3>
               <div id="contextIndicator" class="context-lines"></div>
             </div>
             <div class="rail-panel" id="rail-text">
-              <h3>Text Preview</h3>
+              <h3 data-i18n="file.textPreview">Text Preview</h3>
               <pre id="extractedText"></pre>
             </div>
             <div class="rail-panel" id="rail-details">
-              <h3>Details</h3>
+              <h3 data-i18n="common.details">Details</h3>
               <div id="fileDetails" class="settings-list compact"></div>
             </div>
-            <h3>User Notes</h3>
+            <h3 data-i18n="file.userNotes">User Notes</h3>
             <div id="fileNotes" class="notes-list"></div>
-            <textarea id="noteBody" placeholder="Add a private note for this file."></textarea>
-            <button id="saveNote" class="button secondary full">Save Note</button>
-            <h3>Ask AI</h3>
-            <textarea id="askPrompt" placeholder="Ask about this selected file."></textarea>
-            <button id="askBtn" class="button secondary full">Ask</button>
+            <textarea id="noteBody" data-i18n-placeholder="file.notePlaceholder" placeholder="Add a private note for this file."></textarea>
+            <button id="saveNote" class="button secondary full" data-i18n="file.saveNote">Save Note</button>
+            <h3 data-i18n="settings.askAi">Ask AI</h3>
+            <textarea id="askPrompt" data-i18n-placeholder="file.askPlaceholder" placeholder="Ask about this selected file."></textarea>
+            <button id="askBtn" class="button secondary full" data-i18n="courses.askAi">Ask AI</button>
             <div id="askResponse" class="notice"></div>
           </aside>
         </div>
@@ -103,29 +103,75 @@
       <form method="dialog" class="dialog-form">
         <div class="drawer-head">
           <div>
-            <p class="eyebrow">Local study library</p>
-            <h2>Add Material</h2>
+            <p class="eyebrow" data-i18n="dialog.localLibrary">Local study library</p>
+            <h2 data-i18n="dialog.addMaterial">Add Material</h2>
           </div>
-          <button class="icon-button" value="cancel" aria-label="Close">×</button>
+          <button class="icon-button" value="cancel" data-i18n-aria-label="common.close" aria-label="Close">×</button>
         </div>
-        <label>Course <select id="uploadCourse"></select></label>
-        <label>Week <select id="uploadWeek"></select></label>
-        <label>Section
-          <select id="uploadSection">
-            <option value="01 Course Materials">Course materials</option>
-            <option value="02 Exercises">Exercises</option>
-            <option value="My_Work">My work</option>
-            <option value="Review">Review</option>
-          </select>
-        </label>
-        <label>Category <input id="uploadCategory" value="Lecture" /></label>
+        <label><span data-i18n="dialog.course">Course</span> <select id="uploadCourse"></select></label>
+        <label><span data-i18n="dialog.weekModule">Week or module</span> <select id="uploadWeek"></select></label>
+        <label><span data-i18n="dialog.materialType">Material type</span> <select id="uploadMaterialType"></select></label>
         <label class="dropzone">
           <input id="uploadFile" type="file" multiple />
-          <span>Select files to copy into the study library</span>
+          <span id="uploadFileLabel" data-i18n="dialog.chooseFilesBody">Choose files from this Mac, or drop them into StudyHub</span>
+        </label>
+        <div class="notice compact" id="uploadSelection" hidden></div>
+        <menu>
+          <button value="cancel" class="button secondary" data-i18n="common.cancel">Cancel</button>
+          <button id="chooseNativeFiles" type="button" class="button secondary" data-i18n="dialog.chooseFiles">Choose Files</button>
+          <button id="uploadSubmit" value="default" class="button primary" data-i18n="common.add">Add</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="duplicateDialog">
+      <form method="dialog" class="dialog-form">
+        <div class="drawer-head">
+          <div><p class="eyebrow" data-i18n="dialog.duplicate">Duplicate detected</p><h2 data-i18n="dialog.alreadyRegistered">Material Already Registered</h2></div>
+          <button class="icon-button" value="cancel" aria-label="Close">×</button>
+        </div>
+        <p id="duplicateMessage" class="muted"></p>
+        <menu>
+          <button value="cancel" class="button secondary" data-i18n="common.cancel">Cancel</button>
+          <button id="openDuplicate" type="button" class="button secondary" data-i18n="dialog.openExisting">Open Existing</button>
+          <button id="addDuplicateAnyway" type="button" class="button primary" data-i18n="dialog.addAnyway">Add Anyway</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="courseDialog">
+      <form method="dialog" class="dialog-form" id="courseForm">
+        <div class="drawer-head">
+          <div><p class="eyebrow" data-i18n="dialog.localMetadata">Local metadata</p><h2 id="courseDialogTitle" data-i18n="dialog.createCourse">Create Course</h2></div>
+          <button class="icon-button" value="cancel" aria-label="Close">×</button>
+        </div>
+        <input type="hidden" id="courseEditId" />
+        <label><span data-i18n="dialog.term">Term</span> <select id="courseTerm"></select></label>
+        <label><span data-i18n="dialog.courseCode">Course code</span> <input id="courseCode" maxlength="40" placeholder="CS101" /></label>
+        <label><span data-i18n="dialog.courseName">Course name</span> <input id="courseName" maxlength="120" required placeholder="Introduction to Computing" /></label>
+        <p class="muted" data-i18n="dialog.metadataSafety">This changes StudyHub metadata only. Your original files are not renamed or moved.</p>
+        <menu>
+          <button value="cancel" class="button secondary" data-i18n="common.cancel">Cancel</button>
+          <button id="courseSubmit" value="default" class="button primary" data-i18n="common.save">Save</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="weekDialog">
+      <form method="dialog" class="dialog-form" id="weekForm">
+        <div class="drawer-head">
+          <div><p class="eyebrow" data-i18n="dialog.courseStructure">Course structure</p><h2 id="weekDialogTitle" data-i18n="dialog.addWeek">Add Week or Module</h2></div>
+          <button class="icon-button" value="cancel" aria-label="Close">×</button>
+        </div>
+        <input type="hidden" id="weekCourseId" />
+        <input type="hidden" id="weekEditId" />
+        <label><span data-i18n="week.name">Name</span> <input id="weekName" maxlength="80" required data-i18n-placeholder="dialog.weekNamePlaceholder" placeholder="Week 01 or Module A" /></label>
+        <label><span data-i18n="week.type">Type</span>
+          <select id="weekKind"><option value="week" data-i18n="dialog.week">Week</option><option value="module" data-i18n="dialog.module">Module</option></select>
         </label>
         <menu>
-          <button value="cancel" class="button secondary">Cancel</button>
-          <button id="uploadSubmit" value="default" class="button primary">Upload</button>
+          <button value="cancel" class="button secondary" data-i18n="common.cancel">Cancel</button>
+          <button id="weekSubmit" value="default" class="button primary" data-i18n="common.add">Add</button>
         </menu>
       </form>
     </dialog>
@@ -134,20 +180,22 @@
       <div class="history-panel">
         <div class="drawer-head">
           <div>
-            <p class="eyebrow">Local AI history</p>
-            <h2>Conversations</h2>
+            <p class="eyebrow" data-i18n="settings.storedLocally">Stored locally</p>
+            <h2 data-i18n="ai.conversations">Conversations</h2>
           </div>
           <div class="history-head-actions">
-            <button class="button secondary" id="clearHistory">Clear all</button>
-            <button class="icon-button" id="closeHistory" aria-label="Close history">×</button>
+            <button class="button secondary" id="clearHistory" data-i18n="ai.clearAll">Clear all</button>
+            <button class="icon-button" id="closeHistory" data-i18n-aria-label="common.close" aria-label="Close history">×</button>
           </div>
         </div>
-        <input id="historySearch" placeholder="Search conversations" />
+        <input id="historySearch" data-i18n-placeholder="ai.searchConversations" placeholder="Search conversations" />
         <div id="historyList" class="history-list"></div>
       </div>
     </div>
 
     <div id="toast" class="toast" hidden></div>
+    <script src="/i18n/catalog.js"></script>
+    <script src="/i18n.js"></script>
     <script src="/vendor/katex/katex.min.js"></script>
     <script src="/ai-renderer.js"></script>
     <script src="/app.js"></script>

@@ -21,7 +21,7 @@ while true; do
   echo "7. LinkedIn"
   echo "8. X"
   echo "9. Open GitHub repo"
-  echo "10. Open v0.1.4 Release"
+  echo "10. Open v0.2.0 Release"
   echo "11. Run launch privacy check"
   echo "12. Exit"
   echo
@@ -36,7 +36,7 @@ while true; do
     7) run_helper "prepare-linkedin.command" ;;
     8) run_helper "prepare-x.command" ;;
     9) open "https://github.com/langming58-hash/studyhub-local" ;;
-    10) open "https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.4" ;;
+    10) open "https://github.com/langming58-hash/studyhub-local/releases/tag/v0.2.0" ;;
     11)
       cd "$ROOT"
       npm run ci

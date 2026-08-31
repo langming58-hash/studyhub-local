@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.2.0
+
 - Redesign the main product IA around Home, Courses, Search, Study, AI, and Settings.
 - Add a fuller AI study workspace with saved local conversation history.
 - Improve first-run onboarding, recovery notices, and dependency preflight checks.
@@ -11,6 +13,13 @@
 - Simplify returning-user Home, course rows, file rows, preview toolbar, and upload labels.
 - Add hash-based routing for course, week, file preview, AI, Search, Study, and Settings refresh/back behavior.
 - Keep preview embedding same-origin while preserving active-content isolation.
+- Add English and Simplified Chinese interface catalogs with system-language detection and a local language preference.
+- Replace bundled Demo Mode with a clean empty first run.
+- Move synthetic course fixtures under `tests/fixtures/` and exclude them from production desktop resources.
+- Normalize stored material-type identifiers while localizing their display labels.
+- Add bilingual UI and production-fixture isolation acceptance coverage.
+- Prove the macOS Tauri prototype can run from its packaged backend without end-user Python.
+- Keep public v0.2.0 distribution source-only; no unsigned or unnotarized desktop binary is attached.
 
 ## v0.1.5
 

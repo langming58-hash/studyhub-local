@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TITLE_FILE="$ROOT/docs/launch/clipboard/reddit-opensource-title.txt"
 BODY_FILE="$ROOT/docs/launch/reddit-opensource.md"
 REPO_URL="https://github.com/langming58-hash/studyhub-local"
-RELEASE_URL="https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.4"
+RELEASE_URL="https://github.com/langming58-hash/studyhub-local/releases/tag/v0.2.0"
 
 echo "StudyHub Local - Reddit r/opensource helper"
 echo

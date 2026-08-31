@@ -69,6 +69,7 @@ def run_detection_cases() -> dict[str, bool]:
             "personal_launch_ledger_rejected": issue_contains(issues, "launch ledger detail"),
             "personal_commit_email_rejected": not privacy.is_privacy_safe_public_email("person" + "@gmail.com"),
             "github_noreply_email_allowed": privacy.is_privacy_safe_public_email("12345+maintainer" + "@users.noreply.github.com"),
+            "github_web_commit_email_allowed": privacy.is_privacy_safe_public_email("noreply" + "@github.com"),
             "synthetic_example_email_allowed": privacy.is_privacy_safe_public_email("maintainers" + "@example.com"),
         }
 

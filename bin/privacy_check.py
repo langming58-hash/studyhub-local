@@ -108,7 +108,7 @@ LAUNCH_LEDGER_PATTERNS = [
 
 EMAIL_RE = re.compile(r"^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$")
 APPROVED_PUBLIC_EMAIL_RE = re.compile(
-    r"^(?:[^@\s<>]+@users\.noreply\.github\.com|[^@\s<>]+@example\.(?:com|net|org))$",
+    r"^(?:noreply@github\.com|[^@\s<>]+@users\.noreply\.github\.com|[^@\s<>]+@example\.(?:com|net|org))$",
     re.IGNORECASE,
 )
 

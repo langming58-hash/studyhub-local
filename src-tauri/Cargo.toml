@@ -1,0 +1,18 @@
+[package]
+name = "studyhub-local-desktop"
+version = "0.2.0"
+description = "Local-first desktop study workspace"
+authors = ["StudyHub Local Maintainers"]
+edition = "2021"
+
+[lib]
+name = "studyhub_local_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+libc = "0.2"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"

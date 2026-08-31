@@ -1,5 +1,8 @@
 const state = {
   courses: [],
+  archivedCourses: [],
+  terms: [],
+  materialTypes: [],
   weeksByCourse: new Map(),
   health: null,
   preflight: null,
@@ -11,6 +14,9 @@ const state = {
   weekFiles: [],
   weekFilter: "all",
   weekSort: "section",
+  selectedMaterialIds: new Set(),
+  nativeImportPaths: [],
+  duplicateImport: null,
   studyMode: "practice",
   searchFiltersOpen: false,
   sidebarCollapsed: localStorage.getItem("studyhub.sidebarCollapsed") === "true",
@@ -31,8 +37,19 @@ const state = {
 
 const $ = (selector) => document.querySelector(selector);
 const view = $("#view");
+const i18n = window.StudyHubI18n;
+const t = (key, vars = {}) => i18n.t(key, vars);
+const materialTypeLabel = (value) => i18n.materialType(value);
+const materialTypeValue = (value) => i18n.catalogs.en[`material.${String(value || "other").toLowerCase()}`] || String(value || "Other");
+const learningUnitLabel = (value, kind = "week") => i18n.learningUnit(value, kind);
 let restoringRoute = false;
 let appLoaded = false;
+
+function desktopInvoke(command, args = {}) {
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (!state.health?.desktopMode || typeof invoke !== "function") return null;
+  return invoke(command, args);
+}
 
 function routeHash(routeState = {}) {
   const viewName = routeState.view || "home";
@@ -92,6 +109,14 @@ async function api(path, options = {}) {
   return data;
 }
 
+function postJson(path, body = {}) {
+  return api(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -122,8 +147,9 @@ function applySidebarState() {
   const toggle = $("#sidebarToggle");
   if (toggle) {
     toggle.textContent = state.sidebarCollapsed ? "›" : "‹";
-    toggle.setAttribute("aria-label", state.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar");
-    toggle.title = state.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar";
+    const label = t(state.sidebarCollapsed ? "sidebar.expand" : "sidebar.collapse");
+    toggle.setAttribute("aria-label", label);
+    toggle.title = label;
   }
 }
 
@@ -148,6 +174,20 @@ function formatSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function statusLabel(value) {
+  const key = {
+    Available: "status.available",
+    Connected: "status.connected",
+    Configured: "status.configured",
+    Missing: "status.missing",
+    "Not configured": "status.notConfigured",
+    "Not ready": "status.notReady",
+    Ready: "status.ready",
+    Unavailable: "status.unavailable",
+  }[String(value || "")];
+  return key ? t(key) : String(value || t("common.unknown"));
 }
 
 function detectQuestionNumber(text = "") {
@@ -179,7 +219,7 @@ function setAskContext(context = {}, options = {}) {
   if (state.ask.lastContextKey && state.ask.lastContextKey !== nextKey) {
     state.ask.messages.push({
       role: "system",
-      text: "Context changed",
+      text: t("ai.contextChanged"),
       context: { ...nextContext },
     });
     if (!options.keepConversation) {
@@ -240,7 +280,7 @@ function askContextLines(context = state.ask.context) {
   if (context.materialType) lines.push(context.materialType);
   if (context.file) lines.push(context.file);
   if (context.questionNumber) lines.push(context.questionNumber);
-  return lines.length ? lines : ["No course selected"];
+  return lines.length ? lines : [t("ai.noCourse")];
 }
 
 function contextForScope(context = state.ask.context, scope = state.ask.scope) {
@@ -270,27 +310,27 @@ function contextForScope(context = state.ask.context, scope = state.ask.scope) {
 
 function availableScopes(context = state.ask.context) {
   return [
-    { value: "question", label: "Current Question", enabled: Boolean(context.questionId || context.questionNumber) },
-    { value: "file", label: "Current File", enabled: Boolean(context.fileId) },
-    { value: "week", label: "Current Week", enabled: Boolean(context.week) },
-    { value: "course", label: "Current Course", enabled: Boolean(context.course) },
+    { value: "question", label: t("ai.currentQuestion"), enabled: Boolean(context.questionId || context.questionNumber) },
+    { value: "file", label: t("ai.currentFile"), enabled: Boolean(context.fileId) },
+    { value: "week", label: t("ai.currentWeek"), enabled: Boolean(context.week) },
+    { value: "course", label: t("ai.currentCourse"), enabled: Boolean(context.course) },
   ];
 }
 
 function quickActionsForContext(context = state.ask.context) {
   if (!context.course) return [];
   if (context.questionId || context.questionNumber) {
-    return ["Explain the question", "What is this asking?", "Check my answer"];
+    return [t("ai.explainQuestion"), t("ai.whatAsking"), t("ai.checkAnswer")];
   }
   if (context.fileId) {
-    const actions = ["Explain this file", "Summarize"];
-    if ((context.materialType || "").toLowerCase().includes("slide") || /\.pptx?$/i.test(context.file || "")) actions.push("Explain current slide/page");
+    const actions = [t("ai.explainFile"), t("ai.summarize")];
+    if ((context.materialType || "").toLowerCase().includes("slide") || /\.pptx?$/i.test(context.file || "")) actions.push(t("ai.explainPage"));
     return actions;
   }
   if (context.week) {
-    return ["Explain this week", "Key concepts", "Important terminology", "Prepare me for tutorial"];
+    return [t("ai.explainWeek"), t("ai.keyConcepts"), t("ai.terminology"), t("ai.prepareTutorial")];
   }
-  return ["Key concepts", "Important terminology"];
+  return [t("ai.keyConcepts"), t("ai.terminology")];
 }
 
 function courseById(id) {
@@ -303,12 +343,12 @@ function courseLabel(item = {}) {
 
 function scopeLabel(scope = state.ask.scope) {
   return {
-    question: "This question",
-    file: "This file",
-    week: "This week",
-    course: "This course",
-    selected: "Selected sources",
-  }[scope] || "This course";
+    question: t("ai.thisQuestion"),
+    file: t("ai.thisFile"),
+    week: t("ai.thisWeek"),
+    course: t("ai.thisCourse"),
+    selected: t("ai.selectedSources"),
+  }[scope] || t("ai.thisCourse");
 }
 
 function saveAskDraft(value) {
@@ -361,7 +401,7 @@ async function createConversation(context = state.ask.context, scope = state.ask
   const data = await api("/api/conversations", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "create", context, scope, title: "New study conversation" }),
+    body: JSON.stringify({ action: "create", context, scope, title: t("ai.newConversationTitle") }),
   });
   state.ask.conversationId = data.conversation.id;
   state.ask.conversationTitle = data.conversation.title;
@@ -393,7 +433,7 @@ function latestWeek(course) {
 }
 
 function fileMetaLine(file = {}) {
-  return [courseLabel(file), file.week_label, file.category || file.exercise_type, file.source_label || file.source, formatSize(file.size)]
+  return [courseLabel(file), learningUnitLabel(file.week_label), materialTypeLabel(file.material_type || file.category || file.exercise_type), file.source_label || file.source, formatSize(file.size)]
     .filter(Boolean)
     .join(" · ");
 }
@@ -401,7 +441,7 @@ function fileMetaLine(file = {}) {
 function weeksWithMaterialLabel(course) {
   const weeks = weeksFor(course.id);
   const count = weeks.filter((week) => week.has_materials).length;
-  return `${count} week${count === 1 ? "" : "s"} with material`;
+  return t(count === 1 ? "week.materialCount" : "week.materialCountPlural", { count });
 }
 
 function rememberFile(file) {
@@ -420,18 +460,17 @@ function firstRunPanel() {
   const preflight = state.preflight || {};
   const needsAttention = actionPreflightItems().length > 0;
   if (dismissed && !needsAttention) return "";
-  const mode = preflight.demoMode ? "Demo Mode" : "Local Library";
+  const desktopMode = Boolean(state.health?.desktopMode);
   return `
     <section class="onboarding-card" aria-labelledby="firstRunTitle">
       <div>
-        <p class="eyebrow">${escapeHtml(mode)}</p>
-        <h2 id="firstRunTitle">Your private study hub</h2>
-        <p class="muted">${preflight.demoMode ? "These sample courses are synthetic. Your real files stay on your computer when you choose a study folder. OpenAI is optional." : "Your courses and files are read from your local study folder. OpenAI is optional."}</p>
+        <p class="eyebrow">${escapeHtml(t("onboarding.mode"))}</p>
+        <h2 id="firstRunTitle">${escapeHtml(t("onboarding.title"))}</h2>
+        <p class="muted">${escapeHtml(t("onboarding.body"))}</p>
       </div>
       <div class="onboarding-actions">
-        <button class="button primary" data-view="${preflight.fileCount ? "courses" : "settings"}">${preflight.fileCount ? "Start exploring" : "Set up files"}</button>
-        <button class="button secondary" data-open-library-setup="1">Use my own files</button>
-        <button class="button ghost" data-dismiss-onboarding="1">Hide</button>
+        <button class="button primary" data-create-first-course="1">${escapeHtml(t("onboarding.createCourse"))}</button>
+        <button class="button secondary" ${desktopMode ? "data-import-first-folder=\"1\"" : "data-open-library-setup=\"1\""}>${escapeHtml(t("onboarding.importFolder"))}</button>
       </div>
     </section>
   `;
@@ -442,7 +481,7 @@ function recoveryCards(limit = 3, expandProblems = false) {
   const visible = limit === "all" ? items : items.filter((item) => item.severity !== "info").slice(0, limit);
   if (!visible.length) return "";
   return `
-    <section class="recovery-list" aria-label="StudyHub setup notices">
+    <section class="recovery-list" aria-label="${escapeHtml(t("preflight.region"))}">
       ${visible.map((item) => recoveryCard(item, expandProblems)).join("")}
     </section>
   `;
@@ -450,28 +489,33 @@ function recoveryCards(limit = 3, expandProblems = false) {
 
 function recoveryCard(item, expandProblems = false) {
   const tone = item.severity || "info";
+  const key = (field, fallback) => {
+    const name = `preflight.${item.code}.${field}`;
+    return Object.hasOwn(i18n.catalogs.en, name) ? t(name) : fallback;
+  };
   return `
     <details class="recovery-card ${escapeHtml(tone)}" ${expandProblems && (tone === "error" || tone === "warning") ? "open" : ""}>
       <summary>
-        <span>${escapeHtml(item.title)}</span>
-        <strong>${escapeHtml(tone)}</strong>
+        <span>${escapeHtml(key("title", item.title))}</span>
+        <strong>${escapeHtml(t(`status.${tone}`))}</strong>
       </summary>
-      <p><b>What happened:</b> ${escapeHtml(item.whatHappened)}</p>
-      <p><b>What it affects:</b> ${escapeHtml(item.impact)}</p>
-      <p><b>Next step:</b> ${escapeHtml(item.nextStep)}</p>
+      <p><b>${escapeHtml(t("preflight.what"))}</b> ${escapeHtml(key("what", item.whatHappened))}</p>
+      <p><b>${escapeHtml(t("preflight.impact"))}</b> ${escapeHtml(key("impact", item.impact))}</p>
+      <p><b>${escapeHtml(t("preflight.next"))}</b> ${escapeHtml(key("next", item.nextStep))}</p>
       ${item.details ? `<pre>${escapeHtml(item.details)}</pre>` : ""}
     </details>
   `;
 }
 
 function librarySetupForm() {
+  const desktopMode = Boolean(state.health?.desktopMode);
   return `
     <form class="library-setup-form" id="librarySetupForm">
-      <label>Study folder
-        <input id="studyLibraryPathInput" placeholder="~/StudyLibrary" autocomplete="off" />
+      <label>${escapeHtml(t("settings.studyFolder"))}
+        <input id="studyLibraryPathInput" placeholder="${desktopMode ? escapeHtml(t("settings.folderPlaceholder")) : "~/StudyLibrary"}" autocomplete="off" ${desktopMode ? "readonly" : ""} />
       </label>
-      <button class="button primary" type="submit">Use this folder</button>
-      <p class="muted">StudyHub will save this in your local settings file and ask you to restart. It will not upload the folder.</p>
+      ${desktopMode ? `<button class="button primary" type="button" data-choose-study-folder="1">${escapeHtml(t("settings.chooseFolder"))}</button>` : `<button class="button primary" type="submit">${escapeHtml(t("settings.useFolder"))}</button>`}
+      <p class="muted">${escapeHtml(t("settings.folderPrivacy"))}</p>
       <div id="librarySetupResult" class="notice compact" hidden></div>
     </form>
   `;
@@ -487,26 +531,30 @@ function extensionIcon(ext = "") {
   return "FILE";
 }
 
-function fileCard(file) {
+function fileCard(file, selectable = false) {
   const suspicious = file.suspicious ? `<span class="chip warn">${escapeHtml(file.suspicious)}</span>` : "";
+  const missing = file.source_missing ? `<span class="chip warn">${escapeHtml(t("file.originalMissing"))}</span>` : "";
   const star = file.star_id ? "★" : "☆";
   return `
     <article class="file-row">
+      ${selectable ? `<input class="material-check" type="checkbox" data-material-select="${file.id}" aria-label="${escapeHtml(t("common.select", { name: file.display_name || file.filename }))}" ${state.selectedMaterialIds.has(Number(file.id)) ? "checked" : ""} />` : ""}
       <button class="file-row-main" data-preview="${file.id}" title="${escapeHtml(file.filename)}">
         <span class="file-badge">${extensionIcon(file.extension)}</span>
         <span class="file-row-text">
-          <strong class="file-name">${escapeHtml(file.filename)}</strong>
+          <strong class="file-name">${escapeHtml(file.display_name || file.filename)}</strong>
           <span class="muted">${escapeHtml(fileMetaLine(file))}</span>
-          ${suspicious}
+          ${missing}${suspicious}
         </span>
       </button>
       <div class="file-row-actions">
-        <button class="icon-button" data-star="${file.id}" aria-label="Star file" title="Star">${star}</button>
+        <button class="icon-button" data-star="${file.id}" aria-label="${escapeHtml(t("file.starLabel"))}" title="${escapeHtml(t("file.star"))}">${star}</button>
         <details class="row-more">
-          <summary>More</summary>
+          <summary>${escapeHtml(t("common.more"))}</summary>
           <div>
-            <button class="button secondary" data-ask-file="${file.id}">Ask AI</button>
-            <button class="button secondary" data-open="${file.id}">Open original file</button>
+            <button class="button secondary" data-ask-file="${file.id}">${escapeHtml(t("courses.askAi"))}</button>
+            ${file.source_missing ? `<button class="button secondary" data-relink-material="${file.id}">${escapeHtml(t("file.locate"))}</button>` : `<button class="button secondary" data-open="${file.id}">${escapeHtml(t("file.openOriginal"))}</button>`}
+            <button class="button secondary" data-rename-material="${file.id}" data-material-name="${escapeHtml(file.display_name || file.filename)}">${escapeHtml(t("file.rename"))}</button>
+            <button class="button secondary" data-remove-material="${file.id}">${escapeHtml(t("file.remove"))}</button>
           </div>
         </details>
       </div>
@@ -528,10 +576,10 @@ function legacyFileCard(file) {
             <p class="muted path-text">${escapeHtml(file.rel_path || "")}</p>
           </div>
         </div>
-        <button class="icon-button" data-star="${file.id}" aria-label="Star file">${star}</button>
+        <button class="icon-button" data-star="${file.id}" aria-label="${escapeHtml(t("file.starLabel"))}">${star}</button>
       </header>
       <div class="chips">
-        <span class="chip ${officialClass}">${escapeHtml(file.source_label || file.source || "Local file")}</span>
+        <span class="chip ${officialClass}">${escapeHtml(file.source_label || file.source || t("file.local"))}</span>
         <span class="chip">${escapeHtml(file.extension || "")}</span>
         <span class="chip">${formatSize(file.size)}</span>
         ${file.week_label ? `<span class="chip">${escapeHtml(file.week_label)}</span>` : ""}
@@ -553,7 +601,11 @@ async function loadBase() {
   state.csrfToken = session.csrfToken || state.csrfToken || "";
   state.health = await api("/api/health");
   state.preflight = await api("/api/preflight");
-  state.courses = await api("/api/courses");
+  state.terms = await api("/api/terms");
+  state.materialTypes = (await api("/api/material-types")).types || [];
+  const allCourses = await api("/api/courses?include_archived=1");
+  state.courses = allCourses.filter((course) => !course.archived);
+  state.archivedCourses = allCourses.filter((course) => course.archived);
   await Promise.all(
     state.courses.map(async (course) => {
       state.weeksByCourse.set(Number(course.id), await api(`/api/weeks?course_id=${course.id}`));
@@ -563,13 +615,15 @@ async function loadBase() {
   if (libraryState) {
     const needsAttention = actionPreflightItems().length > 0 || !state.health.studyLibraryConnected;
     libraryState.hidden = !needsAttention;
-    libraryState.textContent = state.health.studyLibraryConnected ? "Library needs attention" : "Library missing";
+    libraryState.textContent = t(state.health.studyLibraryConnected ? "settings.libraryNeedsAttention" : "settings.libraryMissing");
   }
-  if (!state.preflight?.demoMode && Number(state.health.filesIndexed || 0) > 0 && actionPreflightItems().length === 0) {
+  if (Number(state.health.filesIndexed || 0) > 0 && actionPreflightItems().length === 0) {
     localStorage.setItem("studyhub.onboardingDismissed", "true");
   }
   applySidebarState();
   populateUploadCourses();
+  populateCourseTerms();
+  await resumePendingFirstRunAction();
   if (state.ask.conversationId && !state.ask.messages.length) {
     try {
       const data = await api(`/api/conversation?id=${state.ask.conversationId}`);
@@ -587,17 +641,43 @@ async function loadBase() {
 function renderCourseList() {}
 
 function populateUploadCourses() {
-  $("#uploadCourse").innerHTML = state.courses
+  $("#uploadCourse").innerHTML = `<option value="0">${escapeHtml(t("courses.inbox"))} / ${escapeHtml(t("courses.unclassified"))}</option>${state.courses
     .map((course) => `<option value="${course.id}">${escapeHtml(courseLabel(course))}</option>`)
-    .join("");
-  $("#uploadWeek").innerHTML = Array.from({ length: 12 }, (_, i) => {
-    const label = `Week ${String(i + 1).padStart(2, "0")}`;
-    return `<option>${label}</option>`;
-  }).join("");
+    .join("")}`;
+  $("#uploadMaterialType").innerHTML = state.materialTypes.map((type) => `<option value="${escapeHtml(type)}">${escapeHtml(materialTypeLabel(type))}</option>`).join("");
+  populateUploadWeeks();
+}
+
+function populateUploadWeeks() {
+  const courseId = Number($("#uploadCourse").value || state.selectedCourseId || 0);
+  const weeks = weeksFor(courseId);
+  $("#uploadWeek").innerHTML = weeks.length
+    ? weeks.map((week) => `<option value="${week.id}">${escapeHtml(learningUnitLabel(week.week_label, week.kind))}</option>`).join("")
+    : `<option value="">${escapeHtml(t("courses.unclassified"))}</option>`;
+}
+
+function populateCourseTerms() {
+  $("#courseTerm").innerHTML = state.terms.map((term) => `<option value="${term.id}">${escapeHtml(term.stable_id === "term_imported" ? t("settings.importedCourses") : term.name)}</option>`).join("");
+}
+
+async function resumePendingFirstRunAction() {
+  if (!state.health?.desktopMode) return;
+  const folder = localStorage.getItem("studyhub.pendingImportFolder");
+  if (folder) {
+    localStorage.removeItem("studyhub.pendingImportFolder");
+    await postJson("/api/materials/import-folder", { path: folder });
+    localStorage.setItem("studyhub.onboardingDismissed", "true");
+    window.location.reload();
+    return;
+  }
+  if (localStorage.getItem("studyhub.pendingCreateCourse") === "true") {
+    localStorage.removeItem("studyhub.pendingCreateCourse");
+    setTimeout(() => openCourseDialog(), 0);
+  }
 }
 
 async function renderHome() {
-  setTitle("Home");
+  setTitle(t("nav.home"));
   const recent = await api("/api/recent");
   const wrong = await api("/api/wrong-questions");
   const lastFileId = Number(localStorage.getItem("studyhub.lastFileId") || 0);
@@ -608,46 +688,46 @@ async function renderHome() {
     ${recoveryCards(2)}
     <section class="continue-panel">
       <div>
-        <p class="eyebrow">Continue</p>
-        <h2>${escapeHtml(continueFile?.filename || "Choose a study material")}</h2>
-        <p class="muted">${escapeHtml(continueFile ? fileMetaLine(continueFile) : "Open a recent file, course, or week to start.")}</p>
+        <p class="eyebrow">${escapeHtml(t("home.continue"))}</p>
+        <h2>${escapeHtml(continueFile?.filename || t("home.chooseMaterial"))}</h2>
+        <p class="muted">${escapeHtml(continueFile ? fileMetaLine(continueFile) : t("home.openRecent"))}</p>
       </div>
       <div class="continue-actions">
         ${
           continueFile
-            ? `<button class="button primary" data-preview="${continueFile.id}">Continue</button>`
-            : `<button class="button primary" data-view="courses">Browse courses</button>`
+            ? `<button class="button primary" data-preview="${continueFile.id}">${escapeHtml(t("home.continue"))}</button>`
+            : `<button class="button primary" data-view="courses">${escapeHtml(t("home.browseCourses"))}</button>`
         }
       </div>
     </section>
     <section class="section-block quiet-section">
       <div class="section-head">
         <div>
-          <h2>Courses</h2>
+          <h2>${escapeHtml(t("nav.courses"))}</h2>
         </div>
-        <button class="button secondary" data-view="courses">View all</button>
+        <button class="button secondary" data-view="courses">${escapeHtml(t("common.viewAll"))}</button>
       </div>
-      <div class="course-list-main">${activeCourses.length ? activeCourses.slice(0, 8).map(courseSummary).join("") : empty("No courses in this library yet.")}</div>
+      <div class="course-list-main">${activeCourses.length ? activeCourses.slice(0, 8).map(courseSummary).join("") : empty(t("home.noCourses"))}</div>
     </section>
     <section class="section-block quiet-section">
       <div class="section-head">
         <div>
-          <p class="eyebrow">Recent</p>
-          <h2>Files</h2>
+          <p class="eyebrow">${escapeHtml(t("home.recent"))}</p>
+          <h2>${escapeHtml(t("home.files"))}</h2>
         </div>
-        <button class="button secondary" data-view="search">Search</button>
+        <button class="button secondary" data-view="search">${escapeHtml(t("nav.search"))}</button>
       </div>
-      <div class="file-list">${recent.length ? recent.slice(0, 8).map(fileCard).join("") : empty("No files ready yet.")}</div>
+      <div class="file-list">${recent.length ? recent.slice(0, 8).map((file) => fileCard(file)).join("") : empty(t("home.noFiles"))}</div>
     </section>
     <section class="section-block quiet-section">
       <div class="section-head">
         <div>
-          <p class="eyebrow">Review</p>
-          <h2>Study queue</h2>
+          <p class="eyebrow">${escapeHtml(t("home.review"))}</p>
+          <h2>${escapeHtml(t("home.studyQueue"))}</h2>
         </div>
-        <button class="button secondary" data-view="study" data-study-mode="wrong">Open Study</button>
+        <button class="button secondary" data-view="study" data-study-mode="wrong">${escapeHtml(t("home.openStudy"))}</button>
       </div>
-      ${wrong.length ? `<div class="study-list">${wrong.slice(0, 4).map(wrongRow).join("")}</div>` : empty("No wrong-question records yet.")}
+      ${wrong.length ? `<div class="study-list">${wrong.slice(0, 4).map(wrongRow).join("")}</div>` : empty(t("home.noWrong"))}
     </section>
   `;
   bindLibrarySetupForm();
@@ -661,16 +741,18 @@ function bindLibrarySetupForm() {
     const result = $("#librarySetupResult");
     const path = $("#studyLibraryPathInput").value.trim();
     result.hidden = false;
-    result.textContent = "Checking this folder...";
+    result.textContent = t("toast.checkingFolder");
     try {
       const data = await api("/api/config/study-library", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path }),
       });
-      result.textContent = data.message || "Saved. Restart StudyHub to use this folder.";
+      result.textContent = state.health?.desktopMode ? "Opening this study folder..." : (data.message || "Saved. Restart StudyHub to use this folder.");
       localStorage.setItem("studyhub.onboardingDismissed", "true");
-      toast("Study folder saved");
+      toast(t("toast.studyFolderSaved"));
+      const restart = desktopInvoke("restart_backend");
+      if (restart) await restart;
     } catch (error) {
       result.textContent = error.message;
     }
@@ -686,12 +768,12 @@ function focusCourseCard(course) {
     <article class="focus-card" data-course="${course.id}">
       <div>
         <p class="muted">${escapeHtml(courseLabel(course))}</p>
-        <h2>${escapeHtml(week?.week_label || "No week")}</h2>
+        <h2>${escapeHtml(week ? learningUnitLabel(week.week_label, week.kind) : t("course.noWeek"))}</h2>
       </div>
       <div class="progress-track"><span style="width:${pct}%"></span></div>
       <div class="focus-meta">
-        <span>${done} week${done === 1 ? "" : "s"} with material</span>
-        <button class="button secondary" data-course="${course.id}" data-week="${escapeHtml(week?.week_label || "")}">Open</button>
+        <span>${escapeHtml(t(done === 1 ? "week.materialCount" : "week.materialCountPlural", { count: done }))}</span>
+        <button class="button secondary" data-course="${course.id}" data-week="${escapeHtml(week?.week_label || "")}">${escapeHtml(t("common.open"))}</button>
       </div>
     </article>
   `;
@@ -704,50 +786,111 @@ function courseSummary(course) {
       <button class="course-row-main" data-course="${course.id}">
         <strong>${escapeHtml(courseLabel(course))}</strong>
         <span>${escapeHtml(course.name || "")}</span>
-        <span class="course-row-sub">${week ? `Latest material: ${escapeHtml(week.week_label)}` : "No files yet"}</span>
+        <span class="course-row-sub">${week ? escapeHtml(t("course.latestMaterial", { week: learningUnitLabel(week.week_label, week.kind) })) : escapeHtml(t("course.noFilesYet"))}</span>
       </button>
       <div class="course-row-meta">
         <span>${escapeHtml(weeksWithMaterialLabel(course))}</span>
-        <span aria-hidden="true">→</span>
+        <details class="row-more">
+          <summary aria-label="${escapeHtml(t("courses.actions"))}">${escapeHtml(t("common.more"))}</summary>
+          <div>
+            <button class="button secondary" data-edit-course="${course.id}">${escapeHtml(t("courses.edit"))}</button>
+            <button class="button secondary" data-archive-course="${course.id}">${escapeHtml(t("common.archive"))}</button>
+            <button class="button secondary" data-remove-course="${course.id}">${escapeHtml(t("courses.remove"))}</button>
+          </div>
+        </details>
       </div>
     </article>
   `;
 }
 
 async function renderCourses() {
-  setTitle("Courses");
+  setTitle(t("nav.courses"));
   setPageActions(true);
-  const activeCourses = state.courses.filter((course) => Number(course.file_count || 0) > 0);
-  const inactive = state.courses.length - activeCourses.length;
+  const activeCourses = state.courses.filter((course) => !course.archived);
   const starred = await api("/api/starred");
+  const inbox = await api("/api/inbox");
+  state.selectedMaterialIds.clear();
   view.innerHTML = `
     <section class="library-hero">
       <div>
-        <h2>Courses and weeks</h2>
-        <p class="muted">Browse official files by course, week, material type, and exercise type.</p>
+        <h2>${escapeHtml(t("courses.heroTitle"))}</h2>
+        <p class="muted">${escapeHtml(t("courses.heroBody"))}</p>
       </div>
       <div class="library-actions">
-        <button class="button secondary" data-view="search">Search library</button>
-        <button class="button secondary" data-open-upload="1">Add Material</button>
-        <button class="button primary" data-run-scan="1">Scan Library</button>
+        <button class="button secondary" data-view="search">${escapeHtml(t("courses.searchLibrary"))}</button>
+        <button class="button secondary" data-import-course-folder="1">${escapeHtml(t("courses.importFolder"))}</button>
+        <button class="button primary" data-new-course="1">${escapeHtml(t("courses.new"))}</button>
+        <button class="button secondary" data-open-upload="1" data-course-id="0">${escapeHtml(t("courses.addInbox"))}</button>
+        <button class="button primary" data-run-scan="1">${escapeHtml(t("courses.scan"))}</button>
       </div>
-    </section>
-    ${inactive ? `<div class="notice compact">Hiding ${inactive} course${inactive === 1 ? "" : "s"} with no files from this library view.</div>` : ""}
-    <section class="section-block quiet-section">
-      <div class="section-head">
-        <h2>Courses</h2>
-        <span class="muted">${activeCourses.length} course${activeCourses.length === 1 ? "" : "s"}</span>
-      </div>
-      <div class="course-list-main">${activeCourses.length ? activeCourses.map(courseSummary).join("") : empty("No courses in this library yet.")}</div>
     </section>
     <section class="section-block quiet-section">
       <div class="section-head">
-        <h2>Starred Files</h2>
-        <button class="button secondary" data-view="search" data-show-starred="1">Find more</button>
+        <h2>${escapeHtml(t("nav.courses"))}</h2>
+        <span class="muted">${escapeHtml(t(activeCourses.length === 1 ? "course.count" : "course.countPlural", { count: activeCourses.length }))}</span>
       </div>
-      <div class="file-list">${starred.length ? starred.slice(0, 8).map(fileCard).join("") : empty("No starred files yet.")}</div>
+      <div class="course-list-main">${activeCourses.length ? activeCourses.map(courseSummary).join("") : empty(t("home.noCourses"))}</div>
     </section>
+    ${state.archivedCourses.length ? `
+      <details class="section-block quiet-section">
+        <summary><strong>${escapeHtml(t("courses.archived"))}</strong> <span class="muted">${state.archivedCourses.length}</span></summary>
+        <div class="course-list-main">
+          ${state.archivedCourses.map((course) => `
+            <article class="course-row">
+              <div class="course-row-main"><strong>${escapeHtml(courseLabel(course))}</strong><span>${escapeHtml(course.name || "")}</span></div>
+              <button class="button secondary" data-restore-course="${course.id}">${escapeHtml(t("common.restore"))}</button>
+            </article>
+          `).join("")}
+        </div>
+      </details>
+    ` : ""}
+    <section class="section-block quiet-section">
+      <div class="section-head">
+        <h2>${escapeHtml(t("courses.starred"))}</h2>
+        <button class="button secondary" data-view="search" data-show-starred="1">${escapeHtml(t("courses.findMore"))}</button>
+      </div>
+      <div class="file-list">${starred.length ? starred.slice(0, 8).map((file) => fileCard(file)).join("") : empty(t("courses.noStars"))}</div>
+    </section>
+    ${inbox.length ? `
+      <section class="section-block quiet-section">
+        <div class="section-head"><div><p class="eyebrow">${escapeHtml(t("courses.unclassified"))}</p><h2>${escapeHtml(t("courses.inbox"))}</h2></div><span class="muted">${inbox.length}</span></div>
+        <div class="toolbar">
+          <select id="inboxCourse" aria-label="${escapeHtml(t("aria.inboxCourse"))}">${state.courses.map((course) => `<option value="${course.id}">${escapeHtml(courseLabel(course))}</option>`).join("")}</select>
+          <select id="inboxWeek" aria-label="${escapeHtml(t("aria.inboxWeek"))}"></select>
+          <select id="inboxMaterialType">${state.materialTypes.map((type) => `<option value="${escapeHtml(type)}">${escapeHtml(materialTypeLabel(type))}</option>`).join("")}</select>
+          <button class="button secondary" id="inboxAssign" disabled>${escapeHtml(t("courses.assignSelected"))}</button>
+        </div>
+        <div class="file-list">${inbox.map((file) => fileCard(file, true)).join("")}</div>
+      </section>
+    ` : ""}
   `;
+  if (inbox.length) {
+    populateInboxWeeks();
+    $("#inboxCourse").addEventListener("change", populateInboxWeeks);
+    $("#inboxAssign").addEventListener("click", classifyInbox);
+  }
+}
+
+function populateInboxWeeks() {
+  const courseId = Number($("#inboxCourse")?.value || 0);
+  const select = $("#inboxWeek");
+  if (!select) return;
+  select.innerHTML = weeksFor(courseId).map((week) => `<option value="${week.id}">${escapeHtml(learningUnitLabel(week.week_label, week.kind))}</option>`).join("");
+}
+
+async function classifyInbox() {
+  const ids = [...state.selectedMaterialIds];
+  if (!ids.length) return;
+  await postJson("/api/materials/manage", {
+    action: "classify",
+    ids,
+    course_id: Number($("#inboxCourse").value),
+    week_id: Number($("#inboxWeek").value),
+    material_type: $("#inboxMaterialType").value,
+  });
+  await loadBase();
+  await renderCourses();
+  toast(t("toast.inboxAssigned"));
 }
 
 async function renderThisWeek() {
@@ -766,7 +909,7 @@ async function renderThisWeek() {
             </div>
             <button class="button secondary" data-course="${course.id}" data-week="${escapeHtml(week.week_label)}">Open Week</button>
           </div>
-          <div class="grid">${files.length ? files.slice(0, 6).map(fileCard).join("") : empty("No files ready for this week.")}</div>
+          <div class="grid">${files.length ? files.slice(0, 6).map((file) => fileCard(file)).join("") : empty("No files ready for this week.")}</div>
         </section>
       `;
     }),
@@ -776,9 +919,10 @@ async function renderThisWeek() {
 
 async function renderCourse(courseId) {
   const course = courseById(courseId);
+  state.view = "course";
   state.selectedCourseId = courseId;
   recordRoute({ view: "course", courseId });
-  setTitle(course?.name || courseLabel(course) || "Course");
+  setTitle(course?.name || courseLabel(course) || t("dialog.course"));
   const weeks = weeksFor(courseId);
   const files = await api(`/api/files?course_id=${courseId}`);
   const activeWeeks = weeks.filter((week) => week.has_materials);
@@ -789,73 +933,91 @@ async function renderCourse(courseId) {
         <p class="muted">${files.length} file${files.length === 1 ? "" : "s"} · ${activeWeeks.length} week${activeWeeks.length === 1 ? "" : "s"} with material</p>
       </div>
       <div class="course-actions">
-        <button class="button secondary" data-ask-course="${courseId}">Ask AI</button>
+        <button class="button secondary" data-add-week="${courseId}">${escapeHtml(t("courses.addWeek"))}</button>
+        <button class="button secondary" data-open-upload="1" data-course-id="${courseId}">${escapeHtml(t("courses.addMaterial"))}</button>
+        <button class="button secondary" data-edit-course="${courseId}">${escapeHtml(t("courses.editCourse"))}</button>
+        <button class="button secondary" data-ask-course="${courseId}">${escapeHtml(t("courses.askAi"))}</button>
       </div>
     </section>
     <section class="section-block quiet-section">
       <div class="section-head">
-        <h2>Weeks</h2>
+        <h2>${escapeHtml(t("courses.weeks"))}</h2>
         <span class="muted">${activeWeeks.length} week${activeWeeks.length === 1 ? "" : "s"} with material</span>
       </div>
       <div class="week-list">
         ${weeks.map((week) => `
-          <button class="week-row ${week.has_materials ? "has-materials" : "empty-week"}" data-week="${week.week_label}" data-course="${courseId}">
-            <strong>${escapeHtml(week.week_label)}</strong>
-            ${week.has_materials ? `<span class="muted">${week.file_count || 0} file${Number(week.file_count || 0) === 1 ? "" : "s"}</span>` : ""}
-          </button>
+          <article class="week-row ${week.has_materials ? "has-materials" : "empty-week"}">
+            <button class="week-row-main" data-week="${week.week_label}" data-course="${courseId}">
+              <strong>${escapeHtml(learningUnitLabel(week.week_label, week.kind))}</strong>
+              <span class="muted">${escapeHtml(t(Number(week.file_count || 0) === 1 ? "week.fileCount" : "week.fileCountPlural", { count: week.file_count || 0 }))}</span>
+            </button>
+            <details class="row-more">
+              <summary aria-label="${escapeHtml(t("week.actions"))}">${escapeHtml(t("common.more"))}</summary>
+              <div>
+                <button class="button secondary" data-edit-week="${week.id}" data-course-id="${courseId}">${escapeHtml(t("common.rename"))}</button>
+                ${week.has_materials ? "" : `<button class="button secondary" data-remove-week="${week.id}" data-course-id="${courseId}">${escapeHtml(t("common.remove"))}</button>`}
+              </div>
+            </details>
+          </article>
         `).join("")}
       </div>
     </section>
     <section class="section-block quiet-section">
-      <h2>All Course Files</h2>
-      <div class="file-list">${files.length ? files.slice(0, 24).map(fileCard).join("") : empty("No files ready for this course.")}</div>
+      <h2>${escapeHtml(t("courses.allFiles"))}</h2>
+      <div class="file-list">${files.length ? files.slice(0, 24).map((file) => fileCard(file)).join("") : empty(t("courses.noFiles"))}</div>
     </section>
   `;
 }
 
 async function renderWeek(courseId, weekLabel) {
   const course = courseById(courseId);
+  state.view = "week";
   state.selectedCourseId = courseId;
   state.selectedWeek = weekLabel;
   recordRoute({ view: "week", courseId, week: weekLabel });
   state.weekFiles = await api(`/api/files?course_id=${courseId}&week=${encodeURIComponent(weekLabel)}`);
   state.weekFilter = "all";
   state.weekSort = "section";
-  setTitle(`${courseLabel(course) || "Course"} · ${weekLabel}`, "Week workspace");
+  state.selectedMaterialIds.clear();
+  setTitle(`${courseLabel(course) || t("dialog.course")} · ${learningUnitLabel(weekLabel)}`, t("week.workspace"));
   view.innerHTML = `
     <section class="week-header">
       <div class="section-head">
         <div>
           <p class="eyebrow">${escapeHtml(course?.name || "")}</p>
-          <h2>${escapeHtml(weekLabel)}</h2>
+          <h2>${escapeHtml(learningUnitLabel(weekLabel))}</h2>
         </div>
         <div class="top-actions">
-          <button class="button secondary" id="weekPreviewGpt">Prepare with AI</button>
-          <button class="button secondary" data-ask-week="${courseId}" data-week-label="${escapeHtml(weekLabel)}">Ask AI</button>
-          <button class="button secondary" data-course="${courseId}">Back to Course</button>
+          <button class="button secondary" id="weekPreviewGpt">${escapeHtml(t("week.prepareAi"))}</button>
+          <button class="button secondary" data-open-upload="1" data-course-id="${courseId}" data-week-label="${escapeHtml(weekLabel)}">${escapeHtml(t("courses.addMaterial"))}</button>
+          <button class="button secondary" data-ask-week="${courseId}" data-week-label="${escapeHtml(weekLabel)}">${escapeHtml(t("courses.askAi"))}</button>
+          <button class="button secondary" data-course="${courseId}">${escapeHtml(t("week.backCourse"))}</button>
         </div>
       </div>
       <div class="toolbar">
         <select id="weekFilter">
-          <option value="all">All files</option>
-          <option value="01 Course Materials">Course materials</option>
-          <option value="02 Exercises">Exercises</option>
-          <option value="Lecture">Lecture</option>
-          <option value="Tutorial">Tutorial</option>
-          <option value="Workshop">Workshop</option>
-          <option value="Lab">Lab</option>
-          <option value="Quiz">Quiz</option>
-          <option value="Practice">Practice</option>
-          <option value="Revision">Revision</option>
-          <option value="official">Official only</option>
-          <option value="user">My work / AI</option>
+          <option value="all">${escapeHtml(t("week.allFiles"))}</option>
+          <option value="01 Course Materials">${escapeHtml(t("week.courseMaterials"))}</option>
+          <option value="02 Exercises">${escapeHtml(t("week.exercises"))}</option>
+          ${["lecture", "tutorial", "workshop", "lab", "quiz"].map((type) => `<option value="${escapeHtml(materialTypeValue(type))}">${escapeHtml(materialTypeLabel(type))}</option>`).join("")}
+          <option value="Practice">${escapeHtml(t("study.practice"))}</option>
+          <option value="Revision">${escapeHtml(t("home.review"))}</option>
+          <option value="official">${escapeHtml(t("week.officialOnly"))}</option>
+          <option value="user">${escapeHtml(t("week.myWork"))}</option>
         </select>
         <select id="weekSort">
-          <option value="section">Section</option>
-          <option value="name">Name</option>
-          <option value="type">Type</option>
-          <option value="size">Size</option>
+          <option value="section">${escapeHtml(t("week.section"))}</option>
+          <option value="name">${escapeHtml(t("week.name"))}</option>
+          <option value="type">${escapeHtml(t("week.type"))}</option>
+          <option value="size">${escapeHtml(t("week.size"))}</option>
         </select>
+        <span class="toolbar-spacer"></span>
+        <select id="batchCourse" aria-label="${escapeHtml(t("aria.batchCourse"))}">${state.courses.map((item) => `<option value="${item.id}" ${Number(item.id) === Number(courseId) ? "selected" : ""}>${escapeHtml(courseLabel(item))}</option>`).join("")}</select>
+        <select id="batchWeek" aria-label="${escapeHtml(t("aria.batchWeek"))}"></select>
+        <select id="batchMaterialType" aria-label="${escapeHtml(t("dialog.materialType"))}">${state.materialTypes.map((type) => `<option value="${escapeHtml(type)}">${escapeHtml(materialTypeLabel(type))}</option>`).join("")}</select>
+        <button class="button secondary" id="batchClassify" disabled>${escapeHtml(t("week.applySelected"))}</button>
+        <button class="button secondary" id="batchStar" disabled>${escapeHtml(t("week.starSelected"))}</button>
+        <button class="button secondary" id="batchRemove" disabled>${escapeHtml(t("week.removeSelected"))}</button>
       </div>
     </section>
     <section id="weekBridgePreview" class="notice" hidden></section>
@@ -870,6 +1032,11 @@ async function renderWeek(courseId, weekLabel) {
     renderWeekFiles();
   });
   $("#weekPreviewGpt").addEventListener("click", previewWeekWithGpt);
+  populateBatchWeeks();
+  $("#batchCourse").addEventListener("change", populateBatchWeeks);
+  $("#batchClassify").addEventListener("click", () => batchManageMaterials("classify"));
+  $("#batchStar").addEventListener("click", () => batchManageMaterials("star"));
+  $("#batchRemove").addEventListener("click", () => batchManageMaterials("remove"));
   renderWeekFiles();
 }
 
@@ -888,15 +1055,15 @@ function renderWeekFiles() {
   });
 
   if (!files.length) {
-    $("#weekFiles").innerHTML = empty("No files match this filter.");
+    $("#weekFiles").innerHTML = empty(t("week.noMatch"));
     return;
   }
   const isExercise = (file) => file.section === "02 Exercises" || /exercise|tutorial|workshop|lab|quiz|practice/i.test(`${file.section || ""} ${file.category || ""} ${file.exercise_type || ""}`);
   const isPersonal = (file) => /my_work|review/i.test(`${file.section || ""}`);
   const groups = [
-    ["Course Materials", files.filter((file) => !isPersonal(file) && (file.section === "01 Course Materials" || !isExercise(file)))],
-    ["Exercises", files.filter((file) => !isPersonal(file) && isExercise(file))],
-    ["My Work / Review", files.filter(isPersonal)],
+    [t("week.courseMaterialsHeading"), files.filter((file) => !isPersonal(file) && (file.section === "01 Course Materials" || !isExercise(file)))],
+    [t("week.exercisesHeading"), files.filter((file) => !isPersonal(file) && isExercise(file))],
+    [t("week.myWorkHeading"), files.filter(isPersonal)],
   ];
   $("#weekFiles").innerHTML = groups
     .filter(([, rows]) => rows.length)
@@ -904,14 +1071,21 @@ function renderWeekFiles() {
     .join("");
 }
 
+function populateBatchWeeks() {
+  const courseId = Number($("#batchCourse")?.value || state.selectedCourseId || 0);
+  const select = $("#batchWeek");
+  if (!select) return;
+  select.innerHTML = weeksFor(courseId).map((week) => `<option value="${week.id}" ${week.week_label === state.selectedWeek ? "selected" : ""}>${escapeHtml(learningUnitLabel(week.week_label, week.kind))}</option>`).join("");
+}
+
 function fileGroup(title, rows) {
   return `
     <section class="section-block quiet-section">
       <div class="section-head">
         <h2>${escapeHtml(title)}</h2>
-        <span class="muted">${rows.length} file${rows.length === 1 ? "" : "s"}</span>
+        <span class="muted">${escapeHtml(t(rows.length === 1 ? "week.fileCount" : "week.fileCountPlural", { count: rows.length }))}</span>
       </div>
-      <div class="file-list">${rows.map(fileCard).join("")}</div>
+      <div class="file-list">${rows.map((file) => fileCard(file, true)).join("")}</div>
     </section>
   `;
 }
@@ -925,29 +1099,26 @@ function countBy(items, fn) {
 }
 
 async function renderSearch() {
-  setTitle("Search");
+  setTitle(t("nav.search"));
   view.innerHTML = `
     <section class="search-hero">
       <div class="searchbar primary-search">
-        <input id="searchInput" placeholder="Search filenames or readable text" autofocus />
-        <button class="button secondary" id="toggleSearchFilters">${state.searchFiltersOpen ? "Hide filters" : "Filters"}</button>
+        <input id="searchInput" placeholder="${escapeHtml(t("search.placeholder"))}" autofocus />
+        <button class="button secondary" id="toggleSearchFilters">${escapeHtml(t(state.searchFiltersOpen ? "common.hideFilters" : "common.filters"))}</button>
       </div>
       <div class="search-filters ${state.searchFiltersOpen ? "open" : ""}">
         <select id="searchCourse">
-          <option value="">All courses</option>
+          <option value="">${escapeHtml(t("search.allCourses"))}</option>
           ${state.courses.map((course) => `<option value="${course.id}">${escapeHtml(courseLabel(course))}</option>`).join("")}
         </select>
         <select id="searchScope">
-          <option value="">All material</option>
-          <option value="01 Course Materials">Course materials</option>
-          <option value="02 Exercises">Exercises</option>
-          <option>Lecture</option>
-          <option>Tutorial</option>
-          <option>Workshop</option>
-          <option>Lab</option>
-          <option>Quiz</option>
+          <option value="">${escapeHtml(t("search.allMaterial"))}</option>
+          <option value="01 Course Materials">${escapeHtml(t("week.courseMaterials"))}</option>
+          <option value="02 Exercises">${escapeHtml(t("week.exercises"))}</option>
+          ${["lecture", "tutorial", "workshop", "lab", "quiz"].map((type) => `<option value="${escapeHtml(materialTypeValue(type))}">${escapeHtml(materialTypeLabel(type))}</option>`).join("")}
         </select>
-        <button class="button ghost" id="clearSearchFilters">Clear</button>
+        <label class="inline-check"><input id="searchArchived" type="checkbox" /> ${escapeHtml(t("search.includeArchived"))}</label>
+        <button class="button ghost" id="clearSearchFilters">${escapeHtml(t("common.clear"))}</button>
       </div>
     </section>
     <section id="searchResults" class="file-list search-results"></section>
@@ -955,6 +1126,7 @@ async function renderSearch() {
   $("#searchInput").addEventListener("input", debounce(runSearch, 220));
   $("#searchCourse").addEventListener("change", runSearch);
   $("#searchScope").addEventListener("change", runSearch);
+  $("#searchArchived").addEventListener("change", runSearch);
   $("#toggleSearchFilters").addEventListener("click", () => {
     state.searchFiltersOpen = !state.searchFiltersOpen;
     renderSearch();
@@ -962,6 +1134,7 @@ async function renderSearch() {
   $("#clearSearchFilters").addEventListener("click", () => {
     $("#searchCourse").value = "";
     $("#searchScope").value = "";
+    $("#searchArchived").checked = false;
     runSearch();
   });
   await runSearch();
@@ -971,16 +1144,17 @@ async function runSearch() {
   const q = $("#searchInput")?.value || "";
   const course = $("#searchCourse")?.value || "";
   const scope = $("#searchScope")?.value || "";
-  if (!q.trim() && !course && !scope) {
-    $("#searchResults").innerHTML = empty("Search for a topic, filename, tutorial, lab, or phrase from readable text.");
+  const archived = $("#searchArchived")?.checked ? "1" : "0";
+  if (!q.trim() && !course && !scope && archived === "0") {
+    $("#searchResults").innerHTML = empty(t("search.help"));
     return;
   }
-  const results = await api(`/api/search?q=${encodeURIComponent(q)}&course_id=${course}&scope=${encodeURIComponent(scope)}`);
-  $("#searchResults").innerHTML = results.length ? results.map(fileCard).join("") : empty("No matching files.");
+  const results = await api(`/api/search?q=${encodeURIComponent(q)}&course_id=${course}&scope=${encodeURIComponent(scope)}&include_archived=${archived}`);
+  $("#searchResults").innerHTML = results.length ? results.map((file) => fileCard(file)).join("") : empty(t("search.noMatch"));
 }
 
 async function renderAskGpt() {
-  setTitle("AI");
+  setTitle(t("nav.ai"));
   if (!state.ask.context.course && state.selectedCourseId) {
     setAskContext(state.selectedWeek ? currentWeekContext(state.selectedCourseId, state.selectedWeek) : currentCourseContext(state.selectedCourseId));
   }
@@ -993,24 +1167,24 @@ async function renderAskGpt() {
     <section class="ask-shell ${state.ask.mode === "focus" ? "focus" : ""}">
       <div class="ask-head">
         <div>
-          <p class="eyebrow">Course learning assistant</p>
+          <p class="eyebrow">${escapeHtml(t("ai.eyebrow"))}</p>
           <div class="ask-title-row">
-            <h2>${escapeHtml(state.ask.conversationTitle || "AI Study Workspace")}</h2>
-            ${state.ask.conversationId ? `<span class="chip">Saved locally</span>` : `<span class="chip">New chat</span>`}
+            <h2>${escapeHtml(state.ask.conversationTitle || t("ai.workspace"))}</h2>
+            ${state.ask.conversationId ? `<span class="chip">${escapeHtml(t("ai.savedLocally"))}</span>` : `<span class="chip">${escapeHtml(t("ai.newChatBadge"))}</span>`}
           </div>
         </div>
         <div class="ask-tools">
-          <button class="button secondary" id="historyButton">History</button>
-          <button class="button secondary" id="newAskChat">New Chat</button>
-          <button class="button secondary" id="toggleFocusMode">${state.ask.mode === "focus" ? "Exit focus" : "Open full AI workspace"}</button>
+          <button class="button secondary" id="historyButton">${escapeHtml(t("ai.history"))}</button>
+          <button class="button secondary" id="newAskChat">${escapeHtml(t("ai.newChat"))}</button>
+          <button class="button secondary" id="toggleFocusMode">${escapeHtml(t(state.ask.mode === "focus" ? "ai.exitFocus" : "ai.openFull"))}</button>
         </div>
       </div>
       <div class="ask-context">
         <div>
-          <h3>Answering from</h3>
+          <h3>${escapeHtml(t("ai.answeringFrom"))}</h3>
           <div class="context-lines">${askContextLines().map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>
         </div>
-        <label>Scope
+        <label>${escapeHtml(t("ai.scope"))}
           <select id="askScope">
             ${scopes.map((scope) => `<option value="${scope.value}" ${scope.value === state.ask.scope ? "selected" : ""} ${scope.enabled ? "" : "disabled"}>${scopeLabel(scope.value)}</option>`).join("")}
           </select>
@@ -1022,10 +1196,10 @@ async function renderAskGpt() {
       <div class="conversation" id="askConversation">${renderAskMessages()}</div>
       <div class="ask-compose">
         <div class="composer-stack">
-          <div class="composer-context">Answering from: ${escapeHtml(scopeLabel())}${state.ask.context.file ? ` · ${escapeHtml(state.ask.context.file)}` : ""}</div>
-          <textarea id="askPagePrompt" placeholder="Ask about these materials...">${escapeHtml(state.ask.draft)}</textarea>
+          <div class="composer-context">${escapeHtml(t("ai.answeringFrom"))}: ${escapeHtml(scopeLabel())}${state.ask.context.file ? ` · ${escapeHtml(state.ask.context.file)}` : ""}</div>
+          <textarea id="askPagePrompt" placeholder="${escapeHtml(t("ai.placeholder"))}">${escapeHtml(state.ask.draft)}</textarea>
         </div>
-        <button class="button primary" id="sendAskPage">Send</button>
+        <button class="button primary" id="sendAskPage">${escapeHtml(t("common.send"))}</button>
       </div>
     </section>
   `;
@@ -1064,20 +1238,20 @@ async function renderAskGpt() {
 
 function renderAskMessages() {
   if (!state.ask.messages.length) {
-    return `<div class="notice">Ask about selected course materials. AI answers should cite sources.</div>`;
+    return `<div class="notice">${escapeHtml(t("ai.empty"))}</div>`;
   }
   return state.ask.messages
     .map((message) => {
       if (message.role === "system") return `<div class="context-change">${escapeHtml(message.text)}</div>`;
-      const sources = message.sources?.length ? `<div class="source-list"><h3>Sources</h3>${message.sources.map(sourceCard).join("")}</div>` : "";
-      const badge = message.role === "assistant" ? `<span class="chip">AI explanation</span>` : `<span class="chip">My prompt</span>`;
+      const sources = message.sources?.length ? `<div class="source-list"><h3>${escapeHtml(t("common.sources"))}</h3>${message.sources.map(sourceCard).join("")}</div>` : "";
+      const badge = message.role === "assistant" ? `<span class="chip">${escapeHtml(t("ai.explanation"))}</span>` : `<span class="chip">${escapeHtml(t("ai.myPrompt"))}</span>`;
       return `
         <article class="chat-message ${message.role}">
           <div class="message-head">${badge}${message.status ? `<span class="chip">${escapeHtml(message.status)}</span>` : ""}</div>
       <div class="message-body">${renderMarkdown(message.text)}</div>
           ${
             message.role === "assistant"
-              ? `<div class="message-actions"><button class="tiny-button" data-copy-message="${escapeHtml(message.text)}">Copy</button><button class="tiny-button" data-retry-last="1">Retry</button>${sources ? `<button class="tiny-button" data-show-sources="1">Sources</button>` : ""}</div>`
+              ? `<div class="message-actions"><button class="tiny-button" data-copy-message="${escapeHtml(message.text)}">${escapeHtml(t("common.copy"))}</button><button class="tiny-button" data-retry-last="1">${escapeHtml(t("common.retry"))}</button>${sources ? `<button class="tiny-button" data-show-sources="1">${escapeHtml(t("common.sources"))}</button>` : ""}</div>`
               : ""
           }
           ${sources}
@@ -1091,7 +1265,7 @@ function sourceCard(source) {
   const loc = source.page_start ? `p.${source.page_start}` : source.slide_start ? `Slide ${source.slide_start}` : source.source_location || "";
   return `
     <button class="source-card" data-preview="${source.source_file_id || source.file_id}" data-page="${source.page_start || ""}">
-      <span class="chip official">Official course source</span>
+      <span class="chip official">${escapeHtml(t("ai.officialSource"))}</span>
       <strong>${escapeHtml(courseLabel(source))}</strong>
       <span>${escapeHtml(source.week_label || "")}</span>
       <span>${escapeHtml(source.filename || "")}</span>
@@ -1115,26 +1289,26 @@ function renderHistoryList() {
     .map(
       (label) => `
         <section class="history-group">
-          <h3>${label}</h3>
+          <h3>${escapeHtml(t({ Today: "ai.today", Yesterday: "ai.yesterday", "Previous 7 days": "ai.previous7", Older: "ai.older" }[label]))}</h3>
           ${groups[label].map(historyItem).join("")}
         </section>
       `,
     )
     .join("");
-  $("#historyList").innerHTML = html || empty("No saved AI conversations yet.");
+  $("#historyList").innerHTML = html || empty(t("ai.noConversations"));
 }
 
 function historyItem(row) {
   const active = Number(row.id) === Number(state.ask.conversationId) ? "active" : "";
-  const source = row.source_available === false ? "Source unavailable" : [courseLabel(row), row.week_label, row.filename].filter(Boolean).join(" · ");
+  const source = row.source_available === false ? t("ai.sourceUnavailable") : [courseLabel(row), learningUnitLabel(row.week_label), row.filename].filter(Boolean).join(" · ");
   return `
     <article class="history-item ${active}">
       <button class="button secondary" data-open-conversation="${row.id}">${escapeHtml(row.title)}</button>
-      <div class="history-meta">${escapeHtml(source || "General study chat")} · ${row.message_count || 0} messages</div>
+      <div class="history-meta">${escapeHtml(source || t("ai.generalChat"))} · ${row.message_count || 0}</div>
       <div class="history-actions">
-        <button class="tiny-button" data-rename-conversation="${row.id}">Rename</button>
-        <button class="tiny-button" data-duplicate-conversation="${row.id}">Duplicate</button>
-        <button class="tiny-button" data-delete-conversation="${row.id}">Delete</button>
+        <button class="tiny-button" data-rename-conversation="${row.id}">${escapeHtml(t("common.rename"))}</button>
+        <button class="tiny-button" data-duplicate-conversation="${row.id}">${escapeHtml(t("common.duplicate"))}</button>
+        <button class="tiny-button" data-delete-conversation="${row.id}">${escapeHtml(t("common.delete"))}</button>
       </div>
     </article>
   `;
@@ -1145,7 +1319,7 @@ async function sendAskPagePrompt() {
   if (!prompt) return;
   const context = contextForScope();
   if (!context.course) {
-    state.ask.messages.push({ role: "assistant", text: "Select a course, week, file, or teacher question before asking AI.", status: "no_context", sources: [] });
+    state.ask.messages.push({ role: "assistant", text: t("ai.selectContext"), status: "no_context", sources: [] });
     renderAskGpt();
     return;
   }
@@ -1153,12 +1327,12 @@ async function sendAskPagePrompt() {
   if (qn && state.ask.scope === "question") context.questionNumber = qn;
   context.scope = state.ask.scope;
   state.ask.messages.push({ role: "user", text: prompt, context: { ...context } });
-  state.ask.messages.push({ role: "system", text: "Searching your materials..." });
+  state.ask.messages.push({ role: "system", text: t("ai.searching") });
   $("#askConversation").innerHTML = renderAskMessages();
   $("#sendAskPage").disabled = true;
   $("#askPagePrompt").disabled = true;
   try {
-    state.ask.messages[state.ask.messages.length - 1].text = "Preparing sources… Asking OpenAI…";
+    state.ask.messages[state.ask.messages.length - 1].text = t("ai.preparing");
     $("#askConversation").innerHTML = renderAskMessages();
     const result = await api("/api/ask", {
       method: "POST",
@@ -1198,17 +1372,17 @@ function debounce(fn, wait) {
 async function renderStarred() {
   setTitle("Starred", "Saved study material");
   const rows = await api("/api/starred");
-  view.innerHTML = `<section class="section-block quiet-section"><div class="file-list">${rows.length ? rows.map(fileCard).join("") : empty("No starred files yet.")}</div></section>`;
+  view.innerHTML = `<section class="section-block quiet-section"><div class="file-list">${rows.length ? rows.map((file) => fileCard(file)).join("") : empty("No starred files yet.")}</div></section>`;
 }
 
 function studyTabs() {
   const tabs = [
-    ["practice", "Practice"],
-    ["wrong", "Wrong Questions"],
-    ["exam", "Exam Review"],
+    ["practice", t("study.practice")],
+    ["wrong", t("study.wrong")],
+    ["exam", t("study.exam")],
   ];
   return `
-    <div class="segmented-tabs" role="tablist" aria-label="Study mode">
+    <div class="segmented-tabs" role="tablist" aria-label="${escapeHtml(t("study.mode"))}">
       ${tabs.map(([mode, label]) => `<button class="${state.studyMode === mode ? "active" : ""}" data-study-mode="${mode}" role="tab" aria-selected="${state.studyMode === mode ? "true" : "false"}">${label}</button>`).join("")}
     </div>
   `;
@@ -1216,7 +1390,7 @@ function studyTabs() {
 
 async function renderStudy(mode = state.studyMode) {
   state.studyMode = mode;
-  setTitle("Study", "Practice, wrong questions, and review");
+  setTitle(t("nav.study"), t("study.eyebrow"));
   let body = "";
   if (mode === "wrong") body = await studyWrongPanel();
   else if (mode === "exam") body = studyExamPanel();
@@ -1240,28 +1414,25 @@ function studyPracticePanel() {
     <section class="section-block quiet-section">
       <div class="section-head">
         <div>
-          <p class="eyebrow">Teacher-provided only</p>
-          <h2>Practice</h2>
+          <p class="eyebrow">${escapeHtml(t("study.teacherOnly"))}</p>
+          <h2>${escapeHtml(t("study.practice"))}</h2>
         </div>
-        <span class="muted">No generated practice questions</span>
+        <span class="muted">${escapeHtml(t("study.noGenerated"))}</span>
       </div>
       <div class="toolbar practice-toolbar">
         <select id="practiceCourse">
-          <option value="">All courses</option>
+          <option value="">${escapeHtml(t("search.allCourses"))}</option>
           ${state.courses.map((course) => `<option value="${escapeHtml(course.code)}">${escapeHtml(courseLabel(course))}</option>`).join("")}
         </select>
         <select id="practiceWeek">
-          <option value="">All weeks</option>
-          ${Array.from({ length: 12 }, (_, i) => `<option>Week ${String(i + 1).padStart(2, "0")}</option>`).join("")}
+          <option value="">${escapeHtml(t("study.allWeeks"))}</option>
+          ${[...new Set(state.courses.flatMap((course) => weeksFor(course.id).map((week) => week.week_label)))].sort().map((label) => `<option value="${escapeHtml(label)}">${escapeHtml(learningUnitLabel(label))}</option>`).join("")}
         </select>
         <select id="practiceType">
-          <option value="">All types</option>
-          <option>Tutorial</option>
-          <option>Workshop</option>
-          <option>Lab</option>
-          <option>Quiz</option>
-          <option>Practice</option>
-          <option>Revision</option>
+          <option value="">${escapeHtml(t("study.allTypes"))}</option>
+          ${["tutorial", "workshop", "lab", "quiz"].map((type) => `<option value="${escapeHtml(materialTypeValue(type))}">${escapeHtml(materialTypeLabel(type))}</option>`).join("")}
+          <option value="Practice">${escapeHtml(t("study.practice"))}</option>
+          <option value="Revision">${escapeHtml(t("home.review"))}</option>
         </select>
       </div>
     </section>
@@ -1275,11 +1446,11 @@ async function studyWrongPanel() {
     <section class="section-block quiet-section">
       <div class="section-head">
         <div>
-          <p class="eyebrow">User records</p>
-          <h2>Wrong Questions</h2>
+          <p class="eyebrow">${escapeHtml(t("study.userRecords"))}</p>
+          <h2>${escapeHtml(t("study.wrong"))}</h2>
         </div>
       </div>
-      ${rows.length ? `<div class="study-list">${rows.map(wrongRow).join("")}</div>` : empty("No wrong-question records yet.")}
+      ${rows.length ? `<div class="study-list">${rows.map(wrongRow).join("")}</div>` : empty(t("home.noWrong"))}
     </section>
   `;
 }
@@ -1329,31 +1500,62 @@ function wrongRow(row) {
   return `
     <article class="file-card">
       <div class="file-name">${escapeHtml(row.course_id || "")} ${escapeHtml(row.week_label || "")}</div>
-      <p class="muted">${escapeHtml(row.question_ref || "Question reference")}</p>
+      <p class="muted">${escapeHtml(row.question_ref || t("study.questionReference"))}</p>
       <div class="chips"><span class="chip">${escapeHtml(row.mastery || "new")}</span></div>
     </article>
   `;
 }
 
 async function renderSettings() {
-  setTitle("Settings", "Local configuration and health");
+  setTitle(t("nav.settings"), t("settings.eyebrow"));
   setPageActions(true);
   state.health = await api("/api/health");
   const ai = await api("/api/ai-status");
-  const askReady = ai.openAI === "Configured" && ai.vectorStore === "Configured" ? "Ready" : "Not ready";
+  const allTerms = await api("/api/terms?include_archived=1");
+  const askReady = ai.openAI === "Configured" && ai.vectorStore === "Configured" ? t("status.ready") : t("status.notReady");
   view.innerHTML = `
     <section class="settings-layout">
       <section class="section-block quiet-section">
         <div class="section-head">
+          <div><p class="eyebrow">${escapeHtml(t("settings.general"))}</p><h2>${escapeHtml(t("settings.language"))}</h2></div>
+        </div>
+        <label class="settings-field">${escapeHtml(t("settings.language"))}
+          <select id="languagePreference">
+            <option value="system" ${i18n.preference() === "system" ? "selected" : ""}>${escapeHtml(t("settings.systemDefault"))}</option>
+            <option value="en" ${i18n.preference() === "en" ? "selected" : ""}>${escapeHtml(t("settings.english"))}</option>
+            <option value="zh-CN" ${i18n.preference() === "zh-CN" ? "selected" : ""}>${escapeHtml(t("settings.simplifiedChinese"))}</option>
+          </select>
+        </label>
+        <p class="muted">${escapeHtml(t("settings.languageHelp"))}</p>
+      </section>
+      <section class="section-block quiet-section">
+        <div class="section-head">
+          <div><p class="eyebrow">${escapeHtml(t("settings.organization"))}</p><h2>${escapeHtml(t("settings.terms"))}</h2></div>
+          <button class="button secondary" data-new-term="1">${escapeHtml(t("settings.newTerm"))}</button>
+        </div>
+        <div class="settings-list">
+          ${allTerms.map((term) => `
+            <div>
+              <span>${escapeHtml(term.stable_id === "term_imported" ? t("settings.importedCourses") : term.name)}${term.archived ? ` (${escapeHtml(t("common.archived"))})` : ""}</span>
+              <span class="settings-inline-actions">
+                <button class="button secondary" data-rename-term="${term.id}" data-term-name="${escapeHtml(term.name)}">${escapeHtml(t("common.rename"))}</button>
+                ${term.stable_id === "term_imported" ? "" : `<button class="button secondary" data-${term.archived ? "restore" : "archive"}-term="${term.id}">${escapeHtml(t(term.archived ? "common.restore" : "common.archive"))}</button>`}
+              </span>
+            </div>
+          `).join("")}
+        </div>
+      </section>
+      <section class="section-block quiet-section">
+        <div class="section-head">
           <div>
-            <p class="eyebrow">General</p>
-            <h2>Library actions</h2>
+            <p class="eyebrow">${escapeHtml(t("settings.general"))}</p>
+            <h2>${escapeHtml(t("settings.libraryActions"))}</h2>
           </div>
         </div>
         <div class="settings-actions">
-          <button class="button primary" data-run-scan="1">Scan Library</button>
-          <button class="button secondary" data-open-upload="1">Add Material</button>
-          <button class="button secondary" data-view="courses">Browse Courses</button>
+          <button class="button primary" data-run-scan="1">${escapeHtml(t("courses.scan"))}</button>
+          <button class="button secondary" data-open-upload="1" data-course-id="0">${escapeHtml(t("courses.addInbox"))}</button>
+          <button class="button secondary" data-view="courses">${escapeHtml(t("home.browseCourses"))}</button>
         </div>
         ${librarySetupForm()}
         ${recoveryCards("all", true)}
@@ -1361,67 +1563,76 @@ async function renderSettings() {
       <section class="section-block quiet-section">
         <div class="section-head">
           <div>
-            <p class="eyebrow">Library Health</p>
-            <h2>Index status</h2>
+            <p class="eyebrow">${escapeHtml(t("settings.libraryHealth"))}</p>
+            <h2>${escapeHtml(t("settings.indexStatus"))}</h2>
           </div>
         </div>
         <div class="settings-list">
-          <div><span>Study Library</span><strong>${state.health.studyLibraryConnected ? "Connected" : "Missing"}</strong></div>
-          <div><span>Files in library</span><strong>${escapeHtml(state.health.filesIndexed || 0)}</strong></div>
-          <div><span>PDF reading support</span><strong>${escapeHtml(state.health.pdfTextExtraction || "Unknown")}</strong></div>
-          <div><span>Office visual previews</span><strong>${escapeHtml(state.health.officeVisualPreview || "Unknown")}</strong></div>
-          <div><span>Suspicious Files</span><strong>${escapeHtml(state.health.suspiciousFiles || 0)}</strong></div>
+          <div><span>${escapeHtml(t("settings.studyLibrary"))}</span><strong>${escapeHtml(t(state.health.studyLibraryConnected ? "status.connected" : "status.missing"))}</strong></div>
+          <div><span>${escapeHtml(t("settings.filesLibrary"))}</span><strong>${escapeHtml(state.health.filesIndexed || 0)}</strong></div>
+          <div><span>${escapeHtml(t("settings.pdfSupport"))}</span><strong>${escapeHtml(t(`status.${String(state.health.pdfTextExtraction || "unknown").replace(/^./, (c) => c.toLowerCase())}`))}</strong></div>
+          <div><span>${escapeHtml(t("settings.officePreview"))}</span><strong>${escapeHtml(t(`status.${String(state.health.officeVisualPreview || "unknown").replace(/^./, (c) => c.toLowerCase())}`))}</strong></div>
+          <div><span>${escapeHtml(t("settings.suspicious"))}</span><strong>${escapeHtml(state.health.suspiciousFiles || 0)}</strong></div>
         </div>
-        ${(state.health.extractionWarnings || []).length ? `<div class="notice">${state.health.extractionWarnings.map(escapeHtml).join("<br>")}</div>` : ""}
-        ${state.health.officePreviewWarning ? `<div class="notice compact">${escapeHtml(state.health.officePreviewWarning)}</div>` : ""}
       </section>
       <section class="section-block quiet-section">
         <div class="section-head">
           <div>
             <p class="eyebrow">AI</p>
-            <h2>Ask AI</h2>
+            <h2>${escapeHtml(t("settings.askAi"))}</h2>
           </div>
         </div>
         <div class="settings-list">
-          <div><span>OpenAI</span><strong>${escapeHtml(ai.openAI)}</strong></div>
-          <div><span>AI file search</span><strong>${escapeHtml(ai.vectorStore)}</strong></div>
-          <div><span>AI answers</span><strong>${escapeHtml(askReady)}</strong></div>
-          <div><span>Last AI Sync</span><strong>${escapeHtml(ai.lastAISync || "Never")}</strong></div>
-          <div><span>Files ready for AI</span><strong>${escapeHtml(ai.indexedFiles || 0)}</strong></div>
-          <div><span>Files synced for AI search</span><strong>${escapeHtml(ai.vectorIndexedFiles || 0)}</strong></div>
+          <div><span>OpenAI</span><strong>${escapeHtml(statusLabel(ai.openAI))}</strong></div>
+          <div><span>${escapeHtml(t("settings.aiFileSearch"))}</span><strong>${escapeHtml(statusLabel(ai.vectorStore))}</strong></div>
+          <div><span>${escapeHtml(t("settings.aiAnswers"))}</span><strong>${escapeHtml(askReady)}</strong></div>
+          <div><span>${escapeHtml(t("settings.lastAiSync"))}</span><strong>${escapeHtml(ai.lastAISync || t("common.never"))}</strong></div>
+          <div><span>${escapeHtml(t("settings.filesAi"))}</span><strong>${escapeHtml(ai.indexedFiles || 0)}</strong></div>
+          <div><span>${escapeHtml(t("settings.filesAiSearch"))}</span><strong>${escapeHtml(ai.vectorIndexedFiles || 0)}</strong></div>
         </div>
       </section>
       <section class="section-block quiet-section">
         <div class="section-head">
           <div>
-            <p class="eyebrow">Privacy</p>
-            <h2>Local-first boundaries</h2>
+            <p class="eyebrow">${escapeHtml(t("settings.privacy"))}</p>
+            <h2>${escapeHtml(t("settings.boundaries"))}</h2>
           </div>
         </div>
         <div class="settings-list">
-          <div><span>Server Bind</span><strong>127.0.0.1</strong></div>
-          <div><span>Telemetry</span><strong>Off by default</strong></div>
-          <div><span>Original Files</span><strong>Local source of truth</strong></div>
-          <div><span>AI History</span><strong>Stored locally</strong></div>
+          <div><span>${escapeHtml(t("settings.serverBind"))}</span><strong>127.0.0.1</strong></div>
+          <div><span>${escapeHtml(t("settings.telemetry"))}</span><strong>${escapeHtml(t("status.off"))}</strong></div>
+          <div><span>${escapeHtml(t("settings.originalFiles"))}</span><strong>${escapeHtml(t("settings.localTruth"))}</strong></div>
+          <div><span>${escapeHtml(t("settings.aiHistory"))}</span><strong>${escapeHtml(t("settings.storedLocally"))}</strong></div>
         </div>
-        <button class="button secondary" data-open-history="1">Manage AI History</button>
+        <button class="button secondary" data-open-history="1">${escapeHtml(t("settings.manageAiHistory"))}</button>
+      </section>
+      <section class="section-block quiet-section">
+        <div class="section-head">
+          <div><p class="eyebrow">${escapeHtml(t("settings.localData"))}</p><h2>${escapeHtml(t("settings.storageControls"))}</h2></div>
+        </div>
+        <div class="settings-actions">
+          <button class="button secondary" data-clear-cache="1">${escapeHtml(t("settings.clearCache"))}</button>
+          <button class="button secondary" data-reset-studyhub="1">${escapeHtml(t("settings.resetMetadata"))}</button>
+        </div>
+        <p class="muted">${escapeHtml(t("settings.dataSafety"))}</p>
       </section>
       <section class="section-block quiet-section">
         <div class="section-head">
           <div>
-            <p class="eyebrow">Advanced</p>
-            <h2>Diagnostics</h2>
+            <p class="eyebrow">${escapeHtml(t("settings.advanced"))}</p>
+            <h2>${escapeHtml(t("settings.diagnostics"))}</h2>
           </div>
         </div>
         <div class="settings-list compact">
-          <div><span>Release</span><strong>${escapeHtml(state.health.version || "Local build")}</strong></div>
-          <div><span>Mode</span><strong>${escapeHtml(state.health.demoMode ? "Demo Mode" : "Local Library")}</strong></div>
-          <div><span>Vector Store Status</span><strong>${escapeHtml(ai.vectorStoreLabel || ai.vectorStore || "Not configured")}</strong></div>
+          <div><span>${escapeHtml(t("settings.release"))}</span><strong>${escapeHtml(state.health.version || "Local build")}</strong></div>
+          <div><span>${escapeHtml(t("settings.mode"))}</span><strong>${escapeHtml(t("settings.localLibrary"))}</strong></div>
+          <div><span>${escapeHtml(t("settings.vectorStatus"))}</span><strong>${escapeHtml(statusLabel(ai.vectorStoreLabel || ai.vectorStore || "Not configured"))}</strong></div>
         </div>
       </section>
     </section>
   `;
   bindLibrarySetupForm();
+  $("#languagePreference").addEventListener("change", (event) => i18n.setPreference(event.target.value));
 }
 
 function empty(text) {
@@ -1477,14 +1688,14 @@ async function openFileDrawer(fileId, page = 0, options = {}) {
     .map((line) => `<span>${escapeHtml(line)}</span>`)
     .join("");
   $("#fileDetails").innerHTML = `
-    <div><span>Filename</span><strong>${escapeHtml(file.filename)}</strong></div>
-    <div><span>Type</span><strong>${escapeHtml(file.mime_type || file.extension || "Unknown")}</strong></div>
-    <div><span>AI readiness</span><strong>${escapeHtml(file.ai_index_status || "Unknown")}</strong></div>
-    <div><span>Source</span><strong>${escapeHtml(file.source_label || file.source || "Local file")}</strong></div>
+    <div><span>${escapeHtml(t("file.filename"))}</span><strong>${escapeHtml(file.filename)}</strong></div>
+    <div><span>${escapeHtml(t("week.type"))}</span><strong>${escapeHtml(file.mime_type || file.extension || t("common.unknown"))}</strong></div>
+    <div><span>${escapeHtml(t("file.aiReadiness"))}</span><strong>${escapeHtml(file.ai_index_status || t("common.unknown"))}</strong></div>
+    <div><span>${escapeHtml(t("common.source"))}</span><strong>${escapeHtml(file.source_label || file.source || t("file.local"))}</strong></div>
   `;
-  $("#extractedText").textContent = file.extractedText || "No readable text preview available. Open the original file for the authoritative version.";
+  $("#extractedText").textContent = file.extractedText || t("file.noReadableText");
   const pageHash = page ? `#page=${page}` : "";
-  $("#previewFrame").innerHTML = `<iframe title="Preview" src="/preview/${file.id}${pageHash}"></iframe>`;
+  $("#previewFrame").innerHTML = `<iframe title="${escapeHtml(t("file.preview"))}" src="/preview/${file.id}${pageHash}"></iframe>`;
   $("#askResponse").textContent = "";
   $("#askPrompt").value = "";
   $("#noteBody").value = "";
@@ -1499,13 +1710,13 @@ async function loadFileNotes(fileId) {
   const notes = await api(`/api/notes?targetType=file&targetId=${fileId}`);
   $("#fileNotes").innerHTML = notes.length
     ? notes.map(noteCard).join("")
-    : `<div class="notice compact">No user notes for this file yet.</div>`;
+    : `<div class="notice compact">${escapeHtml(t("file.noNotes"))}</div>`;
 }
 
 function noteCard(note) {
   return `
     <article class="note-card">
-      <div class="chips"><span class="chip">User note</span><span class="chip">${escapeHtml(note.updated_at || "")}</span></div>
+      <div class="chips"><span class="chip">${escapeHtml(t("file.userNote"))}</span><span class="chip">${escapeHtml(note.updated_at || "")}</span></div>
       <p>${escapeHtml(note.body)}</p>
     </article>
   `;
@@ -1515,7 +1726,7 @@ async function saveNote() {
   if (!state.selectedFile) return;
   const body = $("#noteBody").value.trim();
   if (!body) {
-    toast("Write a note first");
+    toast(t("file.writeNote"));
     return;
   }
   await api("/api/notes", {
@@ -1531,7 +1742,7 @@ async function saveNote() {
   });
   $("#noteBody").value = "";
   await loadFileNotes(state.selectedFile.id);
-  toast("Note saved");
+  toast(t("file.noteSaved"));
 }
 
 async function openAskForFile(fileId, prompt = "") {
@@ -1544,12 +1755,12 @@ async function openAskForFile(fileId, prompt = "") {
 
 async function openOriginal(fileId) {
   await api(`/api/open/${fileId}`, { method: "POST" });
-  toast("Original file opened");
+  toast(t("file.originalOpened"));
 }
 
 async function toggleStar(fileId) {
   const result = await api(`/api/star/${fileId}`, { method: "POST" });
-  toast(result.starred ? "Starred" : "Unstarred");
+  toast(t(result.starred ? "file.starred" : "file.unstarred"));
   if (state.selectedFile?.id === fileId) state.selectedFile.star_id = result.starred ? 1 : null;
   if (state.weekFiles.length) {
     state.weekFiles = state.weekFiles.map((file) => (file.id === fileId ? { ...file, star_id: result.starred ? 1 : null } : file));
@@ -1562,14 +1773,14 @@ async function toggleStar(fileId) {
 async function copyContext(fileId) {
   const context = await api(`/api/prepare-context?file_id=${fileId}&q=${encodeURIComponent($("#askPrompt")?.value || "")}`);
   await navigator.clipboard.writeText(JSON.stringify(context, null, 2));
-  toast("Source details copied");
+  toast(t("file.sourceCopied"));
 }
 
 async function askAboutFile() {
   if (!state.selectedFile) return;
   const prompt = $("#askPrompt").value.trim();
   $("#askBtn").disabled = true;
-  $("#askResponse").textContent = "Searching official course materials...\nGenerating explanation...";
+  $("#askResponse").textContent = `${t("ai.searching")}\n${t("ai.preparing")}`;
   const context = {
     fileId: state.selectedFile.id,
     course: state.selectedFile.course_code,
@@ -1615,7 +1826,7 @@ async function loadPracticeQuestions() {
   const rows = await api(`/api/questions?course=${encodeURIComponent(course)}&week=${encodeURIComponent(week)}&type=${encodeURIComponent(type)}`);
   $("#practiceResults").innerHTML = rows.length
     ? rows.map(questionCard).join("")
-    : empty("No suitable teacher-provided question was found in the official course materials that are ready.");
+    : empty(t("study.noTeacherQuestion"));
 }
 
 function questionCard(row) {
@@ -1629,13 +1840,13 @@ function questionCard(row) {
       </header>
       <p>${escapeHtml(row.question_text)}</p>
       <div class="file-actions">
-        <button class="button secondary" data-preview="${row.source_file_id}">Open Source File</button>
-        <button class="button secondary" data-ask-question="${row.id}" data-source-file="${row.source_file_id}" data-course-code="${escapeHtml(row.course_code)}" data-week-label="${escapeHtml(row.week_label || "")}" data-exercise-type="${escapeHtml(row.exercise_type || "")}" data-question-number="${escapeHtml(row.question_number || "")}" data-filename="${escapeHtml(row.filename || "")}">Ask AI</button>
-        <button class="button secondary" data-ask-question="${row.id}" data-source-file="${row.source_file_id}" data-course-code="${escapeHtml(row.course_code)}" data-week-label="${escapeHtml(row.week_label || "")}" data-exercise-type="${escapeHtml(row.exercise_type || "")}" data-question-number="${escapeHtml(row.question_number || "")}" data-filename="${escapeHtml(row.filename || "")}" data-question-prompt="Check my answer">Check with AI</button>
+        <button class="button secondary" data-preview="${row.source_file_id}">${escapeHtml(t("study.openSource"))}</button>
+        <button class="button secondary" data-ask-question="${row.id}" data-source-file="${row.source_file_id}" data-course-code="${escapeHtml(row.course_code)}" data-week-label="${escapeHtml(row.week_label || "")}" data-exercise-type="${escapeHtml(row.exercise_type || "")}" data-question-number="${escapeHtml(row.question_number || "")}" data-filename="${escapeHtml(row.filename || "")}">${escapeHtml(t("courses.askAi"))}</button>
+        <button class="button secondary" data-ask-question="${row.id}" data-source-file="${row.source_file_id}" data-course-code="${escapeHtml(row.course_code)}" data-week-label="${escapeHtml(row.week_label || "")}" data-exercise-type="${escapeHtml(row.exercise_type || "")}" data-question-number="${escapeHtml(row.question_number || "")}" data-filename="${escapeHtml(row.filename || "")}" data-question-prompt="Check my answer">${escapeHtml(t("study.checkAi"))}</button>
         <details class="row-more">
           <summary>More</summary>
           <div>
-            <button class="button secondary" data-context="${row.source_file_id}">Copy source details</button>
+            <button class="button secondary" data-context="${row.source_file_id}">${escapeHtml(t("file.copySource"))}</button>
           </div>
         </details>
       </div>
@@ -1645,35 +1856,194 @@ function questionCard(row) {
 
 async function scanLibrary() {
   $("#scanBtn").disabled = true;
-  $("#scanBtn").textContent = "Scanning";
+  $("#scanBtn").textContent = t("toast.scanning");
   try {
     await api("/api/scan", { method: "POST" });
     await loadBase();
     await route();
-    toast("Library scanned");
+    toast(t("toast.libraryScanned"));
   } finally {
     $("#scanBtn").disabled = false;
-    $("#scanBtn").textContent = "↻ Scan Library";
+    $("#scanBtn").textContent = `↻ ${t("courses.scan")}`;
   }
+}
+
+function openCourseDialog(course = null) {
+  populateCourseTerms();
+  $("#courseDialogTitle").textContent = t(course ? "dialog.editCourse" : "dialog.createCourse");
+  $("#courseEditId").value = course?.id || "";
+  $("#courseCode").value = course?.code || "";
+  $("#courseName").value = course?.name || "";
+  if (course?.term_id) $("#courseTerm").value = String(course.term_id);
+  $("#courseDialog").showModal();
+  $("#courseName").focus();
+}
+
+async function saveCourse(event) {
+  event.preventDefault();
+  const id = Number($("#courseEditId").value || 0);
+  await postJson("/api/courses/manage", {
+    action: id ? "update" : "create",
+    id: id || undefined,
+    term_id: Number($("#courseTerm").value || 0),
+    course_code: $("#courseCode").value.trim(),
+    display_name: $("#courseName").value.trim(),
+  });
+  $("#courseDialog").close();
+  localStorage.setItem("studyhub.onboardingDismissed", "true");
+  await loadBase();
+  await renderCourses();
+  toast(t(id ? "toast.courseUpdated" : "toast.courseCreated"));
+}
+
+function openWeekDialog(courseId, week = null) {
+  $("#weekCourseId").value = String(courseId);
+  $("#weekEditId").value = week?.id || "";
+  $("#weekDialogTitle").textContent = t(week ? "dialog.renameWeek" : "dialog.addWeek");
+  $("#weekName").value = week?.week_label || "";
+  $("#weekKind").value = week?.kind || "week";
+  $("#weekDialog").showModal();
+  $("#weekName").focus();
+}
+
+async function saveWeek(event) {
+  event.preventDefault();
+  const courseId = Number($("#weekCourseId").value);
+  const id = Number($("#weekEditId").value || 0);
+  await postJson("/api/weeks/manage", {
+    action: id ? "rename" : "create",
+    id: id || undefined,
+    course_id: courseId,
+    label: $("#weekName").value.trim(),
+    kind: $("#weekKind").value,
+  });
+  $("#weekDialog").close();
+  await loadBase();
+  await renderCourse(courseId);
+  toast(t("toast.courseStructureUpdated"));
+}
+
+function openAddMaterial(courseId = 0, weekLabel = "") {
+  state.nativeImportPaths = [];
+  populateUploadCourses();
+  if (courseId) $("#uploadCourse").value = String(courseId);
+  populateUploadWeeks();
+  if (weekLabel) {
+    const week = weeksFor(Number($("#uploadCourse").value)).find((item) => item.week_label === weekLabel);
+    if (week) $("#uploadWeek").value = String(week.id);
+  }
+  $("#uploadSelection").hidden = true;
+  $("#uploadFile").value = "";
+  $("#chooseNativeFiles").hidden = !state.health?.desktopMode;
+  $("#uploadFileLabel").textContent = state.health?.desktopMode
+    ? "Choose files from this Mac, or drop them into StudyHub"
+    : t("dialog.chooseFilesBody");
+  $("#uploadDialog").showModal();
+}
+
+function showNativeSelection(paths) {
+  state.nativeImportPaths = paths || [];
+  const box = $("#uploadSelection");
+  box.hidden = !state.nativeImportPaths.length;
+  box.textContent = state.nativeImportPaths.length
+    ? `${state.nativeImportPaths.length} local file${state.nativeImportPaths.length === 1 ? "" : "s"} selected. Originals stay in place.`
+    : "";
+}
+
+async function chooseNativeMaterialFiles() {
+  const paths = await desktopInvoke("choose_study_files");
+  if (!paths?.length) return;
+  showNativeSelection(paths);
+  try {
+    const suggestion = await api(`/api/materials/suggest?path=${encodeURIComponent(paths[0])}`);
+    if (suggestion.course_id) {
+      $("#uploadCourse").value = String(suggestion.course_id);
+      populateUploadWeeks();
+    }
+    if (suggestion.week_label) {
+      const week = weeksFor(Number($("#uploadCourse").value)).find((item) => item.week_label === suggestion.week_label);
+      if (week) $("#uploadWeek").value = String(week.id);
+    }
+    if (suggestion.material_type) $("#uploadMaterialType").value = suggestion.material_type;
+  } catch (_error) {
+    // Suggestions are optional; the user-confirmed destination remains authoritative.
+  }
+}
+
+async function importCourseFolder() {
+  const selected = await desktopInvoke("choose_study_folder");
+  if (!selected) return;
+  const result = await postJson("/api/materials/import-folder", { path: selected });
+  await loadBase();
+  await renderCourse(result.course.id);
+  toast(`${result.added} material${result.added === 1 ? "" : "s"} added`);
+}
+
+async function batchManageMaterials(action) {
+  const ids = [...state.selectedMaterialIds];
+  if (!ids.length) return;
+  if (action === "remove" && !confirm(t("confirm.removeSelected"))) return;
+  await postJson("/api/materials/manage", {
+    action,
+    ids,
+    course_id: Number($("#batchCourse")?.value || state.selectedCourseId),
+    week_id: Number($("#batchWeek")?.value || 0),
+    week_label: state.selectedWeek,
+    material_type: $("#batchMaterialType")?.value || "other",
+  });
+  await renderWeek(state.selectedCourseId, state.selectedWeek);
+  toast(t(action === "remove" ? "toast.removed" : action === "star" ? "toast.selectedStarred" : "toast.classificationUpdated"));
+}
+
+async function submitNativeImport(duplicatePolicy = "skip") {
+  const result = await postJson("/api/materials/import-paths", {
+    paths: state.nativeImportPaths,
+    course_id: Number($("#uploadCourse").value || 0),
+    week_id: Number($("#uploadWeek").value || 0),
+    material_type: $("#uploadMaterialType").value,
+    duplicate_policy: duplicatePolicy,
+  });
+  const duplicates = result.items.filter((item) => item.status === "duplicate");
+  if (duplicates.length && duplicatePolicy === "skip") {
+    state.duplicateImport = { items: duplicates };
+    $("#duplicateMessage").textContent = `${duplicates.length} selected file${duplicates.length === 1 ? " has" : "s have"} matching content already in StudyHub.`;
+  }
+  return result;
 }
 
 async function uploadMaterial(event) {
   event.preventDefault();
+  if (state.health?.desktopMode) {
+    if (!state.nativeImportPaths.length) {
+      await chooseNativeMaterialFiles();
+      if (!state.nativeImportPaths.length) return;
+    }
+    const result = await submitNativeImport();
+    $("#uploadDialog").close();
+    if (result.items.some((item) => item.status === "duplicate")) $("#duplicateDialog").showModal();
+    await loadBase();
+    if (state.selectedCourseId && state.selectedWeek) await renderWeek(state.selectedCourseId, state.selectedWeek);
+    else await renderCourses();
+    toast(`${result.added} material${result.added === 1 ? "" : "s"} added`);
+    return;
+  }
   const files = $("#uploadFile").files;
   if (!files.length) return;
+  const materialType = $("#uploadMaterialType").value;
   const form = new FormData();
   form.append("course_id", $("#uploadCourse").value);
-  form.append("week", $("#uploadWeek").value);
-  form.append("section", $("#uploadSection").value);
-  form.append("category", $("#uploadCategory").value.trim() || "Uploaded");
+  const selectedWeek = weeksFor(Number($("#uploadCourse").value)).find((week) => Number(week.id) === Number($("#uploadWeek").value));
+  form.append("week", selectedWeek?.week_label || "Unclassified");
+  form.append("section", ["tutorial", "workshop", "lab", "quiz", "assignment", "exam"].includes(materialType) ? "02 Exercises" : "01 Course Materials");
+  form.append("category", materialType);
   Array.from(files).forEach((file) => form.append("files", file));
   await fetch("/api/upload", { method: "POST", headers: { "X-StudyHub-CSRF": state.csrfToken }, body: form }).then(async (response) => {
-    if (!response.ok) throw new Error((await response.json()).error || "Upload failed");
+    if (!response.ok) throw new Error((await response.json()).error || t("toast.uploadFailed"));
   });
   $("#uploadDialog").close();
   await loadBase();
   await route();
-  toast("Material added");
+  toast(t("toast.materialAdded"));
 }
 
 document.addEventListener("click", async (event) => {
@@ -1697,6 +2067,93 @@ document.addEventListener("click", async (event) => {
     route("settings").then(() => $("#studyLibraryPathInput")?.focus());
     return;
   }
+  if (target.dataset.createFirstCourse) {
+    openCourseDialog();
+    return;
+  }
+  if (target.dataset.importFirstFolder || target.dataset.importCourseFolder) {
+    try {
+      await importCourseFolder();
+    } catch (error) {
+      toast(error.message || String(error));
+    }
+    return;
+  }
+  if (target.dataset.newTerm) {
+    const name = prompt(t("prompt.newTerm"), t("prompt.semesterOne"));
+    if (!name?.trim()) return;
+    await postJson("/api/terms/manage", { action: "create", name: name.trim() });
+    await loadBase();
+    await renderSettings();
+    toast(t("toast.termCreated"));
+    return;
+  }
+  if (target.dataset.renameTerm) {
+    const name = prompt(t("prompt.renameTerm"), target.dataset.termName || "");
+    if (!name?.trim()) return;
+    await postJson("/api/terms/manage", { action: "rename", id: Number(target.dataset.renameTerm), name: name.trim() });
+    await loadBase();
+    await renderSettings();
+    toast(t("toast.termRenamed"));
+    return;
+  }
+  if (target.dataset.archiveTerm || target.dataset.restoreTerm) {
+    const id = Number(target.dataset.archiveTerm || target.dataset.restoreTerm);
+    const action = target.dataset.archiveTerm ? "archive" : "restore";
+    await postJson("/api/terms/manage", { action, id });
+    await loadBase();
+    await renderSettings();
+    toast(t(action === "archive" ? "toast.termArchived" : "toast.termRestored"));
+    return;
+  }
+  if (target.dataset.clearCache) {
+    target.disabled = true;
+    try {
+      const result = await postJson("/api/cache/clear");
+      await loadBase();
+      await renderSettings();
+      toast(`${result.reindexed} material${result.reindexed === 1 ? "" : "s"} reindexed`);
+    } finally {
+      target.disabled = false;
+    }
+    return;
+  }
+  if (target.dataset.resetStudyhub) {
+    const confirmation = prompt(`${t("confirm.resetTitle")}\n\n${t("confirm.resetBody")}\n\n${t("confirm.typeReset")}`, "");
+    if (confirmation !== "RESET STUDYHUB") return;
+    await postJson("/api/reset", { confirmation });
+    localStorage.clear();
+    const restart = desktopInvoke("restart_backend");
+    if (restart) await restart;
+    else {
+      window.location.reload();
+    }
+    return;
+  }
+  if (target.dataset.chooseStudyFolder) {
+    try {
+      const selected = await desktopInvoke("choose_study_folder");
+      if (!selected) return;
+      const form = $("#librarySetupForm");
+      const input = $("#studyLibraryPathInput");
+      if (form && input) {
+        input.value = selected;
+        form.requestSubmit();
+        return;
+      }
+      await api("/api/config/study-library", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: selected }),
+      });
+      localStorage.setItem("studyhub.onboardingDismissed", "true");
+      const restart = desktopInvoke("restart_backend");
+      if (restart) await restart;
+    } catch (error) {
+      toast(error.message || String(error));
+    }
+    return;
+  }
   if (target.dataset.studyMode) {
     state.studyMode = target.dataset.studyMode;
     route("study");
@@ -1706,8 +2163,87 @@ document.addEventListener("click", async (event) => {
     await scanLibrary();
     return;
   }
+  if (target.dataset.newCourse) {
+    openCourseDialog();
+    return;
+  }
+  if (target.dataset.editCourse) {
+    openCourseDialog(courseById(Number(target.dataset.editCourse)));
+    return;
+  }
+  if (target.dataset.archiveCourse) {
+    if (!confirm(t("confirm.archiveCourse"))) return;
+    await postJson("/api/courses/manage", { action: "archive", id: Number(target.dataset.archiveCourse) });
+    await loadBase();
+    await renderCourses();
+    toast(t("toast.courseArchived"));
+    return;
+  }
+  if (target.dataset.restoreCourse) {
+    await postJson("/api/courses/manage", { action: "restore", id: Number(target.dataset.restoreCourse) });
+    await loadBase();
+    await renderCourses();
+    toast(t("toast.courseRestored"));
+    return;
+  }
+  if (target.dataset.removeCourse) {
+    if (!confirm(`${t("confirm.removeCourseTitle")}\n\n${t("confirm.removeCourseBody")}`)) return;
+    await postJson("/api/courses/manage", { action: "remove", id: Number(target.dataset.removeCourse) });
+    await loadBase();
+    await renderCourses();
+    toast(t("toast.courseRemoved"));
+    return;
+  }
+  if (target.dataset.addWeek) {
+    openWeekDialog(Number(target.dataset.addWeek));
+    return;
+  }
+  if (target.dataset.editWeek) {
+    const courseId = Number(target.dataset.courseId);
+    const week = weeksFor(courseId).find((item) => Number(item.id) === Number(target.dataset.editWeek));
+    if (week) openWeekDialog(courseId, week);
+    return;
+  }
+  if (target.dataset.removeWeek) {
+    const courseId = Number(target.dataset.courseId);
+    if (!confirm(t("confirm.removeEmptyWeek"))) return;
+    await postJson("/api/weeks/manage", { action: "remove", id: Number(target.dataset.removeWeek) });
+    await loadBase();
+    await renderCourse(courseId);
+    toast(t("toast.emptySectionRemoved"));
+    return;
+  }
   if (target.dataset.openUpload) {
-    $("#uploadDialog").showModal();
+    const courseId = target.dataset.courseId !== undefined
+      ? Number(target.dataset.courseId)
+      : Number(state.selectedCourseId || 0);
+    openAddMaterial(courseId, target.dataset.weekLabel || (courseId ? state.selectedWeek : "") || "");
+    return;
+  }
+  if (target.dataset.renameMaterial) {
+    const displayName = prompt(t("prompt.renameMaterial"), target.dataset.materialName || "");
+    if (!displayName?.trim()) return;
+    await postJson("/api/materials/manage", { action: "rename", id: Number(target.dataset.renameMaterial), display_name: displayName.trim() });
+    await loadBase();
+    await route();
+    toast(t("toast.materialRenamed"));
+    return;
+  }
+  if (target.dataset.removeMaterial) {
+    if (!confirm(`${t("confirm.removeMaterialTitle")}\n\n${t("confirm.removeMaterialBody")}`)) return;
+    await postJson("/api/materials/manage", { action: "remove", id: Number(target.dataset.removeMaterial) });
+    await loadBase();
+    await route();
+    toast(t("toast.removed"));
+    return;
+  }
+  if (target.dataset.relinkMaterial) {
+    const paths = await desktopInvoke("choose_study_files");
+    if (!paths?.length) return;
+    await postJson("/api/materials/manage", { action: "relink", id: Number(target.dataset.relinkMaterial), path: paths[0] });
+    await loadBase();
+    await route();
+    toast(t("toast.fileRelinked"));
     return;
   }
   if (target.dataset.openHistory) {
@@ -1739,7 +2275,7 @@ document.addEventListener("click", async (event) => {
         questionNumber: target.dataset.questionNumber,
         file: target.dataset.filename,
       },
-      { scope: "question", prompt: target.dataset.questionPrompt || "Explain the question" },
+      { scope: "question", prompt: target.dataset.questionPrompt || t("ai.explainQuestion") },
     );
     route("ai");
     return;
@@ -1750,7 +2286,7 @@ document.addEventListener("click", async (event) => {
   }
   if (target.dataset.renameConversation) {
     const row = state.ask.history.find((item) => Number(item.id) === Number(target.dataset.renameConversation));
-    const title = prompt("Rename conversation", row?.title || "");
+    const title = prompt(t("prompt.renameConversation"), row?.title || "");
     if (title?.trim()) {
       await api("/api/conversations", {
         method: "POST",
@@ -1771,7 +2307,7 @@ document.addEventListener("click", async (event) => {
     return;
   }
   if (target.dataset.deleteConversation) {
-    if (confirm("Delete this local AI conversation?")) {
+    if (confirm(t("confirm.deleteConversation"))) {
       await api("/api/conversations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1789,7 +2325,7 @@ document.addEventListener("click", async (event) => {
   }
   if (target.dataset.copyMessage) {
     await navigator.clipboard.writeText(target.dataset.copyMessage);
-    toast("Copied");
+    toast(t("toast.copied"));
     return;
   }
   if (target.dataset.retryLast) {
@@ -1809,6 +2345,19 @@ document.addEventListener("click", async (event) => {
   if (target.dataset.context) return copyContext(Number(target.dataset.context));
 });
 
+document.addEventListener("change", (event) => {
+  if (event.target.matches("[data-material-select]")) {
+    const id = Number(event.target.dataset.materialSelect);
+    if (event.target.checked) state.selectedMaterialIds.add(id);
+    else state.selectedMaterialIds.delete(id);
+    const disabled = state.selectedMaterialIds.size === 0;
+    if ($("#batchClassify")) $("#batchClassify").disabled = disabled;
+    if ($("#batchStar")) $("#batchStar").disabled = disabled;
+    if ($("#batchRemove")) $("#batchRemove").disabled = disabled;
+    if ($("#inboxAssign")) $("#inboxAssign").disabled = disabled;
+  }
+});
+
 $("#closeDrawer").addEventListener("click", () => {
   $("#fileDrawer").hidden = true;
   if (window.location.hash.startsWith("#/file/") && state.selectedFile?.course_id && state.selectedFile?.week_label) {
@@ -1819,7 +2368,7 @@ $("#closeHistory").addEventListener("click", () => {
   $("#historyDrawer").hidden = true;
 });
 $("#clearHistory").addEventListener("click", async () => {
-  if (!confirm("Clear all saved AI conversations?")) return;
+  if (!confirm(t("confirm.clearConversations"))) return;
   await api("/api/conversations", { method: "POST", body: JSON.stringify({ action: "clear" }) });
   state.ask.conversationId = null;
   state.ask.conversationTitle = "";
@@ -1837,7 +2386,7 @@ $("#askFileFull").addEventListener("click", () => state.selectedFile && openAskF
 $("#toggleAiExpanded").addEventListener("click", () => {
   const panel = document.querySelector(".drawer-panel");
   panel.classList.toggle("ai-expanded");
-  $("#toggleAiExpanded").textContent = panel.classList.contains("ai-expanded") ? "Compact view" : "Split preview + AI";
+  $("#toggleAiExpanded").textContent = t(panel.classList.contains("ai-expanded") ? "file.compact" : "file.splitAi");
 });
 $("#starFile").addEventListener("click", () => state.selectedFile && toggleStar(state.selectedFile.id));
 $("#copyContext").addEventListener("click", () => state.selectedFile && copyContext(state.selectedFile.id));
@@ -1845,8 +2394,24 @@ $("#askBtn").addEventListener("click", askAboutFile);
 $("#saveNote").addEventListener("click", saveNote);
 $("#sidebarToggle").addEventListener("click", () => setSidebarCollapsed(!state.sidebarCollapsed));
 $("#scanBtn").addEventListener("click", scanLibrary);
-$("#uploadBtn").addEventListener("click", () => $("#uploadDialog").showModal());
+$("#uploadBtn").addEventListener("click", () => openAddMaterial());
+$("#uploadCourse").addEventListener("change", populateUploadWeeks);
+$("#chooseNativeFiles").addEventListener("click", chooseNativeMaterialFiles);
 $("#uploadSubmit").addEventListener("click", uploadMaterial);
+$("#courseSubmit").addEventListener("click", saveCourse);
+$("#weekSubmit").addEventListener("click", saveWeek);
+$("#openDuplicate").addEventListener("click", () => {
+  const existingId = Number(state.duplicateImport?.items?.[0]?.id || 0);
+  $("#duplicateDialog").close();
+  if (existingId) route("file", { fileId: existingId });
+});
+$("#addDuplicateAnyway").addEventListener("click", async () => {
+  $("#duplicateDialog").close();
+  const result = await submitNativeImport("add_anyway");
+  await loadBase();
+  await route();
+  toast(`${result.added} duplicate material${result.added === 1 ? "" : "s"} added`);
+});
 
 document.querySelectorAll(".rail-tab").forEach((button) => {
   button.addEventListener("click", () => {
@@ -1891,9 +2456,22 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+async function enableDesktopFileDrop() {
+  const listen = window.__TAURI__?.event?.listen;
+  if (!state.health?.desktopMode || typeof listen !== "function") return;
+  await listen("tauri://drag-drop", (event) => {
+    const paths = event.payload?.paths || [];
+    if (!paths.length) return;
+    openAddMaterial(state.selectedCourseId || 0, state.selectedWeek || "");
+    showNativeSelection(paths);
+  });
+}
+
 loadBase()
   .then(async () => {
+    i18n.apply(document);
     appLoaded = true;
+    await enableDesktopFileDrop();
     if (!window.location.hash) history.replaceState({ studyhub: true, view: "home" }, "", routeHash({ view: "home" }));
     await restoreRouteFromLocation();
   })
@@ -1904,4 +2482,17 @@ loadBase()
 window.addEventListener("popstate", () => {
   if (!appLoaded) return;
   restoreRouteFromLocation();
+});
+
+window.addEventListener("studyhub:languagechange", async () => {
+  i18n.apply(document);
+  applySidebarState();
+  const libraryState = $("#libraryState");
+  if (libraryState && !libraryState.hidden) {
+    libraryState.textContent = t(state.health?.studyLibraryConnected ? "settings.libraryNeedsAttention" : "settings.libraryMissing");
+  }
+  populateUploadCourses();
+  populateCourseTerms();
+  if (appLoaded) await route(state.view, { history: false });
+  if (!$("#fileDrawer")?.hidden && state.selectedFile) await openFileDrawer(state.selectedFile.id, 0, { history: false });
 });

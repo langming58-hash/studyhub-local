@@ -301,6 +301,12 @@ def main() -> int:
         raw_path = "/".join(["", "private", "example", "secret.txt"])
         err_handler.handle_exception(RuntimeError(f"{secret} {raw_path}"))
 
+        conn = sqlite3.connect(server.DB_PATH)
+        conn.execute("UPDATE files SET stable_id='material_TEST-safe-id' WHERE id=?", (file_row["id"],))
+        conn.commit()
+        conn.row_factory = sqlite3.Row
+        file_row = conn.execute("SELECT * FROM files WHERE id=?", (file_row["id"],)).fetchone()
+        conn.close()
         mcp_meta = server.mcp_get_file_metadata({"file_id": server.external_file_id(file_row)})
         mcp_read = server.mcp_read_file({"file_id": server.external_file_id(file_row)})
         upload_response_safe = not has_absolute_or_forbidden(upload.sent["data"])

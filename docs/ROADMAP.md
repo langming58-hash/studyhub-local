@@ -17,7 +17,7 @@ dates.
 ## Principles
 
 - Keep original study files as the local source of truth
-- Keep Demo Mode synthetic and public-safe
+- Keep synthetic fixtures test-only and out of production bundles
 - Avoid telemetry by default
 - Do not generate practice questions
 - Keep optional AI source-grounded and clearly cited

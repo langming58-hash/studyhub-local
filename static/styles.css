@@ -538,6 +538,33 @@ menu {
   max-width: 680px;
 }
 
+.toolbar-spacer {
+  flex: 1 1 auto;
+}
+
+.material-check {
+  width: 18px;
+  height: 18px;
+  margin: 0 0 0 14px;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+.settings-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
 .searchbar input,
 .searchbar select,
 .toolbar select,
@@ -1347,6 +1374,19 @@ textarea {
   gap: 8px;
   align-items: center;
   text-align: left;
+}
+
+.week-row-main {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: grid;
+  gap: 4px;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
 }
 
 .week-row:hover,

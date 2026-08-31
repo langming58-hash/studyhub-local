@@ -2,7 +2,7 @@
 
 Repository: https://github.com/langming58-hash/studyhub-local
 
-Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.5
+Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.2.0
 
 This file is a reusable public launch checklist. It must not become a ledger of
 the maintainer's personal social accounts, account status, or publication
@@ -22,7 +22,8 @@ is intentionally part of a public professional profile.
 - Link to the GitHub repository or a release, not a localhost URL.
 - Mention localhost only as an install instruction, for example: after
   installation, open `http://127.0.0.1:8765` on your own machine.
-- Use only synthetic demo screenshots or GIFs from `docs/assets/`.
+- Use only approved screenshots from a clean empty workspace, or explicitly
+  synthetic test media that is not part of production resources.
 - Do not show real course files, teacher questions, private filenames, browser
   tabs, API settings, local paths, or personal account UI.
 - Keep the tone practical: early-stage, open source, local-first, privacy-aware,
