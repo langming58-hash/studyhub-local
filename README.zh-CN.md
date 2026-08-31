@@ -118,7 +118,7 @@ OPENAI_MODEL=gpt-5.4
 - 主动内容预览与受信任应用源隔离
 - MCP 只提供本地只读边界
 
-更改信任边界前，请阅读 [SECURITY.md](SECURITY.md) 和 [PRIVACY.md](PRIVACY.md)。
+更改信任边界前，请阅读 [SECURITY.md](SECURITY.md) 和 [PRIVACY.md](docs/PRIVACY.md)。
 
 ## 开发
 

@@ -118,7 +118,7 @@ Production starts empty: no sample courses, teacher material, test database, ext
 - Active-content previews isolated from the trusted application origin
 - Read-only MCP boundary for local integrations
 
-Read [SECURITY.md](SECURITY.md) and [PRIVACY.md](PRIVACY.md) before changing trust boundaries.
+Read [SECURITY.md](SECURITY.md) and [PRIVACY.md](docs/PRIVACY.md) before changing trust boundaries.
 
 ## Development
 
