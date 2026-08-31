@@ -57,5 +57,5 @@ src-tauri/backend/studyhub-backend/*
 *.csv
 *.ipynb
 !docs/**/*.md
-!demo-data/**/*.txt
-!demo-data/**/*.py
+!tests/fixtures/**/*.txt
+!tests/fixtures/**/*.py

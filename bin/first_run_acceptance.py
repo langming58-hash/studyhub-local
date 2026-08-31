@@ -31,8 +31,8 @@ def load_server(tmp: Path):
     server.DB_PATH = tmp / "studyhub.sqlite"
     server.ENV_LOCAL_PATH = tmp / ".env.local"
     server.ENV_LOCAL_EXISTS = False
-    server.DEMO_MODE = True
-    server.DEFAULT_STUDY_ROOT = tmp / "DemoData"
+    server.DEFAULT_STUDY_ROOT = server.DATA_DIR / "managed-library"
+    server.ensure_dirs()
     return server
 
 
@@ -45,14 +45,11 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
         server = load_server(tmp)
-        write_file(
-            server.DEFAULT_STUDY_ROOT / "DEMO1001 - Demo Course" / "Week 01" / "01 Course Materials" / "Lecture" / "Demo.txt",
-            "Synthetic demo lecture content.",
-        )
-        server.scan_library(server.DEFAULT_STUDY_ROOT)
-        conn = sqlite3.connect(server.DB_PATH)
-        conn.row_factory = sqlite3.Row
+        conn = server.connect_db()
+        server.init_db(conn)
         preflight = server.api_preflight(conn)
+        course_count = conn.execute("SELECT COUNT(*) AS count FROM courses").fetchone()["count"]
+        file_count = conn.execute("SELECT COUNT(*) AS count FROM files").fetchone()["count"]
         conn.close()
 
         custom_library = tmp / "My Synthetic StudyLibrary"
@@ -70,7 +67,6 @@ def main() -> int:
 
         empty_library = tmp / "Empty StudyLibrary"
         empty_library.mkdir()
-        server.DEMO_MODE = False
         server.DEFAULT_STUDY_ROOT = empty_library
         server.DB_PATH = tmp / "empty.sqlite"
         conn = server.connect_db()
@@ -85,7 +81,6 @@ def main() -> int:
         )
         original_pdf_error = server.pdf_extraction_dependency_error
         server.pdf_extraction_dependency_error = lambda: "PDF text extraction unavailable: pdftotext was not found. Install Poppler and rescan the library."
-        server.DEMO_MODE = False
         server.DEFAULT_STUDY_ROOT = pdf_library
         server.DB_PATH = tmp / "pdf.sqlite"
         server.scan_library(server.DEFAULT_STUDY_ROOT)
@@ -123,12 +118,45 @@ def main() -> int:
         except FileNotFoundError as exc:
             missing_original = str(exc)
 
+        server.DB_PATH = tmp / "provenance-migration.sqlite"
+        migration_conn = server.connect_db()
+        server.init_db(migration_conn)
+        term_id = migration_conn.execute("SELECT id FROM terms WHERE stable_id='term_imported'").fetchone()["id"]
+        now = server.now_iso()
+        for stable_id, source_kind, folder_name in (
+            ("legacy_fixture", "demo", "Synthetic Fixture Course"),
+            ("user_named_demo", "folder", "Demo Course TEST1001"),
+        ):
+            migration_conn.execute(
+                """
+                INSERT INTO courses(
+                  stable_id, code, course_code, name, display_name, folder_name, path,
+                  source_folder, source_kind, term_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stable_id, "TEST1001", "TEST1001", folder_name, folder_name,
+                    folder_name, str(tmp / folder_name), str(tmp / folder_name),
+                    source_kind, term_id, now, now,
+                ),
+            )
+        migration_conn.commit()
+        server.init_db(migration_conn)
+        provenance_rows = {
+            row["stable_id"] for row in migration_conn.execute("SELECT stable_id FROM courses").fetchall()
+        }
+        migration_conn.close()
+
         checks = {
-            "fresh_launch_defaults_to_demo": preflight["demoMode"] is True and preflight["firstLaunch"] is True,
-            "demo_mode_is_explained": any(item["code"] == "demo_mode" and "synthetic" in item["whatHappened"].lower() for item in preflight["items"]),
-            "demo_without_pdfs_has_no_pdf_warning": not any(item["code"] == "pdf_text_missing" for item in preflight["items"]),
+            "fresh_launch_is_clean_and_empty": preflight["firstLaunch"] is True and course_count == 0 and file_count == 0,
+            "fresh_launch_has_actionable_onboarding": any(
+                item["code"] == "first_launch" and "create a course" in item["nextStep"].lower()
+                for item in preflight["items"]
+            ),
+            "fresh_launch_has_no_demo_contract": "demoMode" not in preflight,
+            "empty_workspace_has_no_pdf_warning": not any(item["code"] == "pdf_text_missing" for item in preflight["items"]),
             "openai_optional_explained": any(item["code"] == "openai_optional" and "optional" in item["title"].lower() for item in preflight["items"]),
-            "own_library_config_saved_locally": config_result["restartRequired"] is True and "STUDY_LIBRARY_PATH" in env_text and "DEMO_MODE=\"false\"" in env_text,
+            "own_library_config_saved_locally": config_result["restartRequired"] is True and "STUDY_LIBRARY_PATH" in env_text and "DEMO_MODE" not in env_text,
             "own_library_config_response_no_path": str(custom_library) not in str(config_result),
             "wrong_study_library_path_actionable": "folder was not found" in missing_error.lower(),
             "empty_library_recovery": any(item["code"] == "study_library_empty" and "add" in item["nextStep"].lower() for item in empty_preflight["items"]),
@@ -136,6 +164,8 @@ def main() -> int:
             "missing_math_renderer_recovery": any(item["code"] == "math_renderer_missing" and "npm install" in item["nextStep"].lower() for item in math_preflight["items"]),
             "port_conflict_uses_next_port": fallback_port != busy_port,
             "missing_original_file_actionable": "scan library" in missing_original.lower(),
+            "legacy_demo_removed_by_provenance_only": "legacy_fixture" not in provenance_rows
+            and "user_named_demo" in provenance_rows,
         }
         for name, ok in checks.items():
             print(f"{name}: {'PASS' if ok else 'FAIL'}")

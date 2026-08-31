@@ -7,9 +7,9 @@ Ask Codex to:
 
 ```text
 Install StudyHub Local from https://github.com/langming58-hash/studyhub-local.
-Use Demo Mode first, keep the server on 127.0.0.1, do not expose it publicly,
-and do not access or move any private study files until I explicitly choose a
-StudyLibrary folder.
+Start with the clean empty workspace, keep the server on 127.0.0.1, do not
+expose it publicly, and do not access or move any private study files until I
+explicitly choose a StudyLibrary folder.
 ```
 
 Codex should check prerequisites, install only project dependencies, run the

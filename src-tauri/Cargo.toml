@@ -1,7 +1,7 @@
 [package]
 name = "studyhub-local-desktop"
-version = "0.1.5"
-description = "Internal macOS desktop prototype for StudyHub Local"
+version = "0.2.0"
+description = "Local-first desktop study workspace"
 authors = ["StudyHub Local Maintainers"]
 edition = "2021"
 
@@ -16,4 +16,3 @@ tauri-build = { version = "2", features = [] }
 libc = "0.2"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
-

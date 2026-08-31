@@ -7,18 +7,19 @@
 它的重点不是做一个云端笔记平台，而是本地优先：
 
 - 课程文件留在自己电脑上
-- 默认 Demo Mode，不需要 OpenAI API key
+- 第一次打开是干净的空工作区，不捆绑示例课程
+- 不配置 OpenAI 也能使用本地整理、预览、搜索和学习记录
 - 默认没有 telemetry
 - 服务只监听 localhost，安装后在本机打开 http://127.0.0.1:8765
 - 支持本地搜索
 - Ask AI 可选，回答要基于自己的资料，并显示来源
-- Practice 题不会凭空生成，只能来自真实/演示材料里的题
+- Practice 题不会凭空生成，只能来自用户导入的老师资料
 - 有只读 MCP endpoint，限制在本地资料库范围内
 
-仓库里只包含 TEST1001 / TEST2001 / TEST3001 这类合成 demo 数据，不包含真实课程资料。
+仓库中的合成资料仅供自动化测试使用，不会进入生产 App；仓库不包含真实课程资料。
 
 Repo: https://github.com/langming58-hash/studyhub-local
 
-Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.5
+Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.2.0
 
 目前还是早期版本，很多地方肯定可以继续打磨。欢迎试用、提 Issue、PR，或者从架构、搜索、资料整理方式、跨平台体验这些角度给点反馈。

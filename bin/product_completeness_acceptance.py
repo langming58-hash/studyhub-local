@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_server(tmp: Path):
-    os.environ["DEMO_MODE"] = "false"
+    os.environ.pop("DEMO_MODE", None)
     os.environ["STUDY_LIBRARY_PATH"] = str(tmp / "Managed Library")
     os.environ["STUDYHUB_RUNTIME_DIR"] = str(tmp / "runtime")
     os.environ["DATABASE_PATH"] = str(tmp / "runtime" / "data" / "studyhub.sqlite")
@@ -228,7 +228,7 @@ def main() -> int:
             "stable_ids_survive_metadata_changes": renamed["stable_id"] == first_stable_id and restored["stable_id"] == course_stable_id,
             "move_between_courses_preserves_material_id": moved_between_courses["course_id"] == second_course["id"] and moved_between_courses["stable_id"] == first_stable_id,
             "notes_and_stars_keep_file_identity": association_count == 2,
-            "classification_and_display_rename_are_metadata_only": renamed["material_type"] == "Reading"
+            "classification_and_display_rename_are_metadata_only": renamed["material_type"] == "reading"
             and renamed["display_name"] == "Synthetic renamed material"
             and renamed["filename"] != renamed["display_name"],
             "missing_file_and_relink": missing_flag == 1 and relinked["source_missing"] == 0 and Path(relinked["original_path"]) == moved_source,
@@ -243,16 +243,16 @@ def main() -> int:
             "remove_is_metadata_only": removed["active"] == 0 and removed["removed_at"] and moved_source.exists(),
             "original_checksums_unchanged": before_by_content == after_by_content,
             "reset_keeps_original_files": reset_before == reset_after and db_file_count == 0,
-            "first_run_has_three_clear_choices": all(
-                label in app_js for label in ("Try Demo", "Create My First Course", "Import Existing Course Folder")
-            ),
+            "first_run_has_clean_clear_choices": "Try Demo" not in app_js
+            and "data-create-first-course" in app_js
+            and "data-import-first-folder" in app_js,
             "native_multi_file_picker_and_drop": "blocking_pick_files" in tauri_source
             and "tauri://drag-drop" in app_js
             and "allow-choose-study-files" in capability,
             "material_type_is_structured": 'id="uploadMaterialType"' in index_html and "batchMaterialType" in app_js,
             "selection_controls_are_week_scoped": ".map(fileCard)" not in app_js
             and "rows.map((file) => fileCard(file, true))" in app_js,
-            "demo_and_private_visibility_are_separate": server.course_visibility_sql().startswith("c.source_kind!='demo'")
+            "legacy_demo_provenance_is_hidden": server.course_visibility_sql().startswith("c.source_kind!='demo'")
             and "visible_term.archived=0" in server.course_visibility_sql(),
         }
         for name, ok in checks.items():

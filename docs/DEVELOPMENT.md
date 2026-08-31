@@ -19,7 +19,14 @@ npm run ci
 
 ## Fixture Policy
 
-Use only synthetic fixture files in `demo-data/` and tests. Do not use real course materials, teacher questions, official solutions, private answers, or screenshots that show personal data.
+Use only synthetic fixture files under `tests/fixtures/` or a temporary test
+directory. Fixtures may be injected by tests, but must never be added to Tauri
+resources or any production runtime. Do not use real course materials, teacher
+questions, official solutions, private answers, or screenshots that show
+personal data.
+
+Run `python3 bin/i18n_acceptance.py` when changing interface copy. English and
+Simplified Chinese catalogs must keep identical key sets.
 
 ## Branches
 

@@ -22,6 +22,7 @@ PATTERNS = {
     "Linux home path": re.compile(rb"/home/[A-Za-z0-9._-]+/"),
     "Windows home path": re.compile(rb"[A-Za-z]:\\Users\\[^\\\s]+\\"),
     "public network bind": re.compile(rb"\b0\.0\.0\.0\b"),
+    "synthetic fixture course code": re.compile(rb"\bTEST\d{4}\b"),
 }
 
 FORBIDDEN_NAMES = {".env", ".env.local", ".privacy.local.json"}
@@ -55,6 +56,9 @@ def main() -> int:
     markers = local_markers()
     for path in sorted(item for item in app.rglob("*") if item.is_file()):
         rel = path.relative_to(app)
+        if "demo-data" in rel.parts or ("tests" in rel.parts and "fixtures" in rel.parts):
+            issues.append(f"test fixture directory bundled: {rel}")
+            continue
         if path.name in FORBIDDEN_NAMES or path.suffix.lower() in FORBIDDEN_SUFFIXES:
             issues.append(f"forbidden bundled file: {rel}")
             continue

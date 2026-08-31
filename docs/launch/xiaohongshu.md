@@ -15,9 +15,10 @@ Course -> Week -> Materials / Exercises
 
 - localhost / local-first
 - 课程文件留在自己电脑
-- OpenAI 可选，不配置 API 也能跑 Demo Mode
+- 第一次打开是空工作区，不捆绑示例课程
+- OpenAI 可选，不配置 API 也能整理、预览、搜索和做学习记录
 - 默认没有 telemetry
-- 仓库只放 synthetic demo，不放真实课程资料
+- 合成测试资料只留在自动化测试中，不进入生产 App
 
 项目已经开源，还很早期，欢迎试用和反馈。
 

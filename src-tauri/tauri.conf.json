@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "StudyHub Local",
-  "version": "0.1.5",
-  "identifier": "io.studyhublocal.desktop.prototype",
+  "version": "0.2.0",
+  "identifier": "io.studyhublocal.desktop",
   "build": {
     "frontendDist": "../desktop-shell"
   },
@@ -19,7 +19,6 @@
     "createUpdaterArtifacts": false,
     "resources": {
       "../static/": "static/",
-      "../demo-data/": "demo-data/",
       "../node_modules/katex/dist/": "katex/",
       "backend/studyhub-backend/": "backend/"
     },

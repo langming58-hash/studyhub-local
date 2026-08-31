@@ -1,6 +1,6 @@
-# Desktop Prototype Architecture
+# Desktop Architecture
 
-Status: experimental branch prototype only. No desktop binary has been published.
+Status: source-available prototype. No desktop binary has been published.
 
 The Python-free packaging gate is proven on Apple Silicon through a packaged
 `.app`, a stripped-PATH launch, and synthetic acceptance tests. A separate clean
@@ -38,8 +38,8 @@ optional OpenAI synchronization, and the read-only MCP endpoint.
 | Runtime optional | OpenAI API access | Source-grounded AI explanations and opt-in file search |
 
 `certifi` is a small Python runtime dependency for verified OpenAI HTTPS
-requests. Core browsing, local search, notes, stars, and Demo Mode do not need
-OpenAI.
+requests. Core browsing, local search, notes, stars, and the clean empty
+workspace do not need OpenAI.
 
 End users of the packaged prototype do not need Python, pip, a virtual
 environment, Node.js, or npm. Those remain build-time dependencies only.
@@ -124,9 +124,11 @@ process. A custom Swift wrapper would be small on macOS, but it would duplicate
 desktop lifecycle work for Windows and increase platform-specific maintenance.
 
 The internal release build dynamically remaps the builder's home directory from
-Rust compiler paths and scans every file in the `.app`. The current synthetic
-artifact contains no developer home path, secret, runtime database, or academic
-document. Build output is ignored and is not committed.
+Rust compiler paths and scans every file in the `.app`. Test fixtures are
+injected from `tests/fixtures/` during acceptance and are not bundled. The
+artifact must contain no developer home path, secret, runtime database,
+academic document, or test course code. Build output is ignored and is not
+committed.
 
 Build and verify locally:
 

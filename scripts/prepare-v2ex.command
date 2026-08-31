@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TITLE_FILE="$ROOT/docs/launch/clipboard/v2ex-title.txt"
 BODY_FILE="$ROOT/docs/launch/v2ex.md"
 REPO_URL="https://github.com/langming58-hash/studyhub-local"
-RELEASE_URL="https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.4"
+RELEASE_URL="https://github.com/langming58-hash/studyhub-local/releases/tag/v0.2.0"
 
 echo "StudyHub Local - V2EX launch helper"
 echo

@@ -7,10 +7,10 @@ What it does:
 - organizes files by Course -> Week -> Course Materials / Exercises
 - scans a local folder into a SQLite metadata index
 - supports local search and source previews
-- includes synthetic Demo Mode, enabled by default
-- works without an OpenAI API key
+- starts with a clean empty workspace and no bundled sample courses
+- local organization, preview, search, notes, and study records work without an OpenAI API key
 - optionally uses server-side OpenAI retrieval with source citations
-- refuses to generate new practice questions; it only returns teacher-provided/demo questions when found
+- refuses to generate new practice questions; it only returns teacher-provided questions from the user's imported material when found
 - exposes a read-only MCP endpoint for local integrations
 
 Privacy/security defaults:
@@ -23,6 +23,6 @@ Privacy/security defaults:
 
 Repository: https://github.com/langming58-hash/studyhub-local
 
-Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.5
+Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.2.0
 
 Issues, feedback, and PRs are welcome. I would especially appreciate testing on different operating systems and feedback on onboarding.

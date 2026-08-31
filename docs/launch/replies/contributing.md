@@ -10,4 +10,4 @@ Before opening a PR, run:
 npm run ci
 ```
 
-Good first areas are onboarding docs, synthetic Demo Mode examples, accessibility, search ranking, and cross-platform launcher polish.
+Good first areas are onboarding docs, isolated synthetic test fixtures, accessibility, search ranking, and cross-platform launcher polish.

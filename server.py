@@ -80,15 +80,9 @@ TEXT_CACHE_DIR = CACHE_DIR / "text"
 TEXT_EXTRACTION_VERSION = "extract-v2-office-paragraphs"
 LOG_DIR = configured_path("STUDYHUB_LOG_DIR", RUNTIME_DIR / "logs")
 STATIC_DIR = configured_path("STUDYHUB_STATIC_DIR", APP_ROOT / "static")
-DEMO_DATA_DIR = configured_path("STUDYHUB_DEMO_DATA_DIR", APP_ROOT / "demo-data")
 KATEX_DIST_DIR = configured_path("STUDYHUB_KATEX_DIR", APP_ROOT / "node_modules" / "katex" / "dist")
 DESKTOP_MODE = os.environ.get("STUDYHUB_DESKTOP", "").strip().lower() in {"1", "true", "yes", "on"}
 PACKAGED_BACKEND = bool(getattr(sys, "frozen", False))
-DEMO_MODE = os.environ.get("DEMO_MODE", "").strip().lower() in {"1", "true", "yes", "on"} or (
-    not ENV_LOCAL_EXISTS
-    and "DEMO_MODE" not in os.environ
-    and "STUDY_LIBRARY_PATH" not in os.environ
-)
 
 
 def read_local_env_entries() -> dict[str, str]:
@@ -108,7 +102,6 @@ def write_local_env_entries(entries: dict[str, str]) -> None:
     ensure_dirs()
     ENV_LOCAL_PATH.parent.mkdir(parents=True, exist_ok=True)
     ordered = [
-        "DEMO_MODE",
         "STUDY_LIBRARY_PATH",
         "HOST",
         "PORT",
@@ -147,7 +140,7 @@ def validate_user_library_path(raw_path: str) -> Path:
 def save_study_library_config(raw_path: str) -> dict[str, Any]:
     validate_user_library_path(raw_path)
     entries = read_local_env_entries()
-    entries["DEMO_MODE"] = "false"
+    entries.pop("DEMO_MODE", None)
     entries["STUDY_LIBRARY_PATH"] = raw_path.strip()
     entries.setdefault("HOST", "127.0.0.1")
     write_local_env_entries(entries)
@@ -161,7 +154,7 @@ def save_study_library_config(raw_path: str) -> dict[str, Any]:
 DB_PATH = configured_path("DATABASE_PATH", DATA_DIR / "studyhub.sqlite")
 DEFAULT_STUDY_ROOT = configured_path(
     "STUDY_LIBRARY_PATH",
-    DEMO_DATA_DIR if DEMO_MODE else Path.home() / "StudyLibrary",
+    DATA_DIR / "managed-library",
 )
 OPENAI_API_BASE = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1").rstrip("/")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4")
@@ -244,17 +237,18 @@ ACADEMIC_EXTS = {
     ".webp",
 }
 MATERIAL_TYPES = (
-    "Lecture",
-    "Tutorial",
-    "Workshop",
-    "Lab",
-    "Quiz",
-    "Assignment",
-    "Reading",
-    "Exam",
-    "Other",
+    "lecture",
+    "tutorial",
+    "workshop",
+    "lab",
+    "quiz",
+    "assignment",
+    "reading",
+    "exam",
+    "other",
 )
-EXERCISE_MATERIAL_TYPES = {"Tutorial", "Workshop", "Lab", "Quiz", "Assignment", "Exam"}
+MATERIAL_TYPE_LABELS = {item: item.title() for item in MATERIAL_TYPES}
+EXERCISE_MATERIAL_TYPES = {"tutorial", "workshop", "lab", "quiz", "assignment", "exam"}
 SYSTEM_INBOX_FOLDER = "__studyhub_unclassified__"
 TEXT_EXTRACTABLE_EXTS = {
     ".pdf",
@@ -300,7 +294,7 @@ class PayloadTooLarge(ValueError):
 
 
 def ensure_dirs() -> None:
-    for path in (DATA_DIR, CACHE_DIR, TEXT_CACHE_DIR, preview_cache_dir(), LOG_DIR):
+    for path in (DATA_DIR, DATA_DIR / "managed-library", CACHE_DIR, TEXT_CACHE_DIR, preview_cache_dir(), LOG_DIR):
         path.mkdir(parents=True, exist_ok=True)
 
 
@@ -572,19 +566,22 @@ def deterministic_stable_id(prefix: str, value: str) -> str:
 
 
 def normalize_material_type(value: Any) -> str:
-    raw = clean_metadata_text(value or "Other", "Material type", required=False, limit=40) or "Other"
+    raw = clean_metadata_text(value or "other", "Material type", required=False, limit=40) or "other"
     aliases = {
-        "slides": "Lecture",
-        "course materials": "Lecture",
-        "practice": "Quiz",
-        "revision": "Other",
-        "readings": "Reading",
+        "slides": "lecture",
+        "course materials": "lecture",
+        "practice": "quiz",
+        "revision": "other",
+        "readings": "reading",
     }
     lowered = raw.lower()
-    for item in MATERIAL_TYPES:
-        if item.lower() == lowered:
-            return item
-    return aliases.get(lowered, "Other")
+    if lowered in MATERIAL_TYPES:
+        return lowered
+    return aliases.get(lowered, "other")
+
+
+def material_type_label(material_type: str) -> str:
+    return MATERIAL_TYPE_LABELS.get(normalize_material_type(material_type), "Other")
 
 
 def section_for_material_type(material_type: str) -> str:
@@ -1625,10 +1622,10 @@ def init_db(conn: sqlite3.Connection) -> None:
         "INSERT OR IGNORE INTO terms(stable_id, name, archived, sort_order, created_at, updated_at) VALUES ('term_imported', 'Imported Courses', 0, 0, ?, ?)",
         (now, now),
     )
-    conn.execute(
-        "INSERT OR IGNORE INTO terms(stable_id, name, archived, sort_order, created_at, updated_at) VALUES ('term_demo', 'Demo Term', 0, 0, ?, ?)",
-        (now, now),
-    )
+    # v0.2.0 removes only records that carry the old bundled-fixture provenance.
+    # Names and course codes are deliberately not used as deletion criteria.
+    conn.execute("DELETE FROM courses WHERE source_kind='demo'")
+    conn.execute("DELETE FROM terms WHERE stable_id='term_demo' AND NOT EXISTS (SELECT 1 FROM courses WHERE term_id=terms.id)")
     imported_term_id = conn.execute("SELECT id FROM terms WHERE stable_id='term_imported'").fetchone()["id"]
     course_rows = conn.execute("SELECT id, folder_name, created_at, code, name, path, stable_id FROM courses").fetchall()
     for row in course_rows:
@@ -1657,9 +1654,18 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE files SET display_name=filename WHERE display_name='' OR display_name IS NULL")
     conn.execute("UPDATE files SET material_created_at=indexed_at WHERE material_created_at='' OR material_created_at IS NULL")
     conn.execute("UPDATE files SET material_updated_at=indexed_at WHERE material_updated_at='' OR material_updated_at IS NULL")
-    conn.execute("UPDATE files SET material_type=CASE WHEN category IN ('Lecture','Tutorial','Workshop','Lab','Quiz','Assignment','Reading','Exam') THEN category ELSE 'Other' END WHERE material_type='' OR material_type IS NULL")
+    conn.execute(
+        """
+        UPDATE files SET material_type=CASE lower(COALESCE(NULLIF(material_type, ''), category, 'other'))
+          WHEN 'lecture' THEN 'lecture' WHEN 'tutorial' THEN 'tutorial'
+          WHEN 'workshop' THEN 'workshop' WHEN 'lab' THEN 'lab'
+          WHEN 'quiz' THEN 'quiz' WHEN 'assignment' THEN 'assignment'
+          WHEN 'reading' THEN 'reading' WHEN 'exam' THEN 'exam'
+          ELSE 'other' END
+        """
+    )
     conn.execute("UPDATE files SET source_missing=CASE WHEN active=0 AND missing_at IS NOT NULL THEN 1 ELSE source_missing END")
-    conn.execute("UPDATE courses SET active=0 WHERE source_kind IN ('folder','demo') AND removed_at IS NULL AND NOT EXISTS (SELECT 1 FROM files WHERE files.course_id=courses.id AND files.active=1)")
+    conn.execute("UPDATE courses SET active=0 WHERE source_kind='folder' AND removed_at IS NULL AND NOT EXISTS (SELECT 1 FROM files WHERE files.course_id=courses.id AND files.active=1)")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_courses_stable_id ON courses(stable_id)")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_weeks_stable_id ON weeks(stable_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_courses_term_active ON courses(term_id, archived, active)")
@@ -1735,11 +1741,9 @@ def refresh_course_week_counts(conn: sqlite3.Connection) -> None:
         """
         UPDATE courses SET active=CASE
           WHEN source_kind IN ('managed','system') AND removed_at IS NULL THEN 1
-          WHEN source_kind='demo' AND ?=1 AND removed_at IS NULL THEN 1
           WHEN EXISTS (SELECT 1 FROM files WHERE files.course_id=courses.id AND files.active=1 AND files.removed_at IS NULL) THEN 1
           ELSE 0 END
         """,
-        (1 if DEMO_MODE else 0,),
     )
 
 
@@ -2000,26 +2004,6 @@ def file_metadata(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def seed_demo_records(conn: sqlite3.Connection) -> None:
-    """Add small synthetic records so demo-only views are not empty."""
-    if not DEMO_MODE:
-        return
-    existing = conn.execute("SELECT COUNT(*) AS c FROM wrong_questions").fetchone()["c"]
-    if existing:
-        return
-    course = conn.execute("SELECT id FROM courses WHERE code='TEST1001'").fetchone()
-    source = conn.execute("SELECT id FROM files WHERE filename='Tutorial 01 Questions.txt'").fetchone()
-    if not course:
-        return
-    conn.execute(
-        """
-        INSERT INTO wrong_questions(course_id, week_label, type, source_file_id, question_ref, mistake, concept, attempts, mastery, created_at)
-        VALUES (?, 'Week 01', 'Tutorial', ?, 'Q1', 'Mixed up opportunity cost with total money spent.', 'Opportunity cost', 1, 'new', ?)
-        """,
-        (course["id"], source["id"] if source else None, now_iso()),
-    )
-
-
 def _legacy_scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
     study_root = study_root.expanduser().resolve()
     if not study_root.exists():
@@ -2226,7 +2210,6 @@ def _legacy_scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
         "INSERT INTO sync_events(event_type, detail, created_at) VALUES (?, ?, ?)",
         ("scan", json.dumps(stats.__dict__), now_iso()),
     )
-    seed_demo_records(conn)
     conn.commit()
     conn.close()
     log_event("scan", json.dumps({"files": stats.files, "root": "configured-study-library"}, ensure_ascii=False))
@@ -2305,9 +2288,8 @@ def scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
     stats = ScanStats()
     src_index = source_index_map(study_root)
     indexed_paths: set[str] = set()
-    demo_scan = DEMO_MODE and study_root == DEMO_DATA_DIR.expanduser().resolve()
-    source_kind = "demo" if demo_scan else "folder"
-    term = ensure_term(conn, "Demo Term" if demo_scan else "Imported Courses", stable_id="term_demo" if demo_scan else "term_imported")
+    source_kind = "folder"
+    term = ensure_term(conn, "Imported Courses", stable_id="term_imported")
 
     for course_dir in sorted(path for path in study_root.iterdir() if path.is_dir()):
         if course_dir.name.startswith(".") or course_dir.name == "Needs Review":
@@ -2364,7 +2346,8 @@ def scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
             week_label, week_number, week_kind = extract_learning_unit(rel_parts)
             week = ensure_week_record(conn, course_id, week_label, number=week_number, origin="scan", kind=week_kind)
             section, category, source_label = human_category(rel_parts)
-            category = category or normalize_material_type(path.parent.name)
+            material_type = normalize_material_type(category or path.parent.name)
+            category = material_type_label(material_type)
             source_row = src_index.get(rel, {})
             if source_row.get("Original or Saved Page"):
                 source_label = "Official Canvas Material" if "official" in source_row.get("Original or Saved Page", "").lower() else source_label
@@ -2391,7 +2374,7 @@ def scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
                      resolved_path, rel, source, source_label, digest, stat.st_size, modified, now_iso(), ext, mime,
                      1 if source == "official" else 0, new_stable_id("material"), name, week_number, resolved_path,
                      source_type_for(source_label), ext, stat.st_size, digest, is_solution_file(path, category),
-                     is_question_source_file(path, section, category), path.name, normalize_material_type(category)),
+                     is_question_source_file(path, section, category), path.name, material_type),
                 )
                 file_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
                 stats.new_files += 1
@@ -2416,7 +2399,7 @@ def scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
                     """,
                     (locked, course_id, locked, week["id"], locked, code, locked, name, locked, week_label,
                      locked, week_number, locked, section, locked, category, locked, exercise_type, locked,
-                     normalize_material_type(category), rel, source, source_label, 1 if source == "official" else 0, file_id),
+                     material_type, rel, source, source_label, 1 if source == "official" else 0, file_id),
                 )
                 force = False
             conn.execute(
@@ -2463,7 +2446,6 @@ def scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
         if week["origin"] == "scan" and not week["has_materials"] and week["path"] and not Path(week["path"]).exists():
             conn.execute("UPDATE weeks SET removed_at=?, updated_at=? WHERE id=?", (now_iso(), now_iso(), week["id"]))
     conn.execute("INSERT INTO sync_events(event_type, detail, created_at) VALUES (?, ?, ?)", ("scan", json.dumps(stats.__dict__), now_iso()))
-    seed_demo_records(conn)
     conn.commit()
     conn.close()
     log_event("scan", json.dumps({"files": stats.files, "root": "configured-study-library"}, ensure_ascii=False))
@@ -2497,7 +2479,7 @@ def manage_term(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any
         term = conn.execute("SELECT * FROM terms WHERE id=?", (term_id,)).fetchone()
         if term is None:
             raise FileNotFoundError("Term was not found")
-        if term["stable_id"] in {"term_imported", "term_demo"} and action == "archive":
+        if term["stable_id"] == "term_imported" and action == "archive":
             raise PermissionError("The built-in term cannot be archived")
         if action == "rename":
             name = clean_metadata_text(body.get("name"), "Term name")
@@ -2523,12 +2505,11 @@ def manage_course(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, A
             if term is None:
                 raise ValueError("Choose an active term")
         else:
-            default_term_name = "Demo Term" if DEMO_MODE else "Imported Courses"
-            default_term_id = "term_demo" if DEMO_MODE else "term_imported"
-            term = ensure_term(conn, str(body.get("term_name") or default_term_name), stable_id=default_term_id if not body.get("term_name") else None)
+            default_term_name = "Imported Courses"
+            term = ensure_term(conn, str(body.get("term_name") or default_term_name), stable_id="term_imported" if not body.get("term_name") else None)
             term_id = int(term["id"])
         stable_id = new_stable_id("course")
-        source_kind = "demo" if DEMO_MODE else "managed"
+        source_kind = "managed"
         conn.execute(
             """
             INSERT INTO courses(stable_id, code, course_code, name, display_name, folder_name, path,
@@ -2625,7 +2606,7 @@ def classification_suggestion(conn: sqlite3.Connection, path: Path) -> dict[str,
             break
     week_label, week_number, week_kind = extract_learning_unit(list(path.parts[-5:]))
     lowered = haystack.lower()
-    material_type = "Other"
+    material_type = "other"
     for candidate in MATERIAL_TYPES[:-1]:
         if candidate.lower() in lowered:
             material_type = candidate
@@ -2676,9 +2657,10 @@ def register_material_paths(conn: sqlite3.Connection, body: dict[str, Any]) -> d
             raise ValueError("Week or module does not belong to this course")
     else:
         week = ensure_week_record(conn, course_id, week_label or "Unclassified", origin="managed", kind="module" if not week_label else None)
-    material_type = normalize_material_type(body.get("material_type") or "Other")
+    material_type = normalize_material_type(body.get("material_type") or "other")
+    category_label = material_type_label(material_type)
     section = section_for_material_type(material_type)
-    exercise_type = material_type if section == "02 Exercises" else ""
+    exercise_type = category_label if section == "02 Exercises" else ""
     results = []
     for raw_path in raw_paths:
         path = validate_reference_path(raw_path)
@@ -2709,7 +2691,7 @@ def register_material_paths(conn: sqlite3.Connection, body: dict[str, Any]) -> d
               metadata_locked, source_missing, removed_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, NULL, ?, ?, 'reference', ?, 1, 0, NULL)
             """,
-            (course_id, week["id"], course["course_code"], week["week_label"], section, material_type,
+            (course_id, week["id"], course["course_code"], week["week_label"], section, category_label,
              exercise_type, path.name, str(path), rel_path, "official" if is_official else "user",
              "Teacher-provided material" if is_official else "User-selected local file", digest, stat.st_size,
              modified, now_iso(), ext, mime, 1 if is_official else 0, stable_id, course["display_name"],
@@ -2836,10 +2818,11 @@ def manage_materials(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str
         else:
             week = ensure_week_record(conn, course_id, str(body.get("week_label") or rows[0]["week_label"] or "Unclassified"), origin="managed")
         material_type = normalize_material_type(body.get("material_type") or rows[0]["material_type"] or rows[0]["category"])
+        category_label = material_type_label(material_type)
         section = section_for_material_type(material_type)
-        exercise_type = material_type if section == "02 Exercises" else ""
+        exercise_type = category_label if section == "02 Exercises" else ""
         placeholders = ",".join("?" for _ in material_ids)
-        params = [course_id, week["id"], course["course_code"], course["display_name"], week["week_label"], week["week_number"], section, material_type, exercise_type, material_type, *material_ids]
+        params = [course_id, week["id"], course["course_code"], course["display_name"], week["week_label"], week["week_number"], section, category_label, exercise_type, material_type, *material_ids]
         conn.execute(
             f"UPDATE files SET course_id=?, week_id=?, course_code=?, course_name=?, week_label=?, week_number=?, section=?, category=?, exercise_type=?, material_type=?, inbox=0, metadata_locked=1 WHERE id IN ({placeholders})",
             params,
@@ -2851,7 +2834,7 @@ def manage_materials(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str
             )
         conn.execute(
             f"UPDATE files_fts SET course_code=?, week_label=?, category=? WHERE rowid IN ({placeholders})",
-            [course["course_code"], week["week_label"], material_type, *material_ids],
+            [course["course_code"], week["week_label"], category_label, *material_ids],
         )
     elif action == "rename":
         if len(material_ids) != 1:
@@ -2961,20 +2944,11 @@ def configure_managed_workspace() -> dict[str, Any]:
     managed_root = DATA_DIR / "managed-library"
     managed_root.mkdir(parents=True, exist_ok=True)
     entries = read_local_env_entries()
-    entries["DEMO_MODE"] = "false"
+    entries.pop("DEMO_MODE", None)
     entries["STUDY_LIBRARY_PATH"] = str(managed_root)
     entries.setdefault("HOST", "127.0.0.1")
     write_local_env_entries(entries)
     return {"ok": True, "restartRequired": True, "message": "Your private StudyHub workspace is ready."}
-
-
-def configure_demo_workspace() -> dict[str, Any]:
-    entries = read_local_env_entries()
-    entries["DEMO_MODE"] = "true"
-    entries.pop("STUDY_LIBRARY_PATH", None)
-    entries.setdefault("HOST", "127.0.0.1")
-    write_local_env_entries(entries)
-    return {"ok": True, "restartRequired": True, "message": "Demo Mode will reopen with synthetic courses."}
 
 
 def course_visibility_sql(
@@ -2983,7 +2957,7 @@ def course_visibility_sql(
     include_system: bool = False,
     include_archived_term: bool = False,
 ) -> str:
-    mode = f"{alias}.source_kind='demo'" if DEMO_MODE else f"{alias}.source_kind!='demo'"
+    mode = f"{alias}.source_kind!='demo'"
     system = "" if include_system else f" AND {alias}.source_kind!='system'"
     term = "" if include_archived_term else f" AND EXISTS (SELECT 1 FROM terms visible_term WHERE visible_term.id={alias}.term_id AND visible_term.archived=0)"
     return f"{mode}{system} AND {alias}.removed_at IS NULL{term}"
@@ -3111,10 +3085,9 @@ def api_health(conn: sqlite3.Connection) -> dict[str, Any]:
     extraction_warnings = [pdf_dependency_error] if pdf_dependency_error else []
     return {
         "app": APP_NAME,
-        "version": "0.1.5",
+        "version": "0.2.0",
         "desktopMode": DESKTOP_MODE,
         "packagedBackend": PACKAGED_BACKEND,
-        "demoMode": DEMO_MODE,
         "studyLibraryConnected": DEFAULT_STUDY_ROOT.exists(),
         "database": "Healthy",
         "filesIndexed": file_count,
@@ -3160,26 +3133,15 @@ def api_preflight(conn: sqlite3.Connection) -> dict[str, Any]:
     database_parent = DB_PATH.expanduser().resolve().parent
     database_writable = database_parent.exists() and os.access(database_parent, os.W_OK)
 
-    if DEMO_MODE:
-        items.append(
-            preflight_item(
-                "demo_mode",
-                "info",
-                "You are viewing demo materials",
-                "StudyHub is using small synthetic sample files.",
-                "You can try the product without adding private course files or an OpenAI key.",
-                "Open a course or switch to your own study folder from Settings.",
-            )
-        )
     if not ENV_LOCAL_EXISTS:
         items.append(
             preflight_item(
                 "first_launch",
                 "info",
                 "First launch is ready",
-                "No local settings file was found, so StudyHub started in Demo Mode.",
+                "StudyHub created an empty local workspace for your metadata.",
                 "Nothing private has been scanned.",
-                "Use the demo now, or choose your own study folder from Settings when you are ready.",
+                "Create a course or import an existing course folder to begin.",
             )
         )
     if not root_exists:
@@ -3193,7 +3155,7 @@ def api_preflight(conn: sqlite3.Connection) -> dict[str, Any]:
                 "Choose an existing local study folder in Settings, then restart StudyHub.",
             )
         )
-    elif not DEMO_MODE and file_count == 0:
+    elif file_count == 0:
         items.append(
             preflight_item(
                 "study_library_empty",
@@ -3264,7 +3226,6 @@ def api_preflight(conn: sqlite3.Connection) -> dict[str, Any]:
     return {
         "readyToStudy": root_exists and file_count > 0 and database_writable,
         "firstLaunch": not ENV_LOCAL_EXISTS,
-        "demoMode": DEMO_MODE,
         "fileCount": file_count,
         "courseCount": conn.execute(
             f"SELECT COUNT(*) AS c FROM courses c WHERE c.active=1 AND c.archived=0 AND {course_visibility_sql('c')}"
@@ -4563,7 +4524,6 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 "/api/cache/clear",
                 "/api/reset",
                 "/api/config/managed-workspace",
-                "/api/config/demo-workspace",
             }:
                 self.handle_product_management(parsed.path)
             else:
@@ -4579,9 +4539,6 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         body = self.parse_body_json()
         if path == "/api/config/managed-workspace":
             self.send_json(configure_managed_workspace())
-            return
-        if path == "/api/config/demo-workspace":
-            self.send_json(configure_demo_workspace())
             return
         if path in {"/api/materials/import-paths", "/api/materials/import-folder"} and not DESKTOP_MODE:
             raise PermissionError("Native file and folder import is available in the desktop app")

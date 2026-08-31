@@ -26,7 +26,6 @@ struct BackendConfig {
     prefix_args: Vec<OsString>,
     packaged: bool,
     static_dir: PathBuf,
-    demo_dir: PathBuf,
     katex_dir: PathBuf,
     runtime_dir: PathBuf,
     config_path: PathBuf,
@@ -68,7 +67,7 @@ fn backend_config(app: &tauri::App) -> Result<BackendConfig, String> {
     };
 
     #[cfg(debug_assertions)]
-    let (executable, prefix_args, packaged, static_dir, demo_dir, katex_dir) = {
+    let (executable, prefix_args, packaged, static_dir, katex_dir) = {
         let root = development_root();
         (
             PathBuf::from(
@@ -77,13 +76,12 @@ fn backend_config(app: &tauri::App) -> Result<BackendConfig, String> {
             vec![root.join("server.py").into_os_string()],
             false,
             root.join("static"),
-            root.join("demo-data"),
             root.join("node_modules/katex/dist"),
         )
     };
 
     #[cfg(not(debug_assertions))]
-    let (executable, prefix_args, packaged, static_dir, demo_dir, katex_dir) = (
+    let (executable, prefix_args, packaged, static_dir, katex_dir) = (
         app.path()
             .resolve("backend/studyhub-backend", BaseDirectory::Resource)
             .map_err(|error| error.to_string())?,
@@ -91,9 +89,6 @@ fn backend_config(app: &tauri::App) -> Result<BackendConfig, String> {
         true,
         app.path()
             .resolve("static", BaseDirectory::Resource)
-            .map_err(|error| error.to_string())?,
-        app.path()
-            .resolve("demo-data", BaseDirectory::Resource)
             .map_err(|error| error.to_string())?,
         app.path()
             .resolve("katex", BaseDirectory::Resource)
@@ -105,7 +100,6 @@ fn backend_config(app: &tauri::App) -> Result<BackendConfig, String> {
         prefix_args,
         packaged,
         static_dir,
-        demo_dir,
         katex_dir,
         runtime_dir: app_data,
         config_path: app_config.join("settings.env"),
@@ -158,7 +152,6 @@ fn start_backend(config: &BackendConfig) -> Result<BackendProcess, String> {
         .env("STUDYHUB_RUNTIME_DIR", &config.runtime_dir)
         .env("STUDYHUB_CONFIG_PATH", &config.config_path)
         .env("STUDYHUB_STATIC_DIR", &config.static_dir)
-        .env("STUDYHUB_DEMO_DATA_DIR", &config.demo_dir)
         .env("STUDYHUB_KATEX_DIR", &config.katex_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

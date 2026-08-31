@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BODY_FILE="$ROOT/docs/launch/clipboard/linkedin-post.txt"
-MEDIA_FILE="$ROOT/docs/assets/demo-flow.gif"
+MEDIA_FILE="$ROOT/docs/assets/screenshots/first-run-en.png"
 REPO_URL="https://github.com/langming58-hash/studyhub-local"
 
 echo "StudyHub Local - LinkedIn helper"
@@ -24,13 +24,13 @@ echo "Copying LinkedIn draft to clipboard..."
 pbcopy < "$BODY_FILE"
 echo "Opening LinkedIn composer..."
 open "https://www.linkedin.com/feed/?shareActive=true"
-echo "Revealing suggested synthetic demo GIF in Finder..."
+echo "Revealing the approved clean-workspace screenshot in Finder..."
 open -R "$MEDIA_FILE"
 echo
 echo "Manual steps:"
 echo "1. Log in or verify if LinkedIn asks."
 echo "2. Paste the post text."
-echo "3. Optionally attach the synthetic demo GIF shown in Finder."
+echo "3. Optionally attach the clean-workspace screenshot shown in Finder."
 echo "4. Review the preview."
 echo "5. Click Post yourself."
 echo

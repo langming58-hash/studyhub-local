@@ -13,7 +13,7 @@ StudyHub Local 是一个早期开源项目，核心结构很简单：
 - Practice question safety：不生成新题，只从材料中找题
 - 只读 MCP endpoint，方便本地集成
 
-我在隐私和安全上做了比较保守的设计。默认 Demo Mode 可以直接运行，不需要 OpenAI API key；默认没有 telemetry；服务器只监听 localhost；真实课程文件应该放在仓库外；`.env.local`、运行时数据库、提取文本、vector metadata、私有路径都会被排除或扫描拦截。
+我在隐私和安全上做了比较保守的设计。应用第一次打开是干净的空工作区，本地整理、预览、搜索和学习记录不需要 OpenAI API key；默认没有 telemetry；服务器只监听 localhost；真实课程文件应该放在仓库外；`.env.local`、运行时数据库、提取文本、vector metadata、私有路径都会被排除或扫描拦截。
 
 如果开启 OpenAI/vector indexing，选中的文件内容会发送给 OpenAI 做检索，所以我没有把它宣传成「永远 100% 本地」。更准确地说，它是 local-first，AI 是可选的。
 
@@ -21,6 +21,6 @@ StudyHub Local 是一个早期开源项目，核心结构很简单：
 
 Repo: https://github.com/langming58-hash/studyhub-local
 
-Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.5
+Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.2.0
 
 欢迎试用、提 Issue、PR，尤其欢迎对本地优先架构、隐私边界、教育工具体验和文档提取的反馈。

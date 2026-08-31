@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synthetic acceptance checks for the isolated desktop prototype."""
+"""Synthetic acceptance checks for the isolated StudyHub desktop app."""
 
 from __future__ import annotations
 
@@ -37,7 +37,6 @@ def start_backend(
     runtime: Path,
     port: int,
     *,
-    demo_mode: bool = True,
     study_root: Path | None = None,
     packaged: bool = False,
 ) -> tuple[subprocess.Popen[str], str, int]:
@@ -54,26 +53,22 @@ def start_backend(
         }
         command = [str(PACKAGED_BACKEND), "serve", "--port", str(port)]
         static_dir = APP_RESOURCES / "static"
-        demo_dir = APP_RESOURCES / "demo-data"
         katex_dir = APP_RESOURCES / "katex"
         cwd = runtime
     else:
         env = os.environ.copy()
         command = [sys.executable, str(ROOT / "server.py"), "serve", "--port", str(port)]
         static_dir = ROOT / "static"
-        demo_dir = ROOT / "demo-data"
         katex_dir = ROOT / "node_modules" / "katex" / "dist"
         cwd = ROOT
     env.pop("STUDY_LIBRARY_PATH", None)
     env.update(
         {
-            "DEMO_MODE": "true" if demo_mode else "false",
             "HOST": "127.0.0.1",
             "STUDYHUB_DESKTOP": "true",
             "STUDYHUB_RUNTIME_DIR": str(runtime),
             "STUDYHUB_CONFIG_PATH": str(runtime / "settings.env"),
             "STUDYHUB_STATIC_DIR": str(static_dir),
-            "STUDYHUB_DEMO_DATA_DIR": str(demo_dir),
             "STUDYHUB_KATEX_DIR": str(katex_dir),
             "OPENAI_API_KEY": "",
             "OPENAI_VECTOR_STORE_ID": "",
@@ -217,7 +212,8 @@ def packaged_checks(results: dict[str, bool]) -> None:
             "packaged_app_exists": APP.is_dir(),
             "packaged_sidecar_exists": PACKAGED_BACKEND.is_file(),
             "packaged_static_assets_exist": (APP_RESOURCES / "static" / "index.html").is_file(),
-            "packaged_demo_assets_exist": (APP_RESOURCES / "demo-data").is_dir(),
+            "packaged_test_fixtures_absent": not (APP_RESOURCES / "tests").exists()
+            and not (APP_RESOURCES / "demo-data").exists(),
             "packaged_katex_assets_exist": (APP_RESOURCES / "katex" / "katex.min.js").is_file(),
             "packaged_server_source_absent": not (APP_RESOURCES / "server.py").exists(),
         }
@@ -227,37 +223,34 @@ def packaged_checks(results: dict[str, bool]) -> None:
 
     with tempfile.TemporaryDirectory(prefix="studyhub-packaged-acceptance-") as raw_tmp:
         temp_root = Path(raw_tmp)
-        demo_runtime = temp_root / "demo-runtime"
-        demo_process, demo_url, demo_port = start_backend(demo_runtime, 0, packaged=True)
+        clean_runtime = temp_root / "clean-runtime"
+        clean_process, clean_url, clean_port = start_backend(clean_runtime, 0, packaged=True)
         try:
-            demo_health = health(demo_url)
-            demo_courses = get_json(demo_url, "/api/courses")
-            demo_search = get_json(demo_url, "/api/search?q=derivative")
+            clean_health = health(clean_url)
+            clean_courses = get_json(clean_url, "/api/courses")
+            clean_search = get_json(clean_url, "/api/search?q=derivative")
             results.update(
                 {
-                    "packaged_backend_health": bool(demo_health),
-                    "packaged_backend_reports_frozen": demo_health.get("packagedBackend") is True,
-                    "packaged_backend_loopback": demo_url == f"http://localhost:{demo_port}",
-                    "packaged_demo_mode": demo_health.get("demoMode") is True,
-                    "packaged_demo_files": int(demo_health.get("filesIndexed") or 0) == 10,
-                    "packaged_demo_courses": isinstance(demo_courses, list)
-                    and len(demo_courses) == 3
-                    and all(str(course.get("code") or "").startswith("TEST") for course in demo_courses),
-                    "packaged_demo_search": isinstance(demo_search, list)
-                    and any("Derivatives" in str(item.get("filename") or "") for item in demo_search),
-                    "packaged_verified_https_bundle": demo_health.get("verifiedHttps") == "Available",
-                    "packaged_openai_optional": demo_health.get("openAI") == "Not configured",
-                    "packaged_missing_poppler_is_nonfatal": demo_health.get("pdfTextExtraction") == "Unavailable",
-                    "packaged_missing_libreoffice_is_nonfatal": demo_health.get("officeVisualPreview") == "Unavailable",
-                    "packaged_runtime_database_writable": (demo_runtime / "data" / "studyhub.sqlite").is_file(),
+                    "packaged_backend_health": bool(clean_health),
+                    "packaged_backend_reports_frozen": clean_health.get("packagedBackend") is True,
+                    "packaged_backend_loopback": clean_url == f"http://localhost:{clean_port}",
+                    "packaged_clean_first_run_has_no_demo_contract": "demoMode" not in clean_health,
+                    "packaged_clean_first_run_has_zero_files": int(clean_health.get("filesIndexed") or 0) == 0,
+                    "packaged_clean_first_run_has_zero_courses": clean_courses == [],
+                    "packaged_clean_first_run_search_empty": clean_search == [],
+                    "packaged_verified_https_bundle": clean_health.get("verifiedHttps") == "Available",
+                    "packaged_openai_optional": clean_health.get("openAI") == "Not configured",
+                    "packaged_missing_poppler_is_nonfatal": clean_health.get("pdfTextExtraction") == "Unavailable",
+                    "packaged_missing_libreoffice_is_nonfatal": clean_health.get("officeVisualPreview") == "Unavailable",
+                    "packaged_runtime_database_writable": (clean_runtime / "data" / "studyhub.sqlite").is_file(),
                 }
             )
         finally:
-            stop_backend(demo_process)
-        results["packaged_clean_shutdown"] = demo_process.poll() == 0
+            stop_backend(clean_process)
+        results["packaged_clean_shutdown"] = clean_process.poll() == 0
 
         synthetic_library = temp_root / "Synthetic StudyLibrary"
-        shutil.copytree(APP_RESOURCES / "demo-data", synthetic_library)
+        shutil.copytree(ROOT / "tests" / "fixtures" / "synthetic-courses", synthetic_library)
         incoming_dir = temp_root / "Incoming Synthetic Materials"
         incoming_dir.mkdir()
         incoming_paths = [
@@ -271,7 +264,6 @@ def packaged_checks(results: dict[str, bool]) -> None:
         custom_process, custom_url, _ = start_backend(
             custom_runtime,
             0,
-            demo_mode=False,
             study_root=synthetic_library,
             packaged=True,
         )
@@ -353,7 +345,7 @@ def packaged_checks(results: dict[str, bool]) -> None:
             cache_result = post_json(custom_url, "/api/cache/clear", {})
             results.update(
                 {
-                    "packaged_custom_library_mode": custom_health.get("demoMode") is False,
+                    "packaged_custom_library_has_no_demo_contract": "demoMode" not in custom_health,
                     "packaged_custom_library_indexed": int(custom_health.get("filesIndexed") or 0) == 10,
                     "packaged_custom_courses": isinstance(courses, list)
                     and len(courses) == 3
@@ -372,7 +364,7 @@ def packaged_checks(results: dict[str, bool]) -> None:
                     "packaged_batch_reclassification": classified.get("ok") is True
                     and isinstance(managed_files, list)
                     and len(managed_files) == 2
-                    and all(item.get("material_type") == "Reading" and item.get("week_label") == "Review Block" for item in managed_files),
+                    and all(item.get("material_type") == "reading" and item.get("week_label") == "Review Block" for item in managed_files),
                     "packaged_course_archive_restore": archived_course.get("archived") == 1
                     and restored_course.get("archived") == 0,
                     "packaged_cache_rebuild": cache_result.get("ok") is True and int(cache_result.get("reindexed") or 0) >= 2,
@@ -388,7 +380,6 @@ def packaged_checks(results: dict[str, bool]) -> None:
         reopened_process, reopened_url, _ = start_backend(
             custom_runtime,
             0,
-            demo_mode=False,
             study_root=synthetic_library,
             packaged=True,
         )
@@ -453,8 +444,8 @@ def main() -> int:
                 {
                     "dynamic_loopback_port": dynamic_port > 0,
                     "desktop_health_mode": dynamic_health.get("desktopMode") is True,
-                    "demo_mode_zero_config": dynamic_health.get("demoMode") is True,
-                    "demo_files_scanned": int(dynamic_health.get("filesIndexed") or 0) > 0,
+                    "clean_zero_config_has_no_demo_contract": "demoMode" not in dynamic_health,
+                    "clean_zero_config_has_zero_files": int(dynamic_health.get("filesIndexed") or 0) == 0,
                     "runtime_database_outside_bundle": (runtime / "data" / "studyhub.sqlite").exists(),
                 }
             )
@@ -463,11 +454,10 @@ def main() -> int:
         results["clean_sigterm_shutdown"] = dynamic_process.poll() == 0
 
         synthetic_library = temp_root / "Synthetic StudyLibrary"
-        shutil.copytree(ROOT / "demo-data", synthetic_library)
+        shutil.copytree(ROOT / "tests" / "fixtures" / "synthetic-courses", synthetic_library)
         custom_process, custom_url, _ = start_backend(
             temp_root / "custom-runtime",
             0,
-            demo_mode=False,
             study_root=synthetic_library,
         )
         try:
@@ -488,7 +478,7 @@ def main() -> int:
             scan_result = rescan(custom_url)
             results.update(
                 {
-                    "synthetic_custom_library_mode": custom_health.get("demoMode") is False,
+                    "synthetic_custom_library_has_no_demo_contract": "demoMode" not in custom_health,
                     "synthetic_custom_library_indexed": int(custom_health.get("filesIndexed") or 0) == 10,
                     "synthetic_courses_discovered": isinstance(courses, list)
                     and len(courses) == 3

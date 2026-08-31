@@ -5,7 +5,8 @@ The project grew out of a practical problem: course PDFs, slides, tutorials, lab
 The engineering focus has been privacy boundaries rather than cloud-first convenience:
 
 - no telemetry by default
-- Demo Mode works without an OpenAI API key
+- clean first run with no bundled sample courses or private material
+- local organization, preview, search, notes, and study records work without an OpenAI API key
 - server listens on localhost only
 - private course files stay outside the repository
 - OpenAI integration is optional and server-side

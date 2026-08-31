@@ -6,7 +6,7 @@ StudyHub Local is a local-first study library.
 
 - `server.py`: localhost HTTP server, scanner, SQLite schema, search, AI request handling, OpenAI sync, and read-only MCP endpoint.
 - `static/`: static frontend served by the local backend.
-- `demo-data/`: synthetic fixtures for public demos and tests.
+- `tests/fixtures/`: synthetic inputs used only by acceptance tests; never bundled in production resources.
 - `data/`: runtime SQLite files, ignored by Git.
 - `cache/`: extracted text and generated preview cache, ignored by Git.
 - `logs/`: local logs, ignored by Git.
@@ -22,6 +22,9 @@ Configured study folder
 ```
 
 The original file in `STUDY_LIBRARY_PATH` remains the source of truth. The database and vector store can be rebuilt.
+
+With no configured folder, StudyHub creates an empty managed workspace. It does
+not seed sample courses or scan unrelated user directories.
 
 ## Preview Pipeline
 

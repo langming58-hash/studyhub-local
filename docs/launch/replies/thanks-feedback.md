@@ -5,7 +5,7 @@ Thanks for taking a look. This is still early-stage, so specific feedback is gen
 If you tried it, I would love to know:
 
 - which OS you used
-- whether Demo Mode started cleanly
+- whether the clean first-run setup was clear
 - where the onboarding felt unclear
 - whether the Course -> Week structure matched how you organize material
 - what felt unnecessary or missing

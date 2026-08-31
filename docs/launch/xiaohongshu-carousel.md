@@ -1,80 +1,36 @@
 # Xiaohongshu Carousel Plan
 
-Use only synthetic screenshots from `docs/assets/screenshots/`. Do not use real academic screenshots, real course files, private paths, personal account UI, or API settings.
+Use only the approved clean-workspace screenshots from `docs/assets/screenshots/`. Do not use real academic screenshots, real course files, private paths, personal account UI, or API settings. Capture additional v0.2.0 screens only from a temporary empty workspace; do not reuse the removed v0.1.x Demo Mode assets.
 
 ## Slide 1
 
 Text: 大学课程资料太乱？我给自己做了一个本地 Study Hub
 
-Screenshot asset: `docs/assets/screenshots/home.png`
+Screenshot asset: `docs/assets/screenshots/first-run-zh-CN.png`
 
 Caption: PDF / slides / Tutorial / Lab / Quiz 越堆越乱，所以做了一个本地优先的小工具。
 
 ## Slide 2
 
-Text: 按 Course -> Week 整理
+Text: English / 简体中文
 
-Screenshot asset: `docs/assets/screenshots/course-detail.png`
+Screenshot asset: `docs/assets/screenshots/first-run-en.png`
 
-Caption: 每门课下面按 Week 放 Materials 和 Exercises，打开就知道这周有哪些东西。
+Caption: 可以跟随系统语言，也可以在设置里即时切换。第一次打开不带示例课程，需要自己新建课程或导入文件夹。
 
-## Slide 3
+## Future Slides
 
-Text: Materials / Exercises 分开看
-
-Screenshot asset: `docs/assets/screenshots/course-week.png`
-
-Caption: Lecture、Slides、Tutorial、Workshop、Lab、Quiz 都有清楚的位置。
-
-## Slide 4
-
-Text: 本地搜索自己的资料
-
-Screenshot asset: `docs/assets/screenshots/search.png`
-
-Caption: 先从本机资料里找，不需要把所有资料搬到云端工具。
-
-## Slide 5
-
-Text: Ask AI 但要有来源
-
-Screenshot asset: `docs/assets/screenshots/ai-workspace.png`
-
-Caption: OpenAI 是可选的；开启后回答要基于自己的资料，并显示 Course / Week / File。
-
-## Slide 6
-
-Text: Practice 不让 AI 乱编题
-
-Screenshot asset: `docs/assets/screenshots/study.png`
-
-Caption: 练习题只能从材料里找；找不到就明确说找不到。
-
-## Slide 7
-
-Text: 错题和复习记录
-
-Screenshot asset: `docs/assets/screenshots/study.png`
-
-Caption: 适合把复习关注点留在本地记录里，不进公开仓库。
-
-## Slide 8
-
-Text: 本地优先，开源早期版本
-
-Screenshot asset: `docs/assets/screenshots/settings.png`
-
-Caption: localhost only、默认没有 telemetry、不开 API key 也能跑 Demo Mode。
+Course、Week、Search、Ask AI、Study 等功能截图必须从临时空工作区重新生成并单独通过隐私检查后再加入。当前不要使用旧 Demo Mode 截图补足轮播数量。
 
 ## Post Caption
 
 大学 PDF / PPT / Tutorial / Lab 越堆越乱，所以我给自己做了一个本地 Study Hub：StudyHub Local。
 
-它可以按 Course -> Week 整理资料，支持本地搜索，也可以可选开启 OpenAI，让 AI 基于自己的材料回答并显示来源。默认 Demo Mode，不需要 API key；课程文件留在本机；服务只监听 localhost；默认没有 telemetry。
+它可以按 Course -> Week 整理资料，支持本地搜索，也可以可选开启 OpenAI，让 AI 基于自己的材料回答并显示来源。第一次打开是干净的空工作区；不开 API 也能使用本地功能；课程文件留在本机；服务只监听 localhost；默认没有 telemetry。
 
 Repo: https://github.com/langming58-hash/studyhub-local
 
-Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.1.5
+Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.2.0
 
 这是早期开源项目，欢迎试用、提 Issue、PR 和反馈。
 
