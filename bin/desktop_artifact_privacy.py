@@ -20,6 +20,8 @@ PATTERNS = {
     "Bearer token": re.compile(rb"\bBearer\s+[A-Za-z0-9._-]{20,}\b", re.IGNORECASE),
     "OpenAI vector store ID": re.compile(rb"\bvs_[A-Za-z0-9_-]{12,}\b"),
     "OpenAI file ID": re.compile(rb"\bfile-[A-Za-z0-9_-]{12,}\b"),
+    "private signing key": re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+    "Apple credential": re.compile(rb"\bAPPLE_(?:CERTIFICATE|PASSWORD|API_PRIVATE_KEY)\s*[:=]\s*['\"]?[A-Za-z0-9+/=_-]{20,}"),
     "macOS home path": re.compile(rb"/Users/[A-Za-z0-9._-]+/"),
     "Linux home path": re.compile(rb"/home/[A-Za-z0-9._-]+/"),
     "Windows home path": re.compile(rb"[A-Za-z]:\\Users\\[^\\\s]+\\"),
@@ -29,9 +31,16 @@ PATTERNS = {
 
 FORBIDDEN_NAMES = {".env", ".env.local", ".privacy.local.json"}
 FORBIDDEN_SUFFIXES = {
-    ".db", ".sqlite", ".sqlite3", ".log", ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"
+    ".cer", ".db", ".key", ".keychain-db", ".log", ".mobileprovision", ".p12", ".p8", ".pem",
+    ".sqlite", ".sqlite3", ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"
 }
 FORBIDDEN_PARTS = {"cache", "logs", "previews", "demo-data"}
+
+
+def is_public_ca_bundle(rel: Path) -> bool:
+    """Allow only certifi's public trust roots, never arbitrary PEM files."""
+    parts = tuple(part.lower() for part in rel.parts)
+    return len(parts) >= 2 and parts[-2:] == ("certifi", "cacert.pem")
 
 
 def local_markers() -> list[bytes]:
@@ -58,7 +67,8 @@ def scan_app(app: Path) -> tuple[list[str], int]:
         if FORBIDDEN_PARTS & lower_parts or ("tests" in lower_parts and "fixtures" in lower_parts):
             issues.append(f"runtime/test directory bundled: {rel}")
             continue
-        if path.name in FORBIDDEN_NAMES or path.suffix.lower() in FORBIDDEN_SUFFIXES:
+        forbidden_suffix = path.suffix.lower() in FORBIDDEN_SUFFIXES and not is_public_ca_bundle(rel)
+        if path.name in FORBIDDEN_NAMES or forbidden_suffix:
             issues.append(f"forbidden bundled file: {rel}")
             continue
         try:

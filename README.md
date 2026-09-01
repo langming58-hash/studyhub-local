@@ -136,7 +136,7 @@ npm run desktop:build
 npm run desktop:test:packaged
 ```
 
-See [Development](docs/DEVELOPMENT.md), [Desktop Architecture](docs/DESKTOP_ARCHITECTURE.md), and [Contributing](CONTRIBUTING.md).
+See [Development](docs/DEVELOPMENT.md), [Desktop Architecture](docs/DESKTOP_ARCHITECTURE.md), [macOS Trusted Distribution](docs/MACOS_TRUSTED_DISTRIBUTION.md), and [Contributing](CONTRIBUTING.md).
 
 ## License
 

@@ -20,7 +20,11 @@ exports/
 *.key
 *.pem
 *.p12
+*.p8
+*.cer
 *.mobileprovision
+*.keychain-db
+notary-result*.json
 
 # Private study materials live outside this repo.
 StudyLibrary/
