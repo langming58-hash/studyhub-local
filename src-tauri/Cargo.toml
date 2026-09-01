@@ -1,6 +1,6 @@
 [package]
 name = "studyhub-local-desktop"
-version = "0.2.0"
+version = "0.3.0-beta.1"
 description = "Local-first desktop study workspace"
 authors = ["StudyHub Local Maintainers"]
 edition = "2021"
@@ -16,3 +16,4 @@ tauri-build = { version = "2", features = [] }
 libc = "0.2"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"

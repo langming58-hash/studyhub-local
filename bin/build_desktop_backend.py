@@ -50,8 +50,6 @@ def main() -> int:
         ]
         result = subprocess.run(command, cwd=ROOT, check=False)
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    (OUTPUT_DIR / ".gitkeep").touch()
     executable = OUTPUT_DIR / "studyhub-backend"
     if result.returncode != 0 or not executable.is_file():
         print("Packaged backend build failed.", file=sys.stderr)

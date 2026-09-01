@@ -3085,7 +3085,7 @@ def api_health(conn: sqlite3.Connection) -> dict[str, Any]:
     extraction_warnings = [pdf_dependency_error] if pdf_dependency_error else []
     return {
         "app": APP_NAME,
-        "version": "0.2.0",
+        "version": "0.3.0-beta.1",
         "desktopMode": DESKTOP_MODE,
         "packagedBackend": PACKAGED_BACKEND,
         "studyLibraryConnected": DEFAULT_STUDY_ROOT.exists(),

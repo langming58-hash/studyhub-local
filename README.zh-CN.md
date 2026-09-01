@@ -1,25 +1,46 @@
 # StudyHub Local
 
-[![Release](https://img.shields.io/github/v/release/langming58-hash/studyhub-local?label=release)](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.2.0)
+[![Release](https://img.shields.io/badge/release-v0.3.0--beta.1-orange)](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.1)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/langming58-hash/studyhub-local/actions/workflows/ci.yml/badge.svg)](https://github.com/langming58-hash/studyhub-local/actions/workflows/ci.yml)
 
 [English](README.md)
 
+## 下载
+
+**[下载 macOS 版本](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.1)** · [全部版本](https://github.com/langming58-hash/studyhub-local/releases) · [源代码](https://github.com/langming58-hash/studyhub-local)
+
+| 版本 | 状态 | Mac | 最低系统 | 签名状态 |
+| --- | --- | --- | --- | --- |
+| v0.3.0-beta.1 | 测试版 | 仅 Apple Silicon | macOS 13 Ventura | 未签名、未公证 |
+
+下载的 App 已包含本地后端。普通用户不需要 Git、Node.js、Python、Rust、npm 或终端。
+
+### 在 macOS 安装
+
+1. 打开 GitHub Release，下载 `StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg`。
+2. 打开 DMG。
+3. 将 **StudyHub Local** 拖入 **Applications（应用程序）**。
+4. 正常尝试打开 **StudyHub Local**。
+5. 由于这是未使用 Developer ID 签名、未公证的测试版，macOS 可能阻止第一次启动。打开 **系统设置 -> 隐私与安全性**，找到 StudyHub Local 的提示，然后选择 **仍要打开**。Apple 在[打开来自身份不明开发者的 Mac App](https://support.apple.com/zh-cn/guide/mac-help/mh40616/mac)中说明了这个标准流程。
+
+不要关闭 Gatekeeper。安装和第一次启动不需要终端。
+
 StudyHub Local 是一个早期阶段、本地优先的大学课程资料工作区，适用于任何大学。它可以按“课程 -> 周次”整理资料，提供本地预览和搜索、笔记与学习记录，并可选使用 AI，根据你已建立索引的资料回答并显示来源。
 
 原始文件始终保留在你自己控制的文件夹中。生产版本第一次打开时是干净的空工作区，不会捆绑示例课程、老师资料、测试数据库、提取文本或 API 凭证。
 
-## v0.2.0
+## v0.3.0-beta.1
 
 - 干净首启：新建课程或导入课程文件夹
 - English / 简体中文界面，可跟随系统或在设置中切换
 - Home、Courses、Search、Study、AI、Settings 六个主要工作区
 - 本地 AI 对话历史、来源引用、个人笔记与老师原题保护
-- Tauri macOS 桌面原型，后端已打包，终端用户无需安装 Python
+- 公开 Apple Silicon DMG，后端已打包，普通用户无需安装开发工具
 - 严格隔离生产资源与测试夹具
+- 打包产物隐私扫描与公开 SHA-256 校验值
 
-本版本不会公开未签名、未公证的 `.app` 或 DMG。必须完成签名、公证和干净 Mac 分发验证后，桌面安装包才会作为正式公开下载提供。
+这是早期未签名测试版，尚未使用 Developer ID 签名或进行 Apple 公证。
 
 ## 截图
 
@@ -40,7 +61,7 @@ StudyHub Local 是一个早期阶段、本地优先的大学课程资料工作�
 - 只检索老师提供的题目，不生成新的练习题
 - 不配置 OpenAI 也可使用整理、预览、搜索、笔记和学习记录
 
-## 环境要求
+## 源码开发环境要求
 
 - Git、Node.js/npm 和 Python 3
 - 建议安装 Poppler（`pdftotext`、`pdfinfo`），用于提取 PDF 正文
@@ -58,7 +79,7 @@ npm run dev
 
 打开终端输出的本机地址，通常是 `http://127.0.0.1:8765`。第一次打开后，新建课程或导入已有课程文件夹。StudyHub 不会自动扫描无关文件夹。
 
-macOS 上的 `Start StudyHub Local.command` 只是源码安装的便捷启动器，不是已签名的桌面正式版。
+macOS 上的 `Start StudyHub Local.command` 只是源码开发的便捷启动器。普通用户应使用上方 DMG。
 
 ## 学习资料库
 
