@@ -15,6 +15,7 @@ on:
       - "README.md"
       - "README.zh-CN.md"
       - "docs/releases/**"
+      - "docs/MACOS_TRUSTED_DISTRIBUTION.md"
   push:
     tags:
       - "v*-beta.*"
@@ -28,8 +29,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-macos-arm64:
-    name: Build and verify Apple Silicon DMG
+  validate-unsigned-arm64:
+    name: Validate Apple Silicon preview build
+    if: github.ref_type != 'tag'
     runs-on: macos-14
     timeout-minutes: 60
     steps:
@@ -48,44 +50,196 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-
       - name: Install JavaScript dependencies
         run: npm ci
       - name: Run normal CI
         run: npm run ci
+      - name: Report trusted-distribution credential boundary
+        run: npm run desktop:trusted-preflight
       - name: Prepare pinned desktop backend environment
         run: npm run desktop:setup
       - name: Check desktop Rust workspace
         run: npm run desktop:check
-      - name: Build app and DMG
+      - name: Build ad-hoc preview app and DMG
         run: npm run desktop:build
-      - name: Name artifact and generate SHA-256
+      - name: Resolve preview artifact metadata
+        id: preview
+        shell: bash
         run: |
-          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
-            python3 bin/prepare_macos_release.py --tag "$GITHUB_REF_NAME"
-          else
-            python3 bin/prepare_macos_release.py
-          fi
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "dmg=.release/StudyHub-Local-v$VERSION-macos-arm64.dmg" >> "$GITHUB_OUTPUT"
+      - name: Name preview artifact and generate SHA-256
+        run: python3 bin/prepare_macos_release.py
       - name: Run packaged app acceptance
         run: npm run desktop:test:packaged
-      - name: Scan mounted DMG for private data
-        run: python3 bin/desktop_artifact_privacy.py --dmg .release/StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg
-      - name: Verify SHA-256
+      - name: Scan mounted preview DMG for private data
+        run: python3 bin/desktop_artifact_privacy.py --dmg "${{ steps.preview.outputs.dmg }}"
+      - name: Verify preview SHA-256
         working-directory: .release
-        run: shasum -a 256 -c StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg.sha256
-      - name: Upload verified workflow artifact
+        run: shasum -a 256 -c "StudyHub-Local-v${{ steps.preview.outputs.version }}-macos-arm64.dmg.sha256"
+      - name: Upload non-release workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: StudyHub-Local-v0.3.0-beta.1-macos-arm64
+          name: StudyHub-Local-v${{ steps.preview.outputs.version }}-macos-arm64-preview
           path: |
-            .release/StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg
-            .release/StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg.sha256
+            ${{ steps.preview.outputs.dmg }}
+            ${{ steps.preview.outputs.dmg }}.sha256
           if-no-files-found: error
           retention-days: 14
-  publish-prerelease:
-    name: Publish verified GitHub prerelease
+
+  build-trusted-arm64:
+    name: Sign, notarize, and verify Apple Silicon DMG
     if: github.ref_type == 'tag'
-    needs: build-macos-arm64
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: astral-sh/setup-uv@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install JavaScript dependencies
+        run: npm ci
+      - name: Run normal CI
+        run: npm run ci
+      - name: Require complete Apple credential set
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: python3 bin/macos_trusted_preflight.py --require-ci-secrets
+      - name: Import Developer ID certificate into an isolated keychain
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          CERTIFICATE_PATH="$RUNNER_TEMP/studyhub-developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/studyhub-signing.keychain-db"
+          API_KEY_PATH="$RUNNER_TEMP/studyhub-notary-key.p8"
+          echo "SIGNING_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "APPLE_API_KEY_PATH=$API_KEY_PATH" >> "$GITHUB_ENV"
+          echo "APPLE_CERTIFICATE_PATH=$CERTIFICATE_PATH" >> "$GITHUB_ENV"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$API_KEY_PATH"
+          chmod 600 "$CERTIFICATE_PATH" "$API_KEY_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          IDENTITY_HASH="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | awk '/Developer ID Application:/ {print $2}')"
+          test "$(printf '%s\n' "$IDENTITY_HASH" | awk 'NF {count++} END {print count+0}')" = "1"
+          echo "APPLE_SIGNING_IDENTITY=$IDENTITY_HASH" >> "$GITHUB_ENV"
+      - name: Verify imported Developer ID identity
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: python3 bin/macos_trusted_preflight.py --require-identity --expected-team "$APPLE_TEAM_ID"
+      - name: Prepare pinned desktop backend environment
+        run: npm run desktop:setup
+      - name: Check desktop Rust workspace
+        run: npm run desktop:check
+      - name: Resolve trusted artifact metadata
+        id: trusted
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          test "$GITHUB_REF_NAME" = "v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "app=src-tauri/target/release/bundle/macos/StudyHub Local.app" >> "$GITHUB_OUTPUT"
+          echo "dmg=.release/StudyHub-Local-v$VERSION-macos-arm64.dmg" >> "$GITHUB_OUTPUT"
+      - name: Build Developer ID signed app
+        run: python3 bin/build_desktop.py --trusted --app-only
+      - name: Verify Developer ID and hardened runtime before notarization
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: python3 bin/verify_macos_trusted.py --app "${{ steps.trusted.outputs.app }}" --expected-team "$APPLE_TEAM_ID"
+      - name: Notarize and staple app
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: python3 bin/notarize_macos.py "${{ steps.trusted.outputs.app }}"
+      - name: Create Developer ID signed DMG from stapled app
+        run: >-
+          python3 bin/create_macos_dmg.py
+          --app "${{ steps.trusted.outputs.app }}"
+          --output "${{ steps.trusted.outputs.dmg }}"
+          --signing-identity "$APPLE_SIGNING_IDENTITY"
+      - name: Notarize and staple DMG
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: python3 bin/notarize_macos.py "${{ steps.trusted.outputs.dmg }}"
+      - name: Name trusted artifact and generate SHA-256
+        run: >-
+          python3 bin/prepare_macos_release.py
+          --tag "$GITHUB_REF_NAME"
+          --source-dmg "${{ steps.trusted.outputs.dmg }}"
+      - name: Verify Developer ID, stapling, and Gatekeeper acceptance
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: >-
+          python3 bin/verify_macos_trusted.py
+          --app "${{ steps.trusted.outputs.app }}"
+          --dmg "${{ steps.trusted.outputs.dmg }}"
+          --expected-team "$APPLE_TEAM_ID"
+          --require-notarization
+      - name: Run packaged app acceptance
+        run: npm run desktop:test:packaged
+      - name: Scan signed app and mounted DMG for private data
+        run: |
+          python3 bin/desktop_artifact_privacy.py "${{ steps.trusted.outputs.app }}"
+          python3 bin/desktop_artifact_privacy.py --dmg "${{ steps.trusted.outputs.dmg }}"
+      - name: Scan public Git history for credentials
+        run: python3 bin/git_history_secret_scan.py
+      - name: Verify trusted SHA-256
+        working-directory: .release
+        run: shasum -a 256 -c "StudyHub-Local-v${{ steps.trusted.outputs.version }}-macos-arm64.dmg.sha256"
+      - name: Upload verified trusted artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StudyHub-Local-${{ github.ref_name }}-macos-arm64-trusted
+          path: |
+            ${{ steps.trusted.outputs.dmg }}
+            ${{ steps.trusted.outputs.dmg }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove ephemeral Apple credentials
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${SIGNING_KEYCHAIN_PATH:-}" ]]; then
+            security delete-keychain "$SIGNING_KEYCHAIN_PATH" >/dev/null 2>&1 || true
+          fi
+          if [[ -n "${APPLE_CERTIFICATE_PATH:-}" ]]; then
+            rm -f "$APPLE_CERTIFICATE_PATH"
+          fi
+          if [[ -n "${APPLE_API_KEY_PATH:-}" ]]; then
+            rm -f "$APPLE_API_KEY_PATH"
+          fi
+
+  publish-prerelease:
+    name: Publish trusted GitHub prerelease
+    if: github.ref_type == 'tag'
+    needs: build-trusted-arm64
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -95,18 +249,24 @@ jobs:
           fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
-          name: StudyHub-Local-v0.3.0-beta.1-macos-arm64
+          name: StudyHub-Local-${{ github.ref_name }}-macos-arm64-trusted
           path: .release
-      - name: Publish GitHub prerelease
+      - name: Publish only the verified trusted prerelease
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          test "$GITHUB_REF_NAME" = "v0.3.0-beta.1"
+          VERSION="${GITHUB_REF_NAME#v}"
+          DMG=".release/StudyHub-Local-v$VERSION-macos-arm64.dmg"
+          NOTES="docs/releases/$GITHUB_REF_NAME.md"
+          test -f "$DMG"
+          test -f "$DMG.sha256"
+          test -f "$NOTES"
           ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1
           gh release create "$GITHUB_REF_NAME" \
-            .release/StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg \
-            .release/StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg.sha256 \
+            "$DMG" \
+            "$DMG.sha256" \
             --verify-tag \
             --prerelease \
-            --title "StudyHub Local v0.3.0-beta.1" \
-            --notes-file docs/releases/v0.3.0-beta.1.md
+            --title "StudyHub Local $GITHUB_REF_NAME" \
+            --notes-file "$NOTES"

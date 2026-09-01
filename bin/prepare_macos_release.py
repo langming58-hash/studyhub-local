@@ -50,6 +50,7 @@ def app_architectures(info: dict[str, object]) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", help="Require a release tag matching the configured version.")
+    parser.add_argument("--source-dmg", help="Use a trusted DMG instead of the default Tauri DMG output.")
     args = parser.parse_args()
 
     found_versions = versions()
@@ -70,13 +71,19 @@ def main() -> int:
     if str(info.get("LSMinimumSystemVersion")) != "13.0":
         raise SystemExit("Unexpected minimum macOS version.")
 
-    dmgs = sorted(DMG_DIR.glob("*.dmg"), key=lambda path: path.stat().st_mtime, reverse=True)
-    if not dmgs:
-        raise SystemExit("Generated DMG was not found.")
-    source = dmgs[0]
+    if args.source_dmg:
+        source = Path(args.source_dmg).expanduser().resolve()
+        if not source.is_file():
+            raise SystemExit("The trusted source DMG was not found.")
+    else:
+        dmgs = sorted(DMG_DIR.glob("*.dmg"), key=lambda path: path.stat().st_mtime, reverse=True)
+        if not dmgs:
+            raise SystemExit("Generated DMG was not found.")
+        source = dmgs[0]
     RELEASE_DIR.mkdir(parents=True, exist_ok=True)
     destination = RELEASE_DIR / f"StudyHub-Local-v{version}-macos-arm64.dmg"
-    shutil.copy2(source, destination)
+    if source != destination:
+        shutil.copy2(source, destination)
     digest = hashlib.sha256(destination.read_bytes()).hexdigest()
     checksum = destination.with_suffix(destination.suffix + ".sha256")
     checksum.write_text(f"{digest}  {destination.name}\n", encoding="ascii")

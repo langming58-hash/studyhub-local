@@ -135,7 +135,7 @@ npm run desktop:build
 npm run desktop:test:packaged
 ```
 
-另见 [开发说明](docs/DEVELOPMENT.md)、[桌面架构](docs/DESKTOP_ARCHITECTURE.md) 和 [贡献指南](CONTRIBUTING.md)。
+另见 [开发说明](docs/DEVELOPMENT.md)、[桌面架构](docs/DESKTOP_ARCHITECTURE.md)、[macOS 可信发布](docs/MACOS_TRUSTED_DISTRIBUTION.md) 和 [贡献指南](CONTRIBUTING.md)。
 
 ## License
 

@@ -52,6 +52,16 @@ PRIVATE_CONFIG_NAMES = {
     ".privacy.local.json",
 }
 
+PRIVATE_CREDENTIAL_EXTS = {
+    ".cer",
+    ".key",
+    ".keychain-db",
+    ".mobileprovision",
+    ".p12",
+    ".p8",
+    ".pem",
+}
+
 STUDY_LIBRARY_DIR_NAMES = {
     "StudyLibrary",
     "study-library",
@@ -82,6 +92,7 @@ SECRET_PATTERNS = [
     re.compile(r"\bfile-[A-Za-z0-9_-]{12,}\b"),
     re.compile(r"\bBearer\s+[A-Za-z0-9._-]{20,}\b", re.IGNORECASE),
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+    re.compile(r"\bAPPLE_(?:CERTIFICATE|PASSWORD|API_PRIVATE_KEY)\s*[:=]\s*['\"]?[A-Za-z0-9+/=_-]{20,}"),
     re.compile(r"(?i)\b(cookie|session|oauth|token|password|secret)\s*[:=]\s*['\"]?[A-Za-z0-9._-]{20,}"),
 ]
 
@@ -174,6 +185,8 @@ def check_paths(root: Path, paths: list[Path]) -> list[str]:
             issues.append(f"Forbidden runtime database in repo: {rel}")
         if path.name in PRIVATE_CONFIG_NAMES:
             issues.append(f"Forbidden private configuration file: {rel}")
+        if path.suffix.lower() in PRIVATE_CREDENTIAL_EXTS:
+            issues.append(f"Forbidden private credential file: {rel}")
     return issues
 
 

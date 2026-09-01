@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "src-tauri" / "target" / "release" / "bundle" / "macos" / "StudyHub Local.app"
 RELEASE_DIR = ROOT / ".release"
-VERSION = "0.3.0-beta.1"
+VERSION = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
 DMG_NAME = f"StudyHub-Local-v{VERSION}-macos-arm64.dmg"
 
 
@@ -41,7 +41,8 @@ def main() -> int:
         and f'"version": "{VERSION}"' in server,
         "app_and_dmg_targets": config["bundle"]["targets"] == ["app", "dmg"],
         "apple_silicon_minimum_macos": config["bundle"]["macOS"]["minimumSystemVersion"] == "13.0",
-        "unsigned_beta_is_honest": config["bundle"]["macOS"].get("signingIdentity") == "-",
+        "default_preview_is_ad_hoc": config["bundle"]["macOS"].get("signingIdentity") == "-",
+        "minimal_entitlements_configured": config["bundle"]["macOS"].get("entitlements") == "Entitlements.plist",
         "icon_configured": "icons/icon.icns" in config["bundle"].get("icon", []),
         "readme_download_link": f"releases/tag/v{VERSION}" in readme,
         "readme_install_boundary": all(term in readme for term in ("Apple Silicon", "macOS 13", "Unsigned beta", "Open Anyway")),
@@ -55,9 +56,13 @@ def main() -> int:
         "workflow_scans_dmg": "desktop_artifact_privacy.py --dmg" in workflow,
         "workflow_verifies_checksum": "shasum -a 256 -c" in workflow,
         "workflow_publishes_prerelease": "--prerelease" in workflow and "--verify-tag" in workflow,
+        "workflow_requires_developer_id": "--require-identity" in workflow and "APPLE_CERTIFICATE" in workflow,
+        "workflow_notarizes_app_and_dmg": workflow.count("bin/notarize_macos.py") == 2,
+        "workflow_requires_gatekeeper": "--require-notarization" in workflow,
+        "workflow_publish_depends_on_trusted_build": "needs: build-trusted-arm64" in workflow,
         "workflow_build_is_read_only": "permissions:\n  contents: read" in workflow,
         "workflow_write_is_publish_only": "publish-prerelease:" in workflow and "contents: write" in workflow,
-        "workflow_uses_clear_filename": DMG_NAME in workflow,
+        "workflow_uses_clear_filename": "StudyHub-Local-v$VERSION-macos-arm64.dmg" in workflow,
     }
 
     if args.artifacts:
