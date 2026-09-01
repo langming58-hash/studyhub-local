@@ -42,6 +42,11 @@ const t = (key, vars = {}) => i18n.t(key, vars);
 const materialTypeLabel = (value) => i18n.materialType(value);
 const materialTypeValue = (value) => i18n.catalogs.en[`material.${String(value || "other").toLowerCase()}`] || String(value || "Other");
 const learningUnitLabel = (value, kind = "week") => i18n.learningUnit(value, kind);
+const PUBLIC_LINKS = Object.freeze({
+  latestRelease: "https://github.com/langming58-hash/studyhub-local/releases",
+  repository: "https://github.com/langming58-hash/studyhub-local",
+  reportIssue: "https://github.com/langming58-hash/studyhub-local/issues/new/choose",
+});
 let restoringRoute = false;
 let appLoaded = false;
 
@@ -49,6 +54,17 @@ function desktopInvoke(command, args = {}) {
   const invoke = window.__TAURI__?.core?.invoke;
   if (!state.health?.desktopMode || typeof invoke !== "function") return null;
   return invoke(command, args);
+}
+
+async function openPublicLink(key) {
+  const url = PUBLIC_LINKS[key];
+  if (!url) return;
+  const openUrl = window.__TAURI__?.opener?.openUrl;
+  if (state.health?.desktopMode && typeof openUrl === "function") {
+    await openUrl(url);
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
 }
 
 function routeHash(routeState = {}) {
@@ -1629,6 +1645,23 @@ async function renderSettings() {
           <div><span>${escapeHtml(t("settings.vectorStatus"))}</span><strong>${escapeHtml(statusLabel(ai.vectorStoreLabel || ai.vectorStore || "Not configured"))}</strong></div>
         </div>
       </section>
+      <section class="section-block quiet-section">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">StudyHub Local</p>
+            <h2>${escapeHtml(t("settings.about"))}</h2>
+          </div>
+        </div>
+        <div class="settings-list compact">
+          <div><span>${escapeHtml(t("settings.currentVersion"))}</span><strong>${escapeHtml(state.health.version || "Local build")}</strong></div>
+          <div><span>${escapeHtml(t("settings.distribution"))}</span><strong>${escapeHtml(t("settings.unsignedAppleSilicon"))}</strong></div>
+        </div>
+        <div class="settings-actions">
+          <button class="button secondary" type="button" data-public-link="latestRelease">${escapeHtml(t("settings.latestRelease"))}</button>
+          <button class="button secondary" type="button" data-public-link="repository">${escapeHtml(t("settings.repository"))}</button>
+          <button class="button secondary" type="button" data-public-link="reportIssue">${escapeHtml(t("settings.reportIssue"))}</button>
+        </div>
+      </section>
     </section>
   `;
   bindLibrarySetupForm();
@@ -2334,6 +2367,10 @@ document.addEventListener("click", async (event) => {
       saveAskDraft(lastUser.text);
       renderAskGpt();
     }
+    return;
+  }
+  if (target.dataset.publicLink) {
+    await openPublicLink(target.dataset.publicLink);
     return;
   }
   if (target.dataset.view) return route(target.dataset.view);

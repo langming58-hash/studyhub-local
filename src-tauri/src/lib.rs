@@ -427,6 +427,7 @@ fn startup_diagnostics(state: tauri::State<'_, BackendState>) -> String {
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             choose_study_folder,
             choose_study_files,

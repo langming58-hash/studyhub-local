@@ -1,26 +1,47 @@
 # StudyHub Local
 
-[![Release](https://img.shields.io/github/v/release/langming58-hash/studyhub-local?label=release)](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.2.0)
+[![Release](https://img.shields.io/badge/release-v0.3.0--beta.1-orange)](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.1)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/langming58-hash/studyhub-local/actions/workflows/ci.yml/badge.svg)](https://github.com/langming58-hash/studyhub-local/actions/workflows/ci.yml)
 ![Local-first](https://img.shields.io/badge/localhost--only-local--first-blue)
 
 [简体中文](README.zh-CN.md)
 
+## Download
+
+**[Download for macOS](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.1)** · [Latest releases](https://github.com/langming58-hash/studyhub-local/releases) · [Source code](https://github.com/langming58-hash/studyhub-local)
+
+| Version | Status | Mac | Minimum macOS | Signing |
+| --- | --- | --- | --- | --- |
+| v0.3.0-beta.1 | Prerelease | Apple Silicon only | macOS 13 Ventura | Unsigned beta, not notarized |
+
+The downloaded app includes its local backend. A normal user does not need Git, Node.js, Python, Rust, npm, or Terminal.
+
+### Install on macOS
+
+1. Open the GitHub release and download `StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg`.
+2. Open the DMG.
+3. Drag **StudyHub Local** to **Applications**.
+4. Try to open **StudyHub Local** normally.
+5. Because this beta is not Developer ID signed or notarized, macOS may block the first launch. Open **System Settings -> Privacy & Security**, find the StudyHub Local message, and choose **Open Anyway**. Apple documents this standard path in [Open a Mac app from an unknown developer](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac).
+
+Do not disable Gatekeeper. Terminal is not required for installation or first launch.
+
 StudyHub Local is an early-stage, local-first workspace for course files from any university. It organizes material by Course -> Week, supports local preview and search, keeps notes and study records, and can optionally answer questions with citations from your own indexed material.
 
 Your original files remain in a folder you control. The app starts with a clean, empty workspace: no sample courses, teacher material, test database, extracted text, or API credentials are bundled into the production runtime.
 
-## v0.2.0
+## v0.3.0-beta.1
 
 - Clean first run: create a course or import a folder
 - English and Simplified Chinese UI with system detection and a local preference
 - Home, Courses, Search, Study, AI, and Settings product architecture
 - Local AI conversation history, citations, notes, and teacher-question safeguards
-- Tauri macOS prototype with a bundled backend and no end-user Python requirement
+- Public Apple Silicon DMG with a bundled backend and no end-user developer-tool requirement
 - Strict production/test fixture separation
+- Packaged privacy scanning and published SHA-256 checksum
 
-No signed or notarized `.app` or DMG is published with this release. Desktop distribution remains blocked until signing, notarization, and clean-Mac validation are complete.
+This is an early unsigned beta. It is not Developer ID signed or notarized.
 
 ## Screenshots
 
@@ -41,7 +62,7 @@ These screenshots show an empty production workspace and contain no course mater
 - Retrieve teacher-provided questions only; StudyHub does not generate practice questions
 - Run without OpenAI for local organization, preview, search, notes, and study records
 
-## Requirements
+## Source Development Requirements
 
 - Git, Node.js/npm, and Python 3
 - Poppler (`pdftotext` and `pdfinfo`) recommended for PDF text extraction
@@ -59,7 +80,7 @@ npm run dev
 
 Open the printed loopback URL, usually `http://127.0.0.1:8765`. On first launch, create a course or import an existing course folder. StudyHub does not scan unrelated folders automatically.
 
-On macOS, `Start StudyHub Local.command` is a convenience launcher for the source install. It is not a signed desktop release.
+On macOS, `Start StudyHub Local.command` is a convenience launcher for source development. Most users should install the DMG above.
 
 ## Study Library
 

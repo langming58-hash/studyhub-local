@@ -36,9 +36,9 @@ node_modules/
 .tools/
 .venv-desktop/
 .desktop-build/
+.release/
 src-tauri/target/
 src-tauri/backend/studyhub-backend/*
-!src-tauri/backend/studyhub-backend/.gitkeep
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/

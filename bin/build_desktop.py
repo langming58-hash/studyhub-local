@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the internal desktop prototype without embedding the builder's home path."""
+"""Build the public macOS app and DMG without embedding the builder's home path."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def main() -> int:
     env["RUSTFLAGS"] = f"{existing} {remap}".strip()
     env["CARGO_INCREMENTAL"] = "0"
     return subprocess.run(
-        [str(tauri), "build", "--bundles", "app"],
+        [str(tauri), "build", "--bundles", "app,dmg"],
         cwd=ROOT,
         env=env,
         check=False,

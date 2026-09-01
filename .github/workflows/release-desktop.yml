@@ -1,0 +1,112 @@
+name: macOS Desktop Release
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/release-desktop.yml"
+      - "bin/**"
+      - "desktop-shell/**"
+      - "src-tauri/**"
+      - "static/**"
+      - "server.py"
+      - "package.json"
+      - "package-lock.json"
+      - "requirements-desktop.txt"
+      - "README.md"
+      - "README.zh-CN.md"
+      - "docs/releases/**"
+  push:
+    tags:
+      - "v*-beta.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-macos-arm64:
+    name: Build and verify Apple Silicon DMG
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: astral-sh/setup-uv@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+      - name: Run normal CI
+        run: npm run ci
+      - name: Prepare pinned desktop backend environment
+        run: npm run desktop:setup
+      - name: Check desktop Rust workspace
+        run: npm run desktop:check
+      - name: Build app and DMG
+        run: npm run desktop:build
+      - name: Name artifact and generate SHA-256
+        run: |
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            python3 bin/prepare_macos_release.py --tag "$GITHUB_REF_NAME"
+          else
+            python3 bin/prepare_macos_release.py
+          fi
+      - name: Run packaged app acceptance
+        run: npm run desktop:test:packaged
+      - name: Scan mounted DMG for private data
+        run: python3 bin/desktop_artifact_privacy.py --dmg .release/StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg
+      - name: Verify SHA-256
+        working-directory: .release
+        run: shasum -a 256 -c StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg.sha256
+      - name: Upload verified workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StudyHub-Local-v0.3.0-beta.1-macos-arm64
+          path: |
+            .release/StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg
+            .release/StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg.sha256
+          if-no-files-found: error
+          retention-days: 14
+  publish-prerelease:
+    name: Publish verified GitHub prerelease
+    if: github.ref_type == 'tag'
+    needs: build-macos-arm64
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: StudyHub-Local-v0.3.0-beta.1-macos-arm64
+          path: .release
+      - name: Publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REF_NAME" = "v0.3.0-beta.1"
+          ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1
+          gh release create "$GITHUB_REF_NAME" \
+            .release/StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg \
+            .release/StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg.sha256 \
+            --verify-tag \
+            --prerelease \
+            --title "StudyHub Local v0.3.0-beta.1" \
+            --notes-file docs/releases/v0.3.0-beta.1.md

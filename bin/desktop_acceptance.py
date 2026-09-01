@@ -175,12 +175,24 @@ def source_checks() -> dict[str, bool]:
     builder = (ROOT / "bin" / "build_desktop.py").read_text(encoding="utf-8")
     backend_builder = (ROOT / "bin" / "build_desktop_backend.py").read_text(encoding="utf-8")
     setup = (ROOT / "bin" / "setup_desktop.py").read_text(encoding="utf-8")
-    permissions = set(capability["permissions"])
+    desktop_check = (ROOT / "bin" / "check_desktop.py").read_text(encoding="utf-8")
+    permissions = {permission for permission in capability["permissions"] if isinstance(permission, str)}
     return {
         "bundle_has_no_updater_artifacts": config["bundle"]["createUpdaterArtifacts"] is False,
-        "bundle_targets_internal_app_only": config["bundle"]["targets"] == ["app"],
+        "bundle_targets_public_app_and_dmg": config["bundle"]["targets"] == ["app", "dmg"],
+        "bundle_has_macos_icon": "icons/icon.icns" in config["bundle"].get("icon", []),
+        "bundle_uses_ad_hoc_signature_only": config["bundle"]["macOS"].get("signingIdentity") == "-",
         "remote_capability_is_localhost_only": capability["remote"]["urls"] == ["http://localhost:*"],
         "folder_picker_permission_is_explicit": "allow-choose-study-folder" in permissions,
+        "public_url_permission_is_scoped": any(
+            isinstance(permission, dict)
+            and permission.get("identifier") == "opener:allow-open-url"
+            and all(
+                str(item.get("url") or "").startswith("https://github.com/langming58-hash/studyhub-local")
+                for item in permission.get("allow", [])
+            )
+            for permission in capability["permissions"]
+        ),
         "restart_permission_is_explicit": "allow-restart-backend" in permissions,
         "retry_permission_is_explicit": "allow-retry-backend" in permissions,
         "diagnostics_permission_is_explicit": "allow-startup-diagnostics" in permissions,
@@ -196,6 +208,7 @@ def source_checks() -> dict[str, bool]:
         "release_build_uses_no_shell": "subprocess.run" in builder and "shell=True" not in builder,
         "release_build_uses_project_rust_toolchain": 'ROOT / ".tools" / "cargo"' in builder
         and 'ROOT / ".tools" / "rustup"' in builder,
+        "clean_clone_check_prepares_resource_root": '"backend" / "studyhub-backend").mkdir' in desktop_check,
         "release_has_no_system_python_fallback": 'resolve("backend/studyhub-backend"' in rust
         and "cfg(not(debug_assertions))" in rust,
         "packaged_backend_uses_one_folder": '"--onedir"' in backend_builder,
@@ -216,6 +229,7 @@ def packaged_checks(results: dict[str, bool]) -> None:
             and not (APP_RESOURCES / "demo-data").exists(),
             "packaged_katex_assets_exist": (APP_RESOURCES / "katex" / "katex.min.js").is_file(),
             "packaged_server_source_absent": not (APP_RESOURCES / "server.py").exists(),
+            "packaged_backend_placeholder_absent": not (PACKAGED_BACKEND / ".gitkeep").exists(),
         }
     )
     if not all(results[name] for name in ("packaged_app_exists", "packaged_sidecar_exists")):
