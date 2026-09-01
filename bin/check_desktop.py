@@ -13,6 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main() -> int:
+    # Tauri validates configured resource roots during cargo check. The frozen
+    # backend is built later, so a clean clone needs only this ignored directory.
+    (ROOT / "src-tauri" / "backend" / "studyhub-backend").mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     cargo_home = ROOT / ".tools" / "cargo"
     rustup_home = ROOT / ".tools" / "rustup"

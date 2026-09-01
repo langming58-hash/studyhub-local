@@ -175,6 +175,7 @@ def source_checks() -> dict[str, bool]:
     builder = (ROOT / "bin" / "build_desktop.py").read_text(encoding="utf-8")
     backend_builder = (ROOT / "bin" / "build_desktop_backend.py").read_text(encoding="utf-8")
     setup = (ROOT / "bin" / "setup_desktop.py").read_text(encoding="utf-8")
+    desktop_check = (ROOT / "bin" / "check_desktop.py").read_text(encoding="utf-8")
     permissions = {permission for permission in capability["permissions"] if isinstance(permission, str)}
     return {
         "bundle_has_no_updater_artifacts": config["bundle"]["createUpdaterArtifacts"] is False,
@@ -207,6 +208,7 @@ def source_checks() -> dict[str, bool]:
         "release_build_uses_no_shell": "subprocess.run" in builder and "shell=True" not in builder,
         "release_build_uses_project_rust_toolchain": 'ROOT / ".tools" / "cargo"' in builder
         and 'ROOT / ".tools" / "rustup"' in builder,
+        "clean_clone_check_prepares_resource_root": '"backend" / "studyhub-backend").mkdir' in desktop_check,
         "release_has_no_system_python_fallback": 'resolve("backend/studyhub-backend"' in rust
         and "cfg(not(debug_assertions))" in rust,
         "packaged_backend_uses_one_folder": '"--onedir"' in backend_builder,
