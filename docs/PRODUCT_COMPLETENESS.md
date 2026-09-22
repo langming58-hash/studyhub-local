@@ -1,5 +1,11 @@
 # StudyHub Product Completeness Audit
 
+Status: **HISTORICAL P0 AUDIT EVIDENCE**. This report is retained as evidence
+for the product-completeness pass at the baseline below. It is not the current
+architecture or roadmap source of truth. See
+[Architecture](ARCHITECTURE.md), [Engineering Constitution](ENGINEERING_CONSTITUTION.md),
+and [Roadmap](ROADMAP.md).
+
 Status date: 2026-08-30  
 Canonical line: `codex/desktop-prototype`  
 Audit baseline: `341fae75c12273a52c2e02b6ba79700bc570bec3`

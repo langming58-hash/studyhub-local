@@ -117,7 +117,9 @@ Never place keys in frontend code, screenshots, logs, issues, or commits. AI use
 - Read-only MCP boundary for local integrations
 - Privacy and security acceptance suites run in normal CI
 
-Read [SECURITY.md](SECURITY.md), [PRIVACY.md](PRIVACY.md), and [Architecture](docs/ARCHITECTURE.md) before changing trust boundaries.
+Read the [Engineering Constitution](docs/ENGINEERING_CONSTITUTION.md),
+[SECURITY.md](SECURITY.md), [Privacy](docs/PRIVACY.md), and
+[Architecture](docs/ARCHITECTURE.md) before changing trust boundaries.
 
 ## Development
 
@@ -128,7 +130,7 @@ npm run ci
 npm run desktop:check
 ```
 
-Desktop prototype build and packaged acceptance:
+Desktop build and packaged acceptance:
 
 ```bash
 npm run desktop:setup
@@ -136,7 +138,9 @@ npm run desktop:build
 npm run desktop:test:packaged
 ```
 
-See [Development](docs/DEVELOPMENT.md), [Desktop Architecture](docs/DESKTOP_ARCHITECTURE.md), and [Contributing](CONTRIBUTING.md).
+See [Development](docs/DEVELOPMENT.md), [Desktop Architecture](docs/DESKTOP_ARCHITECTURE.md),
+[Design and Interaction](docs/design/DESIGN_SYSTEM_PLAN.md), and
+[Contributing](CONTRIBUTING.md).
 
 ## License
 

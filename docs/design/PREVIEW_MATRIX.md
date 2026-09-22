@@ -1,5 +1,7 @@
 # Preview Matrix
 
+Status: **CURRENT / IMPLEMENTED FILE-TYPE POLICY**.
+
 StudyHub separates the visual preview shown in the main document pane from the
 readable text used by search, AI grounding, citations, and the Readable Text tab.
 

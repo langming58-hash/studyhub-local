@@ -116,7 +116,8 @@ OPENAI_MODEL=gpt-5.4
 - MCP 仅提供本地只读边界
 - 正常 CI 会运行隐私与安全验收套件
 
-更改信任边界前，请阅读 [SECURITY.md](SECURITY.md)、[PRIVACY.md](PRIVACY.md) 和 [架构说明](docs/ARCHITECTURE.md)。
+更改信任边界前，请阅读 [工程总纲](docs/ENGINEERING_CONSTITUTION.md)、
+[SECURITY.md](SECURITY.md)、[隐私说明](docs/PRIVACY.md) 和 [架构说明](docs/ARCHITECTURE.md)。
 
 ## 开发
 
@@ -135,7 +136,8 @@ npm run desktop:build
 npm run desktop:test:packaged
 ```
 
-另见 [开发说明](docs/DEVELOPMENT.md)、[桌面架构](docs/DESKTOP_ARCHITECTURE.md) 和 [贡献指南](CONTRIBUTING.md)。
+另见 [开发说明](docs/DEVELOPMENT.md)、[桌面架构](docs/DESKTOP_ARCHITECTURE.md)、
+[设计与交互](docs/design/DESIGN_SYSTEM_PLAN.md) 和 [贡献指南](CONTRIBUTING.md)。
 
 ## License
 

@@ -1,30 +1,126 @@
-# Design System Plan
+# Design And Interaction Constitution
 
-Principles:
+Status: **AUTHORITATIVE TARGET DESIGN DIRECTION**.
 
-- Content over chrome.
-- Learning over system status.
-- Progressive disclosure over permanent controls.
-- Calm neutral surfaces with restrained accent use.
+This document governs future product design. It does not request a redesign of
+current screens. The implemented navigation is recorded in
+[Current IA](CURRENT_IA.md).
 
-Reusable patterns:
+## Precision Academic Desktop
 
-- App shell: fixed/collapsible sidebar plus contextual topbar.
-- Page header: title, quiet subtitle, at most two contextual actions.
-- List rows: filename/course/week/category first; secondary actions remain quiet.
-- Empty state: explain what is empty and the next useful action.
-- Settings panels: system details live here, not on Home.
-- AI workspace: one conversation/history/source system shared across global and contextual entry points.
+StudyHub is a dense academic desktop workspace, not a marketing site or mobile
+dashboard enlarged for desktop.
 
-Accessibility choices:
+Core qualities:
 
-- Prefer native buttons, inputs, select, textarea, and dialog.
-- Keep visible focus indicators.
-- Use `aria-current` for active navigation and `aria-label` for icon-only controls.
-- Preserve keyboard paths for hover-revealed actions.
+- high information density
+- low visual noise
+- content before decoration
+- hierarchy before cards
+- desktop-native behavior where native behavior is better
+- keyboard-first interaction
+- progressive disclosure
+- calm, precise, structured, professional, restrained presentation
 
-Responsive strategy:
+## Visual Language
 
-- Wide/desktop: sidebar plus full content width, document/AI split where relevant.
-- Normal laptop: narrower sidebar, row-based lists, restrained panels.
-- Narrow/tablet: collapsed navigation and single-column page content; document preview remains primary.
+Prefer typography, alignment, spacing, thin borders, subtle surfaces, and a
+limited semantic color system. Color communicates state, ownership, warning,
+selection, or provenance rather than decoration.
+
+Avoid:
+
+- giant rounded cards or page sections presented as cards
+- decorative gradients, glow, and excessive glassmorphism
+- rainbow course cards and one-color theme saturation
+- pill-heavy interfaces and permanent button walls
+- oversized mobile-style controls
+- emoji interface icons
+- gamification, confetti, and decorative motion
+
+Donor UI components must lose donor product skin and use StudyHub tokens,
+spacing, typography, icons, and interaction behavior.
+
+## Information Architecture
+
+Current global destinations remain Home, Courses, Search, Study, AI, and
+Settings unless real user evidence justifies a separate architecture change.
+
+- Home answers what to continue now.
+- Courses owns academic library navigation and import management.
+- Search finds known or remembered material across the library.
+- Study owns practice, wrong-question, review, and note workflows.
+- AI owns source-grounded conversations and their history.
+- Settings owns configuration, capability state, privacy, and diagnostics.
+
+Command, Search, and Ask are separate semantic concepts even when they share an
+input, menu, or overlay primitive.
+
+## Interaction Language
+
+Target shortcuts:
+
+| Shortcut | Action |
+| --- | --- |
+| `Cmd+K` | Open Commands |
+| `Cmd+Shift+F` | Open Global Search |
+| `Cmd+,` | Open Settings |
+| `Space` | Quick Look selected content |
+| `Esc` | Close the active contextual layer |
+
+Secondary actions normally live in context menus, inspectors, selection state,
+hover affordances, or the command palette. Keep only frequent, high-confidence
+commands permanently visible.
+
+Potentially destructive or ambiguous changes should follow:
+
+```text
+Preview -> Explain -> Apply -> Undo
+```
+
+Prefer an affected-items summary and recovery path over a generic "Are you
+sure?" prompt.
+
+## Reusable Patterns
+
+- App shell: stable sidebar and contextual top bar.
+- Page header: title, quiet context, and no more than two prominent actions.
+- Lists: academic identity first; secondary actions stay quiet.
+- Inspector: selection-specific metadata, provenance, and less frequent work.
+- Empty state: explain what is empty and offer the next useful action.
+- Settings: capability details and diagnostics stay out of normal study flow.
+- AI workspace: one conversation/history/source model across global and
+  contextual entry points.
+- Viewer: content remains primary, with source anchors and tools subordinate.
+
+## Accessibility And Desktop Behavior
+
+- Prefer native buttons, inputs, selects, textareas, and dialogs.
+- Keep visible keyboard focus and a complete keyboard path.
+- Use familiar icons and accessible names for icon-only controls.
+- Preserve keyboard access to hover-revealed actions.
+- Respect reduced motion and do not use motion as the only state signal.
+- Use stable dimensions so loading, selection, labels, and controls do not
+  produce layout shifts.
+- Complete human VoiceOver validation before claiming full screen-reader
+  support.
+
+## Responsive Strategy
+
+- Wide desktop: sidebar plus full workspace; document/AI splits where useful.
+- Normal laptop: narrower navigation and compact row-oriented information.
+- Narrow/tablet: collapsed navigation and single-column content while keeping
+  the primary document or task dominant.
+
+Responsive changes must preserve hierarchy and usable control sizes without
+turning the desktop product into stacked card sections.
+
+## Design Change Governance
+
+Design changes require observed user friction, an explicit goal, screenshots at
+relevant widths, keyboard/accessibility checks, and visual regression review.
+Do not combine a broad redesign with schema migration, donor adoption, or sync
+implementation.
+
+The [Engineering Constitution](../ENGINEERING_CONSTITUTION.md) governs donor
+selection and the distinction between CURRENT and TARGET behavior.

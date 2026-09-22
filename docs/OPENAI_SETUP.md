@@ -1,5 +1,7 @@
 # OpenAI Setup
 
+Status: **CURRENT OPTIONAL INTEGRATION**.
+
 OpenAI is optional. The app works without an API key.
 
 ## Configure

@@ -1,5 +1,9 @@
 # Development
 
+Substantial work must follow the
+[Engineering Constitution](ENGINEERING_CONSTITUTION.md) and preserve the
+CURRENT/TARGET distinction in [Architecture](ARCHITECTURE.md).
+
 ## Setup
 
 ```bash
@@ -30,4 +34,7 @@ Simplified Chinese catalogs must keep identical key sets.
 
 ## Branches
 
-Use short feature branches and focused pull requests. Include privacy/security impact in every PR.
+Use short feature branches and focused pull requests. Include privacy/security
+impact in every PR. Infrastructure adoption also records alternatives,
+licensing, the StudyHub-owned adapter boundary, migration impact, and relevant
+acceptance tests.
