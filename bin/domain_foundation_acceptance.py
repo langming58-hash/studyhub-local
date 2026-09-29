@@ -476,6 +476,80 @@ def create_legacy_database(path: Path, original: Path) -> str:
     return sha
 
 
+def create_legacy_history_database(path: Path, original: Path, historical_bytes: bytes) -> tuple[str, str]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    current_sha = digest(original)
+    historical_sha = hashlib.sha256(historical_bytes).hexdigest()
+    conn = sqlite3.connect(path)
+    now = "2026-01-01T00:00:00+00:00"
+    earlier = "2025-12-01T00:00:00+00:00"
+    conn.executescript(
+        """
+        CREATE TABLE courses (
+          id INTEGER PRIMARY KEY, code TEXT NOT NULL, name TEXT NOT NULL,
+          folder_name TEXT NOT NULL UNIQUE, path TEXT NOT NULL,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE weeks (
+          id INTEGER PRIMARY KEY, course_id INTEGER NOT NULL, week_label TEXT NOT NULL,
+          week_number INTEGER, path TEXT NOT NULL, has_materials INTEGER NOT NULL DEFAULT 0,
+          file_count INTEGER NOT NULL DEFAULT 0, UNIQUE(course_id, week_label)
+        );
+        CREATE TABLE files (
+          id INTEGER PRIMARY KEY, course_id INTEGER NOT NULL, week_id INTEGER,
+          course_code TEXT NOT NULL, week_label TEXT, section TEXT, category TEXT,
+          exercise_type TEXT, filename TEXT NOT NULL, original_path TEXT NOT NULL UNIQUE,
+          rel_path TEXT NOT NULL, source TEXT NOT NULL, source_label TEXT NOT NULL,
+          hash TEXT NOT NULL, size INTEGER NOT NULL, modified_at TEXT NOT NULL,
+          indexed_at TEXT NOT NULL, extension TEXT, mime_type TEXT,
+          is_official INTEGER NOT NULL DEFAULT 1, suspicious TEXT DEFAULT '',
+          text_cache_path TEXT DEFAULT ''
+        );
+        CREATE TABLE file_versions (
+          id INTEGER PRIMARY KEY, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+          stable_id TEXT NOT NULL, sha256 TEXT NOT NULL, file_size INTEGER NOT NULL,
+          modified_at TEXT NOT NULL, indexed_at TEXT NOT NULL, text_cache_path TEXT DEFAULT '',
+          active INTEGER NOT NULL DEFAULT 1, UNIQUE(file_id, sha256)
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO courses(id, code, name, folder_name, path, created_at, updated_at) VALUES (1, 'TEST6501', 'Legacy History', 'TEST6501 - Legacy History', ?, ?, ?)",
+        (str(original.parent.parent.parent), earlier, now),
+    )
+    conn.execute(
+        "INSERT INTO weeks(id, course_id, week_label, week_number, path, has_materials, file_count) VALUES (1, 1, 'Week 04', 4, ?, 1, 1)",
+        (str(original.parent.parent),),
+    )
+    conn.execute(
+        """
+        INSERT INTO files(id, course_id, week_id, course_code, week_label, section, category, exercise_type,
+          filename, original_path, rel_path, source, source_label, hash, size, modified_at, indexed_at,
+          extension, mime_type, is_official, suspicious, text_cache_path)
+        VALUES (1, 1, 1, 'TEST6501', 'Week 04', '02 Exercises', 'Tutorial', 'tutorial',
+          ?, ?, ?, 'official', 'Legacy synthetic history source', ?, ?, ?, ?, '.txt', 'text/plain', 1, '', '')
+        """,
+        (original.name, str(original.resolve()), original.name, current_sha, original.stat().st_size, now, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO file_versions(id, file_id, stable_id, sha256, file_size, modified_at, indexed_at, text_cache_path, active)
+        VALUES (1, 1, 'legacy-history-version-a', ?, ?, ?, ?, '', 0)
+        """,
+        (historical_sha, len(historical_bytes), earlier, earlier),
+    )
+    conn.execute(
+        """
+        INSERT INTO file_versions(id, file_id, stable_id, sha256, file_size, modified_at, indexed_at, text_cache_path, active)
+        VALUES (2, 1, 'legacy-history-version-b', ?, ?, ?, ?, '', 1)
+        """,
+        (current_sha, original.stat().st_size, now, now),
+    )
+    conn.commit()
+    conn.close()
+    return historical_sha, current_sha
+
+
 def check_populated_legacy_database_migrates(tmp: Path) -> bool:
     library = tmp / "legacy-library"
     original = write_text(library / "TEST6401 - Legacy Domain" / "Week 01" / "Lecture" / "Legacy Material.txt", "Legacy synthetic original remains unchanged.")
@@ -502,6 +576,79 @@ def check_populated_legacy_database_migrates(tmp: Path) -> bool:
         and blob["sha256"] == legacy_sha
         and blob["local_locator"] == ""
         and first_counts == second_counts
+        and digest(original) == before_hash
+    )
+
+
+def check_legacy_history_unknown_inactive_source(tmp: Path) -> bool:
+    library = tmp / "legacy-history-library"
+    original = write_text(
+        library / "TEST6501 - Legacy History" / "Week 04" / "Tutorial" / "Legacy History Tutorial.txt",
+        "Current synthetic legacy history version beta-content.",
+    )
+    before_hash = digest(original)
+    historical_bytes = b"Historical synthetic legacy history version alpha-content."
+    database = tmp / "legacy-history-runtime" / "studyhub.sqlite"
+    historical_sha, current_sha = create_legacy_history_database(database, original, historical_bytes)
+    server = load_server(tmp / "legacy-history-loader", library, database)
+    conn = connect(server)
+    first_counts = {
+        table: table_count(conn, table)
+        for table in ("files", "file_versions", "materials", "material_versions", "sources", "blobs")
+    }
+    material = domain_material(conn, 1)
+    versions = conn.execute(
+        "SELECT * FROM material_versions WHERE material_id=? ORDER BY active, id",
+        (material["id"],),
+    ).fetchall()
+    inactive = conn.execute(
+        "SELECT * FROM material_versions WHERE material_id=? AND sha256=?",
+        (material["id"], historical_sha),
+    ).fetchone()
+    active = conn.execute(
+        "SELECT * FROM material_versions WHERE material_id=? AND sha256=?",
+        (material["id"], current_sha),
+    ).fetchone()
+    active_source = conn.execute("SELECT * FROM sources WHERE id=?", (active["source_id"],)).fetchone()
+    historical_blob = conn.execute("SELECT * FROM blobs WHERE id=?", (inactive["blob_id"],)).fetchone()
+    current_blob = conn.execute("SELECT * FROM blobs WHERE id=?", (active["blob_id"],)).fetchone()
+    material_count = table_count(conn, "materials")
+    blob_pair_count = scalar(conn, "SELECT COUNT(*) FROM blobs WHERE sha256 IN (?, ?)", (historical_sha, current_sha))
+    server.reconcile_domain_projection(conn)
+    second_counts = {
+        table: table_count(conn, table)
+        for table in ("files", "file_versions", "materials", "material_versions", "sources", "blobs")
+    }
+    material_after = domain_material(conn, 1)
+    inactive_after = conn.execute(
+        "SELECT * FROM material_versions WHERE material_id=? AND sha256=?",
+        (material_after["id"], historical_sha),
+    ).fetchone()
+    active_after = conn.execute(
+        "SELECT * FROM material_versions WHERE material_id=? AND sha256=?",
+        (material_after["id"], current_sha),
+    ).fetchone()
+    conn.close()
+    return (
+        material["legacy_file_id"] == 1
+        and material_count == 1
+        and len(versions) == 2
+        and blob_pair_count == 2
+        and inactive is not None
+        and inactive["active"] == 0
+        and inactive["source_id"] is None
+        and inactive["blob_id"] is not None
+        and historical_blob["sha256"] == historical_sha
+        and active is not None
+        and active["active"] == 1
+        and active["source_id"] is not None
+        and active_source["local_locator"] == str(original.resolve())
+        and current_blob["sha256"] == current_sha
+        and material["current_version_id"] == active["id"]
+        and first_counts == second_counts
+        and material_after["current_version_id"] == active_after["id"]
+        and inactive_after["source_id"] is None
+        and active_after["source_id"] == active["source_id"]
         and digest(original) == before_hash
     )
 
@@ -538,6 +685,7 @@ def main() -> int:
             "duplicate_bytes_keep_distinct_materials": check_duplicate_bytes_separate_materials(server, conn, tmp),
             "user_associations_survive_reconciliation": check_user_associations_survive_reconciliation(server, conn),
             "populated_legacy_database_migrates": check_populated_legacy_database_migrates(tmp),
+            "legacy_history_unknown_inactive_source": check_legacy_history_unknown_inactive_source(tmp),
             "reset_clears_domain_projection_and_preserves_sources": check_reset_and_source_integrity(server, conn, [original, tutorial, missing]),
         }
         conn.close()

@@ -1616,9 +1616,12 @@ def upsert_domain_projection_for_file(conn: sqlite3.Connection, file_row: sqlite
         ).fetchone()
         if existing_domain_version and not version_active:
             source_id_for_version = existing_domain_version["source_id"]
-            blob_id_for_version = existing_domain_version["blob_id"]
-        else:
+            blob_id_for_version = existing_domain_version["blob_id"] or blob_id
+        elif version_active:
             source_id_for_version = source_id
+            blob_id_for_version = blob_id
+        else:
+            source_id_for_version = None
             blob_id_for_version = blob_id
         conn.execute(
             """
