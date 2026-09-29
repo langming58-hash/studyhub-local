@@ -1482,7 +1482,10 @@ def row_value(row: sqlite3.Row | dict[str, Any], key: str, default: Any = None) 
 
 
 def domain_source_stable_id(file_row: sqlite3.Row | dict[str, Any]) -> str:
-    seed = str(row_value(file_row, "stable_id") or row_value(file_row, "sha256") or row_value(file_row, "hash") or row_value(file_row, "id"))
+    material_seed = str(row_value(file_row, "stable_id") or row_value(file_row, "sha256") or row_value(file_row, "hash") or row_value(file_row, "id"))
+    import_mode = str(row_value(file_row, "import_mode", "") or "")
+    locator = str(row_value(file_row, "original_path", "") or "")
+    seed = f"{material_seed}|{import_mode}|{locator}"
     return deterministic_stable_id("source", seed)
 
 
@@ -1590,6 +1593,7 @@ def upsert_domain_projection_for_file(conn: sqlite3.Connection, file_row: sqlite
               byte_size=excluded.byte_size,
               mime_type=excluded.mime_type,
               extension=excluded.extension,
+              local_locator=excluded.local_locator,
               updated_at=excluded.updated_at
             """,
             (
@@ -1598,13 +1602,24 @@ def upsert_domain_projection_for_file(conn: sqlite3.Connection, file_row: sqlite
                 byte_size,
                 file_row["mime_type"] or "",
                 file_row["file_extension"] or file_row["extension"] or "",
-                original_path,
+                "",
                 now,
                 now,
             ),
         )
         blob_id = conn.execute("SELECT id FROM blobs WHERE sha256=?", (sha,)).fetchone()["id"]
         version_stable_id = domain_material_version_stable_id(material_stable_id, sha)
+        version_active = int(row_value(version_row, "active", file_row["active"] or 0) or 0)
+        existing_domain_version = conn.execute(
+            "SELECT source_id, blob_id FROM material_versions WHERE stable_id=?",
+            (version_stable_id,),
+        ).fetchone()
+        if existing_domain_version and not version_active:
+            source_id_for_version = existing_domain_version["source_id"]
+            blob_id_for_version = existing_domain_version["blob_id"]
+        else:
+            source_id_for_version = source_id
+            blob_id_for_version = blob_id
         conn.execute(
             """
             UPDATE material_versions SET stable_id=?, updated_at=?
@@ -1612,7 +1627,6 @@ def upsert_domain_projection_for_file(conn: sqlite3.Connection, file_row: sqlite
             """,
             (version_stable_id, now, material_id, sha, version_stable_id),
         )
-        version_active = int(row_value(version_row, "active", file_row["active"] or 0) or 0)
         source_missing = int(file_row["source_missing"] or 0)
         legacy_version_id = row_value(version_row, "id")
         conn.execute(
@@ -1638,8 +1652,8 @@ def upsert_domain_projection_for_file(conn: sqlite3.Connection, file_row: sqlite
             (
                 version_stable_id,
                 material_id,
-                source_id,
-                blob_id,
+                source_id_for_version,
+                blob_id_for_version,
                 int(file_row["id"]),
                 legacy_version_id,
                 sha,
@@ -1669,8 +1683,6 @@ def reconcile_domain_projection(conn: sqlite3.Connection) -> None:
         upsert_domain_projection_for_file(conn, row)
     conn.execute("DELETE FROM material_versions WHERE legacy_file_id NOT IN (SELECT id FROM files)")
     conn.execute("DELETE FROM materials WHERE legacy_file_id NOT IN (SELECT id FROM files)")
-    conn.execute("DELETE FROM sources WHERE id NOT IN (SELECT DISTINCT source_id FROM material_versions WHERE source_id IS NOT NULL)")
-    conn.execute("DELETE FROM blobs WHERE id NOT IN (SELECT DISTINCT blob_id FROM material_versions WHERE blob_id IS NOT NULL)")
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -2990,7 +3002,7 @@ def validate_reference_path(raw: Any) -> Path:
     return path.resolve()
 
 
-def register_material_paths(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
+def register_material_paths(conn: sqlite3.Connection, body: dict[str, Any], *, defer_domain_reconcile: bool = False) -> dict[str, Any]:
     raw_paths = body.get("paths") or []
     if not isinstance(raw_paths, list) or not raw_paths or len(raw_paths) > 200:
         raise ValueError("Choose between 1 and 200 files")
@@ -3063,7 +3075,8 @@ def register_material_paths(conn: sqlite3.Connection, body: dict[str, Any]) -> d
         indexed = index_material_content(conn, file_id, path, force=True)
         results.append({"status": "added", "id": file_id, "filename": path.name, "indexed": indexed["indexed"]})
     refresh_course_week_counts(conn)
-    reconcile_domain_projection(conn)
+    if not defer_domain_reconcile:
+        reconcile_domain_projection(conn)
     conn.commit()
     return {"ok": True, "items": results, "added": sum(item["status"] == "added" for item in results)}
 
@@ -3141,6 +3154,7 @@ def import_course_folder(conn: sqlite3.Connection, body: dict[str, Any]) -> dict
                 "duplicate_policy": body.get("duplicate_policy") or "skip",
                 "is_official": bool(body.get("is_official", False)),
             },
+            defer_domain_reconcile=True,
         )["items"][0]
         results.append(item)
     refresh_course_week_counts(conn)

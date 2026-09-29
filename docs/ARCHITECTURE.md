@@ -44,15 +44,31 @@ versions, document chunks, questions, solutions, notes, stars, attempts, wrong
 questions, bookmarks, study sessions, AI conversations/messages, sync events,
 AI index state, and app settings.
 
-The current implementation uses `files` as the main academic-content record.
-It does not yet fully model the TARGET distinctions between Source, Material,
-Blob, and MaterialVersion. Do not rename current tables conceptually in docs or
-claim target entities are implemented.
+StudyHub is now in an additive Strangler transition for the academic-content
+domain. The current product still uses legacy `files` and `file_versions` as
+the operational compatibility state for scanner/import/API/UI reads. Alongside
+that compatibility state, Phase 1 has implemented a persisted domain
+foundation:
+
+- `schema_migrations` for ordered, recorded schema changes.
+- Source persistence for structured local origin/provenance projection.
+- Blob persistence for byte/content identity.
+- Material persistence for the stable academic object.
+- MaterialVersion persistence for content/version history.
+- Compatibility reconciliation from legacy `files` and `file_versions`.
+
+This foundation is additive. Current scanner/import/API/UI reads continue to
+use the legacy tables while the new domain tables are kept coherent at existing
+boundaries.
 
 Stable IDs and additive metadata support term/course/material management, but
 the scanner, extraction, persistence, and indexing responsibilities still
 coexist in the Python backend. This is current truth, not the final module
 boundary.
+
+Not implemented yet: Canvas/remote connectors, SourceAnchor, Evidence,
+DerivedArtifact/ProcessingRecipe, Entity Resolution, the Assessments target
+model, background jobs, and target-domain UI reads.
 
 ### Current Source And Preview Rules
 
@@ -87,8 +103,8 @@ Detailed handling is in [Privacy](PRIVACY.md) and [Security](../SECURITY.md).
 
 ## TARGET: Academic Domain
 
-The target model preserves semantic boundaries that the current `files` model
-does not fully express:
+The target model continues the Strangler transition by moving behavior from
+legacy compatibility tables toward explicit domain services and repositories:
 
 ```text
 Institution
@@ -116,8 +132,10 @@ Required distinctions:
 - Remote state remains separate from user-owned overlays.
 - Derived data remains separate from user-owned data.
 
-These are TARGET concepts. No schema or migration is implied by this document
-alone.
+Source, Blob, Material, and MaterialVersion now have an implemented additive
+persistence foundation. The remaining target concepts in this section are not
+implemented by that foundation unless explicitly listed in the current data
+model above.
 
 ## TARGET: Ownership Model
 

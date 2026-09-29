@@ -121,7 +121,7 @@ def domain_current_version(conn: sqlite3.Connection, material_id: int) -> sqlite
     return row
 
 
-def build_library(library: Path) -> tuple[Path, Path]:
+def build_library(library: Path) -> tuple[Path, Path, Path]:
     first = write_text(
         library / "TEST6101 - Domain Foundation" / "Week 01" / "01 Course Materials" / "Lecture" / "Domain Lecture.txt",
         "Domain foundation alpha-content. This source-owned original must remain unchanged.",
@@ -130,7 +130,11 @@ def build_library(library: Path) -> tuple[Path, Path]:
         library / "TEST6101 - Domain Foundation" / "Week 01" / "02 Exercises" / "Tutorial" / "Domain Tutorial.txt",
         "Teacher-provided synthetic tutorial question. Q1: Explain the domain model.",
     )
-    return first, second
+    missing = write_text(
+        library / "TEST6101 - Domain Foundation" / "Week 02" / "01 Course Materials" / "Lecture" / "Missing Later.txt",
+        "Synthetic original that will be removed after domain projection.",
+    )
+    return first, second, missing
 
 
 def check_schema_and_migration(server: Any, conn: sqlite3.Connection) -> bool:
@@ -203,6 +207,7 @@ def check_projection_and_backfill(server: Any, conn: sqlite3.Connection, origina
         and source["local_locator"] == str(original.resolve())
         and blob["sha256"] == lecture["sha256"]
         and blob["byte_size"] == lecture["file_size"]
+        and blob["local_locator"] == ""
         and "current_version_id" not in public_payload
         and "local_locator" not in public_payload
         and initial_counts == unchanged_counts
@@ -219,6 +224,15 @@ def check_versioning_identity_and_relink(server: Any, conn: sqlite3.Connection, 
     updated = file_row(conn, "Domain Lecture.txt")
     material_after_update = domain_material(conn, updated["id"])
     search_matches = server.search_local_context(conn, "beta-content", {"fileId": updated["id"]}, limit=3)
+    old_version = conn.execute(
+        """
+        SELECT mv.*, s.local_locator
+        FROM material_versions mv
+        JOIN sources s ON s.id=mv.source_id
+        WHERE mv.material_id=? AND mv.sha256=?
+        """,
+        (material_after_update["id"], lecture["sha256"]),
+    ).fetchone()
     version_count = scalar(conn, "SELECT COUNT(*) FROM material_versions WHERE material_id=?", (material_after_update["id"],))
     blob_count = scalar(
         conn,
@@ -231,6 +245,15 @@ def check_versioning_identity_and_relink(server: Any, conn: sqlite3.Connection, 
     relinked_material = domain_material(conn, relinked["id"])
     relinked_version = domain_current_version(conn, relinked_material["id"])
     relinked_source = conn.execute("SELECT * FROM sources WHERE id=?", (relinked_version["source_id"],)).fetchone()
+    old_version_after_relink = conn.execute(
+        """
+        SELECT mv.*, s.local_locator
+        FROM material_versions mv
+        JOIN sources s ON s.id=mv.source_id
+        WHERE mv.material_id=? AND mv.sha256=?
+        """,
+        (relinked_material["id"], lecture["sha256"]),
+    ).fetchone()
     tutorial = file_row(conn, "Domain Tutorial.txt")
     removed = server.manage_materials(conn, {"action": "remove", "id": tutorial["id"]})
     removed_material = domain_material(conn, tutorial["id"])
@@ -240,6 +263,11 @@ def check_versioning_identity_and_relink(server: Any, conn: sqlite3.Connection, 
         and updated["sha256"] != lecture["sha256"]
         and version_count >= 2
         and blob_count >= 2
+        and old_version is not None
+        and old_version_after_relink is not None
+        and old_version_after_relink["source_id"] == old_version["source_id"]
+        and old_version_after_relink["local_locator"] == old_version["local_locator"]
+        and old_version_after_relink["local_locator"] != str(external.resolve())
         and any("beta-content" in row["text"] for row in search_matches)
         and relinked_material["stable_id"] == stable_id
         and relinked_material["active"] == 1
@@ -248,6 +276,233 @@ def check_versioning_identity_and_relink(server: Any, conn: sqlite3.Connection, 
         and removed["ok"] is True
         and removed_material["active"] == 0
         and bool(removed_material["removed_at"])
+    )
+
+
+def check_orphan_source_blob_not_gc(server: Any, conn: sqlite3.Connection) -> bool:
+    conn.execute(
+        """
+        INSERT INTO sources(stable_id, provider_kind, authority, source_label, source_type, import_mode,
+          local_locator, created_at, updated_at)
+        VALUES ('source_unlinked_future_synthetic', 'synthetic', 'REMOTE_AUTHORITATIVE',
+          'Future synthetic source', 'Future Connector', 'future', '', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO blobs(stable_id, sha256, byte_size, mime_type, extension, local_locator, created_at, updated_at)
+        VALUES ('blob_unlinked_future_synthetic', ?, 17, 'text/plain', '.txt', '', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+        """,
+        ("0" * 64,),
+    )
+    conn.commit()
+    server.reconcile_domain_projection(conn)
+    conn.commit()
+    return bool(
+        conn.execute("SELECT 1 FROM sources WHERE stable_id='source_unlinked_future_synthetic'").fetchone()
+        and conn.execute("SELECT 1 FROM blobs WHERE stable_id='blob_unlinked_future_synthetic'").fetchone()
+    )
+
+
+def check_missing_original_domain_provenance(server: Any, conn: sqlite3.Connection, missing: Path) -> bool:
+    missing_row = file_row(conn, missing.name)
+    material = domain_material(conn, missing_row["id"])
+    current_version = domain_current_version(conn, material["id"])
+    source = conn.execute("SELECT * FROM sources WHERE id=?", (current_version["source_id"],)).fetchone()
+    before_versions = scalar(conn, "SELECT COUNT(*) FROM material_versions WHERE material_id=?", (material["id"],))
+    conn.commit()
+    missing.unlink()
+    server.scan_library(server.DEFAULT_STUDY_ROOT)
+    after_file = conn.execute("SELECT * FROM files WHERE id=?", (missing_row["id"],)).fetchone()
+    after_material = domain_material(conn, missing_row["id"])
+    after_versions = conn.execute("SELECT * FROM material_versions WHERE material_id=?", (after_material["id"],)).fetchall()
+    after_source = conn.execute("SELECT * FROM sources WHERE id=?", (source["id"],)).fetchone()
+    return (
+        after_file["source_missing"] == 1
+        and after_file["active"] == 1
+        and after_material["stable_id"] == material["stable_id"]
+        and after_material["active"] == 1
+        and bool(after_versions)
+        and len(after_versions) == before_versions
+        and after_source is not None
+        and all(version["source_missing"] == 1 for version in after_versions if version["active"])
+    )
+
+
+def check_batch_folder_import_reconciles_once(server: Any, conn: sqlite3.Connection, tmp: Path) -> bool:
+    folder = tmp / "batch-import" / "TEST6201 - Batch Domain"
+    for index in range(5):
+        write_text(
+            folder / "Week 01" / "01 Course Materials" / "Lecture" / f"Batch {index}.txt",
+            f"Synthetic batch import material {index}.",
+        )
+    original_reconcile = server.reconcile_domain_projection
+    calls = {"count": 0}
+
+    def counted_reconcile(inner_conn: sqlite3.Connection) -> None:
+        calls["count"] += 1
+        original_reconcile(inner_conn)
+
+    server.reconcile_domain_projection = counted_reconcile
+    try:
+        imported = server.import_course_folder(conn, {"path": str(folder), "is_official": True})
+        batch_calls = calls["count"]
+        course_id = int(imported["course"]["id"])
+        week_id = conn.execute("SELECT id FROM weeks WHERE course_id=? LIMIT 1", (course_id,)).fetchone()["id"]
+        standalone = write_text(tmp / "standalone" / "Standalone.txt", "Standalone synthetic file.")
+        server.register_material_paths(
+            conn,
+            {"paths": [str(standalone)], "course_id": course_id, "week_id": week_id, "material_type": "lecture"},
+        )
+        standalone_added_call = calls["count"] == batch_calls + 1
+    finally:
+        server.reconcile_domain_projection = original_reconcile
+    return imported["added"] == 5 and batch_calls == 1 and standalone_added_call
+
+
+def check_duplicate_bytes_separate_materials(server: Any, conn: sqlite3.Connection, tmp: Path) -> bool:
+    course = server.manage_course(conn, {"action": "create", "course_code": "TEST6301", "display_name": "Duplicate Bytes"})
+    week = server.manage_week(conn, {"action": "create", "course_id": course["id"], "label": "Week 01", "kind": "week"})
+    content = "Identical bytes with separate academic identities.\n"
+    first = write_text(tmp / "dupes" / "Duplicate Identity A.txt", content)
+    second = write_text(tmp / "dupes" / "Duplicate Identity B.txt", content)
+    result = server.register_material_paths(
+        conn,
+        {
+            "paths": [str(first), str(second)],
+            "course_id": course["id"],
+            "week_id": week["id"],
+            "material_type": "reading",
+            "duplicate_policy": "add_anyway",
+            "is_official": True,
+        },
+    )
+    ids = [item["id"] for item in result["items"] if item["status"] == "added"]
+    if len(ids) != 2:
+        return False
+    materials = conn.execute(
+        f"SELECT * FROM materials WHERE legacy_file_id IN ({','.join('?' for _ in ids)}) ORDER BY legacy_file_id",
+        ids,
+    ).fetchall()
+    blob_ids = conn.execute(
+        f"""
+        SELECT DISTINCT mv.blob_id
+        FROM material_versions mv
+        JOIN materials m ON m.id=mv.material_id
+        WHERE m.legacy_file_id IN ({','.join('?' for _ in ids)})
+        """,
+        ids,
+    ).fetchall()
+    return len(materials) == 2 and materials[0]["stable_id"] != materials[1]["stable_id"] and len(blob_ids) == 1
+
+
+def check_user_associations_survive_reconciliation(server: Any, conn: sqlite3.Connection) -> bool:
+    row = file_row(conn, "Relinked Lecture.txt")
+    conn.execute(
+        "INSERT INTO notes(target_type, target_id, course_id, week_label, body, created_at, updated_at) VALUES ('file', ?, ?, ?, 'Domain note', ?, ?)",
+        (row["id"], row["course_id"], row["week_label"], server.now_iso(), server.now_iso()),
+    )
+    conn.execute("INSERT OR IGNORE INTO stars(target_type, target_id, created_at) VALUES ('file', ?, ?)", (row["id"], server.now_iso()))
+    conn.commit()
+    before = conn.execute("SELECT id, stable_id FROM files WHERE id=?", (row["id"],)).fetchone()
+    server.reconcile_domain_projection(conn)
+    after = conn.execute("SELECT id, stable_id FROM files WHERE id=?", (row["id"],)).fetchone()
+    associations = conn.execute(
+        "SELECT (SELECT COUNT(*) FROM notes WHERE target_id=?) + (SELECT COUNT(*) FROM stars WHERE target_id=?) AS c",
+        (row["id"], row["id"]),
+    ).fetchone()["c"]
+    return before["id"] == after["id"] and before["stable_id"] == after["stable_id"] and associations == 2
+
+
+def create_legacy_database(path: Path, original: Path) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sha = digest(original)
+    conn = sqlite3.connect(path)
+    now = "2026-01-01T00:00:00+00:00"
+    conn.executescript(
+        """
+        CREATE TABLE courses (
+          id INTEGER PRIMARY KEY, code TEXT NOT NULL, name TEXT NOT NULL,
+          folder_name TEXT NOT NULL UNIQUE, path TEXT NOT NULL,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE weeks (
+          id INTEGER PRIMARY KEY, course_id INTEGER NOT NULL, week_label TEXT NOT NULL,
+          week_number INTEGER, path TEXT NOT NULL, has_materials INTEGER NOT NULL DEFAULT 0,
+          file_count INTEGER NOT NULL DEFAULT 0, UNIQUE(course_id, week_label)
+        );
+        CREATE TABLE files (
+          id INTEGER PRIMARY KEY, course_id INTEGER NOT NULL, week_id INTEGER,
+          course_code TEXT NOT NULL, week_label TEXT, section TEXT, category TEXT,
+          exercise_type TEXT, filename TEXT NOT NULL, original_path TEXT NOT NULL UNIQUE,
+          rel_path TEXT NOT NULL, source TEXT NOT NULL, source_label TEXT NOT NULL,
+          hash TEXT NOT NULL, size INTEGER NOT NULL, modified_at TEXT NOT NULL,
+          indexed_at TEXT NOT NULL, extension TEXT, mime_type TEXT,
+          is_official INTEGER NOT NULL DEFAULT 1, suspicious TEXT DEFAULT '',
+          text_cache_path TEXT DEFAULT ''
+        );
+        CREATE TABLE file_versions (
+          id INTEGER PRIMARY KEY, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+          stable_id TEXT NOT NULL, sha256 TEXT NOT NULL, file_size INTEGER NOT NULL,
+          modified_at TEXT NOT NULL, indexed_at TEXT NOT NULL, text_cache_path TEXT DEFAULT '',
+          active INTEGER NOT NULL DEFAULT 1, UNIQUE(file_id, sha256)
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO courses(id, code, name, folder_name, path, created_at, updated_at) VALUES (1, 'TEST6401', 'Legacy Domain', 'TEST6401 - Legacy Domain', ?, ?, ?)",
+        (str(original.parent.parent.parent.parent), now, now),
+    )
+    conn.execute(
+        "INSERT INTO weeks(id, course_id, week_label, week_number, path, has_materials, file_count) VALUES (1, 1, 'Week 01', 1, ?, 1, 1)",
+        (str(original.parent.parent.parent),),
+    )
+    conn.execute(
+        """
+        INSERT INTO files(id, course_id, week_id, course_code, week_label, section, category, exercise_type,
+          filename, original_path, rel_path, source, source_label, hash, size, modified_at, indexed_at,
+          extension, mime_type, is_official, suspicious, text_cache_path)
+        VALUES (1, 1, 1, 'TEST6401', 'Week 01', '01 Course Materials', 'Lecture', '',
+          ?, ?, ?, 'official', 'Legacy synthetic source', ?, ?, ?, ?, '.txt', 'text/plain', 1, '', '')
+        """,
+        (original.name, str(original.resolve()), original.name, sha, original.stat().st_size, now, now),
+    )
+    conn.execute(
+        "INSERT INTO file_versions(id, file_id, stable_id, sha256, file_size, modified_at, indexed_at, text_cache_path, active) VALUES (1, 1, 'legacy-version-stable', ?, ?, ?, ?, '', 1)",
+        (sha, original.stat().st_size, now, now),
+    )
+    conn.commit()
+    conn.close()
+    return sha
+
+
+def check_populated_legacy_database_migrates(tmp: Path) -> bool:
+    library = tmp / "legacy-library"
+    original = write_text(library / "TEST6401 - Legacy Domain" / "Week 01" / "Lecture" / "Legacy Material.txt", "Legacy synthetic original remains unchanged.")
+    before_hash = digest(original)
+    database = tmp / "legacy-runtime" / "studyhub.sqlite"
+    legacy_sha = create_legacy_database(database, original)
+    server = load_server(tmp / "legacy-loader", library, database)
+    conn = connect(server)
+    first_counts = {table: table_count(conn, table) for table in ("files", "file_versions", "materials", "material_versions", "sources", "blobs")}
+    legacy_file = conn.execute("SELECT * FROM files WHERE id=1").fetchone()
+    material = domain_material(conn, 1)
+    version = domain_current_version(conn, material["id"])
+    source = conn.execute("SELECT * FROM sources WHERE id=?", (version["source_id"],)).fetchone()
+    blob = conn.execute("SELECT * FROM blobs WHERE id=?", (version["blob_id"],)).fetchone()
+    server.init_db(conn)
+    second_counts = {table: table_count(conn, table) for table in ("files", "file_versions", "materials", "material_versions", "sources", "blobs")}
+    conn.close()
+    return (
+        legacy_file["id"] == 1
+        and legacy_file["sha256"] == legacy_sha
+        and material["legacy_file_id"] == 1
+        and version["legacy_file_version_id"] == 1
+        and source["local_locator"] == str(original.resolve())
+        and blob["sha256"] == legacy_sha
+        and blob["local_locator"] == ""
+        and first_counts == second_counts
+        and digest(original) == before_hash
     )
 
 
@@ -270,14 +525,20 @@ def main() -> int:
         tmp = Path(tmp_name)
         library = tmp / "StudyLibrary"
         database = tmp / "runtime" / "studyhub.sqlite"
-        original, tutorial = build_library(library)
+        original, tutorial, missing = build_library(library)
         server = load_server(tmp, library, database)
         conn = connect(server)
         checks = {
             "schema_migration_versioned_and_atomic": check_schema_and_migration(server, conn),
             "domain_projection_backfills_current_files": check_projection_and_backfill(server, conn, original),
             "material_identity_versions_and_relink": check_versioning_identity_and_relink(server, conn, original, tmp),
-            "reset_clears_domain_projection_and_preserves_sources": check_reset_and_source_integrity(server, conn, [original, tutorial]),
+            "unlinked_future_source_blob_not_gc": check_orphan_source_blob_not_gc(server, conn),
+            "missing_original_domain_provenance": check_missing_original_domain_provenance(server, conn, missing),
+            "folder_import_reconciles_once": check_batch_folder_import_reconciles_once(server, conn, tmp),
+            "duplicate_bytes_keep_distinct_materials": check_duplicate_bytes_separate_materials(server, conn, tmp),
+            "user_associations_survive_reconciliation": check_user_associations_survive_reconciliation(server, conn),
+            "populated_legacy_database_migrates": check_populated_legacy_database_migrates(tmp),
+            "reset_clears_domain_projection_and_preserves_sources": check_reset_and_source_integrity(server, conn, [original, tutorial, missing]),
         }
         conn.close()
 
