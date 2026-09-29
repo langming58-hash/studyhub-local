@@ -12,7 +12,6 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVER = ROOT / "server.py"
 
 STATE_ENV = (
     "DATABASE_PATH",
@@ -78,6 +77,70 @@ result = {
 print(json.dumps(result))
 """
 
+EXTERNAL_SOURCE_PROBE = r"""
+import json
+import sys
+from pathlib import Path
+
+import server
+
+external_root = Path(sys.argv[1]).resolve()
+external_library = external_root / "Synthetic Library"
+external_course = external_root / "Synthetic Course"
+external_file = external_course / "Week 01" / "Lecture.txt"
+external_library.mkdir(parents=True, exist_ok=True)
+external_file.parent.mkdir(parents=True, exist_ok=True)
+external_file.write_text("Synthetic external material for environment isolation.\n", encoding="utf-8")
+
+server.ensure_dirs()
+conn = server.connect_db()
+server.init_db(conn)
+
+def permission_rejected(call):
+    try:
+        call()
+    except PermissionError:
+        return True
+    return False
+
+before_courses = conn.execute("SELECT COUNT(*) AS count FROM courses").fetchone()["count"]
+library_rejected = permission_rejected(lambda: server.validate_user_library_path(str(external_library)))
+reference_rejected = permission_rejected(lambda: server.validate_reference_path(str(external_file)))
+import_rejected = permission_rejected(
+    lambda: server.import_course_folder(conn, {"path": str(external_course), "display_name": "Synthetic Course"})
+)
+after_courses = conn.execute("SELECT COUNT(*) AS count FROM courses").fetchone()["count"]
+upload_rejected = False
+if server.RUNTIME_PROFILE == "demo-test":
+    upload_handler = object.__new__(server.StudyHubHandler)
+    upload_rejected = permission_rejected(upload_handler.handle_upload)
+
+positive_library = False
+positive_reference = False
+positive_import = False
+if server.RUNTIME_PROFILE in {"production", "development"}:
+    positive_library = server.validate_user_library_path(str(external_library)) == external_library
+    positive_reference = server.validate_reference_path(str(external_file)) == external_file
+    imported = server.import_course_folder(
+        conn,
+        {"path": str(external_course), "display_name": "Synthetic Course"},
+    )
+    positive_import = imported["course"]["display_name"] == "Synthetic Course" and imported["items"]
+
+conn.close()
+print(json.dumps({
+    "profile": server.RUNTIME_PROFILE,
+    "library_rejected": library_rejected,
+    "reference_rejected": reference_rejected,
+    "import_rejected": import_rejected,
+    "import_changed_database": before_courses != after_courses,
+    "upload_rejected": upload_rejected,
+    "positive_library": positive_library,
+    "positive_reference": positive_reference,
+    "positive_import": bool(positive_import),
+}))
+"""
+
 
 def write_settings(path: Path, profile: str, *, blocked_values: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,6 +189,36 @@ def probe(profile: str, root: Path, action: str, canary: str, *, inherit_blocked
         capture_output=True,
         text=True,
     )
+    return json.loads(completed.stdout.splitlines()[-1])
+
+
+def external_source_probe(profile: str, root: Path, external_root: Path) -> dict[str, object]:
+    runtime = root / "runtime"
+    env = os.environ.copy()
+    for key in STATE_ENV:
+        env.pop(key, None)
+    env.update(
+        {
+            "STUDYHUB_RUNTIME_PROFILE": profile,
+            "STUDYHUB_RUNTIME_DIR": str(runtime),
+            "STUDYHUB_DATA_DIR": str(runtime / "data"),
+            "STUDYHUB_CACHE_DIR": str(runtime / "cache"),
+            "STUDYHUB_LOG_DIR": str(runtime / "logs"),
+            "DATABASE_PATH": str(runtime / "data" / "external-source.sqlite"),
+            "STUDYHUB_CONFIG_PATH": str(root / "config" / "external-source.env"),
+        }
+    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", EXTERNAL_SOURCE_PROBE, str(external_root)],
+            cwd=ROOT,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(error.stderr.strip() or "external source behavior probe failed") from error
     return json.loads(completed.stdout.splitlines()[-1])
 
 
@@ -180,6 +273,12 @@ def main() -> int:
         )
         production_after_demo_reset = probe("production", roots["production"], "read", "ignored")
         development_after_demo_reset = probe("development", roots["development"], "read", "ignored")
+
+        external_root = temp / "external-synthetic-sources"
+        external_root.mkdir()
+        demo_external = external_source_probe("demo-test", roots["demo-test"], external_root)
+        production_external = external_source_probe("production", roots["production"], external_root)
+        development_external = external_source_probe("development", roots["development"], external_root)
 
         legacy_source_state = temp / "legacy-source-state"
         legacy_source_state.mkdir()
@@ -250,9 +349,20 @@ def main() -> int:
             "webview_storage_identities_are_distinct": demo_config["identifier"] == "io.studyhublocal.desktop.demo"
             and "webview_data_dir" in rust
             and ".data_directory(directory)" in rust,
-            "demo_external_source_entry_points_are_disabled": "Demo/Test mode cannot select external study folders." in rust
-            and "Demo/Test mode cannot select external study files." in rust
-            and "Demo/Test mode cannot connect an external study library." in SERVER.read_text(encoding="utf-8"),
+            "demo_external_study_library_is_behaviorally_rejected": demo_external["library_rejected"] is True,
+            "demo_external_file_reference_is_behaviorally_rejected": demo_external["reference_rejected"] is True,
+            "demo_course_folder_import_is_rejected_before_mutation": demo_external["import_rejected"] is True
+            and demo_external["import_changed_database"] is False,
+            "demo_multipart_upload_is_behaviorally_rejected": demo_external["upload_rejected"] is True,
+            "production_external_source_positive_control": production_external["positive_library"] is True
+            and production_external["positive_reference"] is True
+            and production_external["positive_import"] is True,
+            "development_external_source_positive_control": development_external["positive_library"] is True
+            and development_external["positive_reference"] is True
+            and development_external["positive_import"] is True,
+            "native_demo_picker_protection_remains_covered": rust.count("allows_external_sources()") == 2
+            and "Demo/Test mode cannot select external study folders." in rust
+            and "Demo/Test mode cannot select external study files." in rust,
         }
 
     for name, passed in checks.items():
