@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from xml.etree import ElementTree
 
 try:
@@ -1348,6 +1348,346 @@ def ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
+def apply_schema_migration(
+    conn: sqlite3.Connection,
+    version: int,
+    name: str,
+    migration: Callable[[sqlite3.Connection], None],
+) -> bool:
+    """Apply one ordered schema migration and record it only after success."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          version INTEGER PRIMARY KEY,
+          name TEXT NOT NULL,
+          applied_at TEXT NOT NULL
+        )
+        """
+    )
+    if conn.execute("SELECT 1 FROM schema_migrations WHERE version=?", (version,)).fetchone():
+        return False
+    savepoint = f"schema_migration_{version}"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        migration(conn)
+        conn.execute(
+            "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (version, name, now_iso()),
+        )
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+    except Exception:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        raise
+    return True
+
+
+def phase1_domain_foundation_migration(conn: sqlite3.Connection) -> None:
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS blobs (
+          id INTEGER PRIMARY KEY,
+          stable_id TEXT NOT NULL UNIQUE,
+          sha256 TEXT NOT NULL UNIQUE,
+          byte_size INTEGER NOT NULL DEFAULT 0,
+          mime_type TEXT DEFAULT '',
+          extension TEXT DEFAULT '',
+          local_locator TEXT DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS sources (
+          id INTEGER PRIMARY KEY,
+          stable_id TEXT NOT NULL UNIQUE,
+          provider_kind TEXT NOT NULL,
+          authority TEXT NOT NULL,
+          source_label TEXT DEFAULT '',
+          source_type TEXT DEFAULT '',
+          import_mode TEXT DEFAULT '',
+          local_locator TEXT DEFAULT '',
+          connector_id TEXT DEFAULT '',
+          account_id TEXT DEFAULT '',
+          remote_id TEXT DEFAULT '',
+          remote_url TEXT DEFAULT '',
+          remote_updated_at TEXT DEFAULT '',
+          fetched_at TEXT DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS materials (
+          id INTEGER PRIMARY KEY,
+          stable_id TEXT NOT NULL UNIQUE,
+          legacy_file_id INTEGER UNIQUE REFERENCES files(id) ON DELETE CASCADE,
+          course_id INTEGER REFERENCES courses(id) ON DELETE SET NULL,
+          week_id INTEGER REFERENCES weeks(id) ON DELETE SET NULL,
+          course_code TEXT DEFAULT '',
+          course_name TEXT DEFAULT '',
+          week_label TEXT DEFAULT '',
+          week_number INTEGER,
+          material_type TEXT DEFAULT '',
+          display_name TEXT DEFAULT '',
+          active INTEGER NOT NULL DEFAULT 1,
+          removed_at TEXT,
+          current_version_id INTEGER,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS material_versions (
+          id INTEGER PRIMARY KEY,
+          stable_id TEXT NOT NULL UNIQUE,
+          material_id INTEGER NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+          source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+          blob_id INTEGER REFERENCES blobs(id) ON DELETE SET NULL,
+          legacy_file_id INTEGER REFERENCES files(id) ON DELETE CASCADE,
+          legacy_file_version_id INTEGER REFERENCES file_versions(id) ON DELETE SET NULL,
+          sha256 TEXT NOT NULL,
+          byte_size INTEGER NOT NULL DEFAULT 0,
+          modified_at TEXT DEFAULT '',
+          indexed_at TEXT DEFAULT '',
+          text_cache_path TEXT DEFAULT '',
+          active INTEGER NOT NULL DEFAULT 1,
+          source_missing INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(material_id, sha256)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_materials_course_week ON materials(course_id, week_id, active)",
+        "CREATE INDEX IF NOT EXISTS idx_material_versions_material_active ON material_versions(material_id, active)",
+        "CREATE INDEX IF NOT EXISTS idx_material_versions_legacy ON material_versions(legacy_file_id, legacy_file_version_id)",
+        "CREATE INDEX IF NOT EXISTS idx_sources_provider ON sources(provider_kind, authority)",
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+
+SCHEMA_MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
+    (1, "phase1_domain_foundation", phase1_domain_foundation_migration),
+)
+
+
+def run_schema_migrations(conn: sqlite3.Connection) -> None:
+    for version, name, migration in SCHEMA_MIGRATIONS:
+        apply_schema_migration(conn, version, name, migration)
+
+
+def row_value(row: sqlite3.Row | dict[str, Any], key: str, default: Any = None) -> Any:
+    return row[key] if key in row.keys() else default
+
+
+def domain_source_stable_id(file_row: sqlite3.Row | dict[str, Any]) -> str:
+    material_seed = str(row_value(file_row, "stable_id") or row_value(file_row, "sha256") or row_value(file_row, "hash") or row_value(file_row, "id"))
+    import_mode = str(row_value(file_row, "import_mode", "") or "")
+    locator = str(row_value(file_row, "original_path", "") or "")
+    seed = f"{material_seed}|{import_mode}|{locator}"
+    return deterministic_stable_id("source", seed)
+
+
+def domain_material_version_stable_id(material_stable_id: str, sha256: str) -> str:
+    return deterministic_stable_id("matver", f"{material_stable_id}|{sha256}")
+
+
+def upsert_domain_projection_for_file(conn: sqlite3.Connection, file_row: sqlite3.Row) -> None:
+    now = now_iso()
+    material_stable_id = str(file_row["stable_id"] or file_row["sha256"] or file_row["hash"] or f"legacy-file-{file_row['id']}")
+    source_stable_id = domain_source_stable_id(file_row)
+    source_label = str(file_row["source_label"] or "")
+    source_type = str(file_row["source_type"] or file_row["source"] or "")
+    import_mode = str(file_row["import_mode"] or "scanned")
+    original_path = str(file_row["original_path"] or "")
+    authority = "USER_OWNED"
+    provider_kind = "local"
+    conn.execute(
+        """
+        INSERT INTO sources(stable_id, provider_kind, authority, source_label, source_type, import_mode,
+          local_locator, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(stable_id) DO UPDATE SET
+          provider_kind=excluded.provider_kind,
+          authority=excluded.authority,
+          source_label=excluded.source_label,
+          source_type=excluded.source_type,
+          import_mode=excluded.import_mode,
+          local_locator=excluded.local_locator,
+          updated_at=excluded.updated_at
+        """,
+        (source_stable_id, provider_kind, authority, source_label, source_type, import_mode, original_path, now, now),
+    )
+    source_id = conn.execute("SELECT id FROM sources WHERE stable_id=?", (source_stable_id,)).fetchone()["id"]
+    material_created = str(file_row["material_created_at"] or file_row["indexed_at"] or now)
+    material_updated = str(file_row["material_updated_at"] or file_row["indexed_at"] or now)
+    legacy_material = conn.execute("SELECT id, stable_id FROM materials WHERE legacy_file_id=?", (file_row["id"],)).fetchone()
+    if legacy_material and legacy_material["stable_id"] != material_stable_id:
+        conn.execute(
+            "UPDATE materials SET stable_id=?, updated_at=? WHERE id=?",
+            (material_stable_id, now, legacy_material["id"]),
+        )
+    conn.execute(
+        """
+        INSERT INTO materials(stable_id, legacy_file_id, course_id, week_id, course_code, course_name,
+          week_label, week_number, material_type, display_name, active, removed_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(stable_id) DO UPDATE SET
+          legacy_file_id=excluded.legacy_file_id,
+          course_id=excluded.course_id,
+          week_id=excluded.week_id,
+          course_code=excluded.course_code,
+          course_name=excluded.course_name,
+          week_label=excluded.week_label,
+          week_number=excluded.week_number,
+          material_type=excluded.material_type,
+          display_name=excluded.display_name,
+          active=excluded.active,
+          removed_at=excluded.removed_at,
+          updated_at=excluded.updated_at
+        """,
+        (
+            material_stable_id,
+            int(file_row["id"]),
+            file_row["course_id"],
+            file_row["week_id"],
+            file_row["course_code"] or "",
+            file_row["course_name"] or "",
+            file_row["week_label"] or "",
+            file_row["week_number"],
+            file_row["material_type"] or "",
+            file_row["display_name"] or file_row["filename"] or "",
+            int(file_row["active"] or 0),
+            file_row["removed_at"],
+            material_created,
+            material_updated,
+        ),
+    )
+    material_id = conn.execute("SELECT id FROM materials WHERE stable_id=?", (material_stable_id,)).fetchone()["id"]
+    version_rows = conn.execute("SELECT * FROM file_versions WHERE file_id=? ORDER BY id", (file_row["id"],)).fetchall()
+    if not version_rows:
+        version_rows = [
+            {
+                "id": None,
+                "sha256": file_row["sha256"] or file_row["hash"] or "",
+                "file_size": file_row["file_size"] or file_row["size"] or 0,
+                "modified_at": file_row["modified_at"] or "",
+                "indexed_at": file_row["indexed_at"] or now,
+                "text_cache_path": file_row["text_cache_path"] or "",
+                "active": file_row["active"] or 0,
+            }
+        ]
+    active_version_id: int | None = None
+    for version_row in version_rows:
+        sha = str(row_value(version_row, "sha256", "") or "")
+        if not sha:
+            continue
+        byte_size = int(row_value(version_row, "file_size", file_row["file_size"] or file_row["size"] or 0) or 0)
+        blob_stable_id = deterministic_stable_id("blob", sha)
+        conn.execute(
+            """
+            INSERT INTO blobs(stable_id, sha256, byte_size, mime_type, extension, local_locator, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(sha256) DO UPDATE SET
+              byte_size=excluded.byte_size,
+              mime_type=excluded.mime_type,
+              extension=excluded.extension,
+              local_locator=excluded.local_locator,
+              updated_at=excluded.updated_at
+            """,
+            (
+                blob_stable_id,
+                sha,
+                byte_size,
+                file_row["mime_type"] or "",
+                file_row["file_extension"] or file_row["extension"] or "",
+                "",
+                now,
+                now,
+            ),
+        )
+        blob_id = conn.execute("SELECT id FROM blobs WHERE sha256=?", (sha,)).fetchone()["id"]
+        version_stable_id = domain_material_version_stable_id(material_stable_id, sha)
+        version_active = int(row_value(version_row, "active", file_row["active"] or 0) or 0)
+        existing_domain_version = conn.execute(
+            "SELECT source_id, blob_id FROM material_versions WHERE stable_id=?",
+            (version_stable_id,),
+        ).fetchone()
+        if existing_domain_version and not version_active:
+            source_id_for_version = existing_domain_version["source_id"]
+            blob_id_for_version = existing_domain_version["blob_id"] or blob_id
+        elif version_active:
+            source_id_for_version = source_id
+            blob_id_for_version = blob_id
+        else:
+            source_id_for_version = None
+            blob_id_for_version = blob_id
+        conn.execute(
+            """
+            UPDATE material_versions SET stable_id=?, updated_at=?
+            WHERE material_id=? AND sha256=? AND stable_id!=?
+            """,
+            (version_stable_id, now, material_id, sha, version_stable_id),
+        )
+        source_missing = int(file_row["source_missing"] or 0)
+        legacy_version_id = row_value(version_row, "id")
+        conn.execute(
+            """
+            INSERT INTO material_versions(stable_id, material_id, source_id, blob_id, legacy_file_id,
+              legacy_file_version_id, sha256, byte_size, modified_at, indexed_at, text_cache_path,
+              active, source_missing, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(stable_id) DO UPDATE SET
+              material_id=excluded.material_id,
+              source_id=excluded.source_id,
+              blob_id=excluded.blob_id,
+              legacy_file_id=excluded.legacy_file_id,
+              legacy_file_version_id=excluded.legacy_file_version_id,
+              byte_size=excluded.byte_size,
+              modified_at=excluded.modified_at,
+              indexed_at=excluded.indexed_at,
+              text_cache_path=excluded.text_cache_path,
+              active=excluded.active,
+              source_missing=excluded.source_missing,
+              updated_at=excluded.updated_at
+            """,
+            (
+                version_stable_id,
+                material_id,
+                source_id_for_version,
+                blob_id_for_version,
+                int(file_row["id"]),
+                legacy_version_id,
+                sha,
+                byte_size,
+                str(row_value(version_row, "modified_at", file_row["modified_at"] or "") or ""),
+                str(row_value(version_row, "indexed_at", file_row["indexed_at"] or now) or now),
+                str(row_value(version_row, "text_cache_path", file_row["text_cache_path"] or "") or ""),
+                version_active,
+                source_missing,
+                now,
+                now,
+            ),
+        )
+        domain_version_id = conn.execute("SELECT id FROM material_versions WHERE stable_id=?", (version_stable_id,)).fetchone()["id"]
+        if version_active:
+            active_version_id = int(domain_version_id)
+    conn.execute(
+        "UPDATE materials SET current_version_id=?, updated_at=? WHERE id=?",
+        (active_version_id, material_updated, material_id),
+    )
+
+
+def reconcile_domain_projection(conn: sqlite3.Connection) -> None:
+    run_schema_migrations(conn)
+    rows = conn.execute("SELECT * FROM files ORDER BY id").fetchall()
+    for row in rows:
+        upsert_domain_projection_for_file(conn, row)
+    conn.execute("DELETE FROM material_versions WHERE legacy_file_id NOT IN (SELECT id FROM files)")
+    conn.execute("DELETE FROM materials WHERE legacy_file_id NOT IN (SELECT id FROM files)")
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -1696,6 +2036,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_weeks_stable_id ON weeks(stable_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_courses_term_active ON courses(term_id, archived, active)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_files_management ON files(course_id, week_id, material_type, inbox, active)")
+    reconcile_domain_projection(conn)
     conn.commit()
 
 
@@ -2472,6 +2813,7 @@ def scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
         if week["origin"] == "scan" and not week["has_materials"] and week["path"] and not Path(week["path"]).exists():
             conn.execute("UPDATE weeks SET removed_at=?, updated_at=? WHERE id=?", (now_iso(), now_iso(), week["id"]))
     conn.execute("INSERT INTO sync_events(event_type, detail, created_at) VALUES (?, ?, ?)", ("scan", json.dumps(stats.__dict__), now_iso()))
+    reconcile_domain_projection(conn)
     conn.commit()
     conn.close()
     log_event("scan", json.dumps({"files": stats.files, "root": "configured-study-library"}, ensure_ascii=False))
@@ -2578,6 +2920,7 @@ def manage_course(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, A
         else:
             raise ValueError("Unknown course action")
     refresh_course_week_counts(conn)
+    reconcile_domain_projection(conn)
     conn.commit()
     return public_course(course_row_with_counts(conn, course_id))
 
@@ -2618,6 +2961,7 @@ def manage_week(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any
             raise ValueError("Unknown week action")
         row = conn.execute("SELECT * FROM weeks WHERE id=?", (week_id,)).fetchone()
     refresh_course_week_counts(conn)
+    reconcile_domain_projection(conn)
     conn.commit()
     return public_week(row)
 
@@ -2661,7 +3005,7 @@ def validate_reference_path(raw: Any) -> Path:
     return path.resolve()
 
 
-def register_material_paths(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
+def register_material_paths(conn: sqlite3.Connection, body: dict[str, Any], *, defer_domain_reconcile: bool = False) -> dict[str, Any]:
     raw_paths = body.get("paths") or []
     if not isinstance(raw_paths, list) or not raw_paths or len(raw_paths) > 200:
         raise ValueError("Choose between 1 and 200 files")
@@ -2734,6 +3078,8 @@ def register_material_paths(conn: sqlite3.Connection, body: dict[str, Any]) -> d
         indexed = index_material_content(conn, file_id, path, force=True)
         results.append({"status": "added", "id": file_id, "filename": path.name, "indexed": indexed["indexed"]})
     refresh_course_week_counts(conn)
+    if not defer_domain_reconcile:
+        reconcile_domain_projection(conn)
     conn.commit()
     return {"ok": True, "items": results, "added": sum(item["status"] == "added" for item in results)}
 
@@ -2811,9 +3157,11 @@ def import_course_folder(conn: sqlite3.Connection, body: dict[str, Any]) -> dict
                 "duplicate_policy": body.get("duplicate_policy") or "skip",
                 "is_official": bool(body.get("is_official", False)),
             },
+            defer_domain_reconcile=True,
         )["items"][0]
         results.append(item)
     refresh_course_week_counts(conn)
+    reconcile_domain_projection(conn)
     conn.commit()
     course = public_course(course_row_with_counts(conn, course_id))
     return {
@@ -2898,6 +3246,7 @@ def manage_materials(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str
     placeholders = ",".join("?" for _ in material_ids)
     conn.execute(f"UPDATE files SET material_updated_at=? WHERE id IN ({placeholders})", [now_iso(), *material_ids])
     refresh_course_week_counts(conn)
+    reconcile_domain_projection(conn)
     conn.commit()
     return {"ok": True, "ids": material_ids}
 
@@ -2947,6 +3296,7 @@ def clear_recreatable_cache(conn: sqlite3.Connection) -> dict[str, Any]:
         if material_path_allowed(row, path) and path.exists():
             index_material_content(conn, row["id"], path, force=True)
             reindexed += 1
+    reconcile_domain_projection(conn)
     conn.commit()
     return {"ok": True, "reindexed": reindexed}
 
@@ -2955,6 +3305,7 @@ def reset_studyhub_state(conn: sqlite3.Connection) -> dict[str, Any]:
     for table in (
         "ai_messages", "ai_conversations", "ai_interactions", "wrong_questions", "attempts", "bookmarks",
         "study_sessions", "notes", "stars", "questions", "solutions", "document_chunks", "file_versions",
+        "material_versions", "materials", "sources", "blobs",
         "ai_index_state", "sync_events", "files", "weeks", "courses", "terms", "app_settings",
     ):
         conn.execute(f"DELETE FROM {table}")
