@@ -7,10 +7,29 @@ CURRENT/TARGET distinction in [Architecture](ARCHITECTURE.md).
 ## Setup
 
 ```bash
-cp .env.example .env.local
 npm install
 npm run dev
 ```
+
+`npm run dev` starts the source backend with the Development profile under the
+ignored `.studyhub-dev/` tree. It does not read the Production desktop database,
+settings, selected StudyLibrary, cache, or logs. Configure a synthetic or
+development-only library through that running instance.
+
+Desktop development is also isolated and visibly identified:
+
+```bash
+npm run desktop:dev
+```
+
+This command applies `src-tauri/tauri.dev.conf.json`, which gives the debug app
+its own application identity, OS data/config roots, and WebView storage. Use
+`npm run desktop:demo` only for synthetic Demo/Test work; external folder/file
+selection and inherited OpenAI/provider configuration are disabled there.
+
+Direct `python3 server.py` remains the explicit legacy/source workflow and
+continues to use repository-local `.env.local` and runtime defaults. It is not
+what `npm run dev` invokes.
 
 ## Checks
 
@@ -19,7 +38,11 @@ npm run lint
 npm run test
 npm run build
 npm run ci
+python3 bin/environment_isolation_acceptance.py
 ```
+
+The isolation acceptance test uses temporary synthetic roots only. Never point
+it at a real application-support directory, StudyLibrary, database, or config.
 
 ## Fixture Policy
 

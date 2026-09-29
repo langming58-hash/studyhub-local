@@ -80,6 +80,36 @@ StudyLibrary. Migration from an existing source install requires an explicit,
 tested import plan; the current desktop package does not silently move or overwrite an
 existing database, settings file, notes, indexes, or AI configuration.
 
+## Runtime Profiles
+
+The desktop shell resolves one runtime profile before it starts the backend.
+That boundary supplies explicit runtime, data, database, cache, log, and config
+paths and removes inherited state-path and provider variables from the child
+process.
+
+| Profile | Application identity | Persistence behavior |
+| --- | --- | --- |
+| Production | `StudyHub Local` / `io.studyhublocal.desktop` | Uses the existing application data and config locations without migration or renaming. Release and DMG builds use this profile. |
+| Development | `StudyHub Dev` / `io.studyhublocal.desktop.dev` | Uses separate OS data/config locations, a separate database/cache/log tree, and separate WebView data. `npm run desktop:dev` selects this profile. |
+| Demo/Test | `StudyHub Demo` / `io.studyhublocal.desktop.demo`, or an explicit temporary test root | Uses only its isolated runtime. It does not inherit an external StudyLibrary, OpenAI key, or vector-store identifier, and native external-file selection is disabled. |
+
+Development and Demo/Test never fall back to Production persistence. The
+existing `STUDYHUB_DESKTOP_TEST_ROOT` hook remains available to acceptance tests
+and always selects Demo/Test semantics. Reset operates only on the database and
+cache resolved for the active profile.
+
+Production compatibility is deliberate: the production identifier and its OS
+locations are unchanged, so this work does not move, copy, rename, or reset an
+existing database, settings file, StudyLibrary selection, notes, or study state.
+Direct `python3 server.py` behavior remains available as the explicit source
+workflow and is not silently migrated into a desktop profile.
+
+Frontend storage is scoped with the desktop identity. Development and Demo/Test
+use separate WebView data directories, covering UI preferences and workspace
+references stored in `localStorage`. The frontend currently uses no
+`sessionStorage`, IndexedDB, or cookie-based persistence. Browser storage is not
+an authority for backend paths: the shell supplies those paths explicitly.
+
 The desktop package uses Tauri [resource bundling](https://v2.tauri.app/develop/resources/)
 for the complete PyInstaller one-folder directory, [native folder
 dialogs](https://v2.tauri.app/plugin/dialog/), and [remote-origin capability
@@ -185,6 +215,12 @@ Secure macOS Keychain storage is not implemented. The desktop package does not c
 maintainer key and does not fall back to plaintext key storage. AI being
 unconfigured is a valid state and does not block local features.
 
+This profile isolation does not introduce a credential system. Existing
+Production and Development OpenAI settings remain in their own configured
+settings environment. Demo/Test ignores inherited or configured OpenAI keys and
+provider identifiers. Diagnostics expose only the profile name, never paths or
+credential values.
+
 ## Acceptance Evidence
 
 Proven with synthetic data on the current Apple Silicon Mac:
@@ -201,6 +237,9 @@ Proven with synthetic data on the current Apple Silicon Mac:
 - Normal quit and window close stop the child and release its port.
 - The app and sidecar contain no secret, private home path, runtime DB, or
   academic binary in the artifact scan.
+- Synthetic environment-isolation acceptance creates three temporary roots,
+  proves database/config/cache/log separation and reset scoping, and verifies
+  that no real OS application directory or StudyLibrary is inspected.
 
 ## Experimental Or Not Implemented
 

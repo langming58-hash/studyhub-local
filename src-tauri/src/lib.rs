@@ -19,6 +19,55 @@ use tauri_plugin_dialog::DialogExt;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(4);
 const FALLBACK_URL: &str = "tauri://localhost/index.html";
+const PRODUCTION_IDENTIFIER: &str = "io.studyhublocal.desktop";
+const DEVELOPMENT_IDENTIFIER: &str = "io.studyhublocal.desktop.dev";
+const DEMO_IDENTIFIER: &str = "io.studyhublocal.desktop.demo";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeProfile {
+    Production,
+    Development,
+    DemoTest,
+}
+
+impl RuntimeProfile {
+    fn environment_name(self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::Development => "development",
+            Self::DemoTest => "demo-test",
+        }
+    }
+
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::Production => "StudyHub Local",
+            Self::Development => "StudyHub Dev",
+            Self::DemoTest => "StudyHub Demo",
+        }
+    }
+
+    fn allows_external_sources(self) -> bool {
+        self != Self::DemoTest
+    }
+}
+
+fn resolve_runtime_profile(
+    identifier: &str,
+    debug_build: bool,
+    has_test_root: bool,
+) -> Result<RuntimeProfile, String> {
+    if has_test_root {
+        return Ok(RuntimeProfile::DemoTest);
+    }
+    match (debug_build, identifier) {
+        (false, PRODUCTION_IDENTIFIER) => Ok(RuntimeProfile::Production),
+        (true, DEVELOPMENT_IDENTIFIER) => Ok(RuntimeProfile::Development),
+        (true, DEMO_IDENTIFIER) => Ok(RuntimeProfile::DemoTest),
+        (true, PRODUCTION_IDENTIFIER) => Err("development_profile_required".to_string()),
+        _ => Err("invalid_runtime_profile".to_string()),
+    }
+}
 
 #[derive(Clone)]
 struct BackendConfig {
@@ -27,8 +76,14 @@ struct BackendConfig {
     packaged: bool,
     static_dir: PathBuf,
     katex_dir: PathBuf,
+    profile: RuntimeProfile,
     runtime_dir: PathBuf,
+    data_dir: PathBuf,
+    cache_dir: PathBuf,
+    log_dir: PathBuf,
+    database_path: PathBuf,
     config_path: PathBuf,
+    webview_data_dir: Option<PathBuf>,
 }
 
 struct BackendProcess {
@@ -53,6 +108,11 @@ fn development_root() -> PathBuf {
 
 fn backend_config(app: &tauri::App) -> Result<BackendConfig, String> {
     let test_root = env::var_os("STUDYHUB_DESKTOP_TEST_ROOT").map(PathBuf::from);
+    let profile = resolve_runtime_profile(
+        app.config().identifier.as_str(),
+        cfg!(debug_assertions),
+        test_root.is_some(),
+    )?;
     let (app_data, app_config) = if let Some(root) = test_root {
         (root.join("data"), root.join("config"))
     } else {
@@ -101,8 +161,14 @@ fn backend_config(app: &tauri::App) -> Result<BackendConfig, String> {
         packaged,
         static_dir,
         katex_dir,
-        runtime_dir: app_data,
+        profile,
+        runtime_dir: app_data.clone(),
+        data_dir: app_data.join("data"),
+        cache_dir: app_data.join("cache"),
+        log_dir: app_data.join("logs"),
+        database_path: app_data.join("data/studyhub.sqlite"),
         config_path: app_config.join("settings.env"),
+        webview_data_dir: (profile != RuntimeProfile::Production).then(|| app_data.join("webview")),
     })
 }
 
@@ -136,6 +202,9 @@ fn health_check(url: &str) -> bool {
 
 fn start_backend(config: &BackendConfig) -> Result<BackendProcess, String> {
     std::fs::create_dir_all(&config.runtime_dir).map_err(|_| "runtime_unavailable".to_string())?;
+    for directory in [&config.data_dir, &config.cache_dir, &config.log_dir] {
+        std::fs::create_dir_all(directory).map_err(|_| "runtime_unavailable".to_string())?;
+    }
     if let Some(parent) = config.config_path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| "config_unavailable".to_string())?;
     }
@@ -144,12 +213,38 @@ fn start_backend(config: &BackendConfig) -> Result<BackendProcess, String> {
     }
 
     let mut command = Command::new(&config.executable);
+    for inherited in [
+        "DATABASE_PATH",
+        "DEMO_MODE",
+        "OPENAI_API_BASE",
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+        "OPENAI_VECTOR_STORE_ID",
+        "STUDYHUB_CACHE_DIR",
+        "STUDYHUB_CONFIG_PATH",
+        "STUDYHUB_DATA_DIR",
+        "STUDYHUB_DESKTOP_TEST_ROOT",
+        "STUDYHUB_LOG_DIR",
+        "STUDYHUB_RUNTIME_DIR",
+        "STUDYHUB_RUNTIME_PROFILE",
+        "STUDY_LIBRARY_PATH",
+    ] {
+        command.env_remove(inherited);
+    }
     command
         .args(&config.prefix_args)
         .args(["serve", "--port", "0"])
         .env("HOST", "127.0.0.1")
         .env("STUDYHUB_DESKTOP", "true")
+        .env(
+            "STUDYHUB_RUNTIME_PROFILE",
+            config.profile.environment_name(),
+        )
         .env("STUDYHUB_RUNTIME_DIR", &config.runtime_dir)
+        .env("STUDYHUB_DATA_DIR", &config.data_dir)
+        .env("STUDYHUB_CACHE_DIR", &config.cache_dir)
+        .env("STUDYHUB_LOG_DIR", &config.log_dir)
+        .env("DATABASE_PATH", &config.database_path)
         .env("STUDYHUB_CONFIG_PATH", &config.config_path)
         .env("STUDYHUB_STATIC_DIR", &config.static_dir)
         .env("STUDYHUB_KATEX_DIR", &config.katex_dir)
@@ -298,7 +393,13 @@ fn start_backend_monitor(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
-async fn choose_study_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+async fn choose_study_folder(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BackendState>,
+) -> Result<Option<String>, String> {
+    if !state.config.profile.allows_external_sources() {
+        return Err("Demo/Test mode cannot select external study folders.".to_string());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         app.dialog()
             .file()
@@ -310,7 +411,13 @@ async fn choose_study_folder(app: tauri::AppHandle) -> Result<Option<String>, St
 }
 
 #[tauri::command]
-async fn choose_study_files(app: tauri::AppHandle) -> Result<Option<Vec<String>>, String> {
+async fn choose_study_files(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BackendState>,
+) -> Result<Option<Vec<String>>, String> {
+    if !state.config.profile.allows_external_sources() {
+        return Err("Demo/Test mode cannot select external study files.".to_string());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         app.dialog()
             .file()
@@ -410,8 +517,9 @@ fn startup_diagnostics(state: tauri::State<'_, BackendState>) -> String {
         .map(|code| safe_error_message(&code).to_string())
         .unwrap_or_else(|| "Diagnostics unavailable.".to_string());
     format!(
-        "StudyHub Local {}\nOS: {}\nArchitecture: {}\nPackaged backend: {}\nStatus: {}",
+        "StudyHub Local {}\nProfile: {}\nOS: {}\nArchitecture: {}\nPackaged backend: {}\nStatus: {}",
         env!("CARGO_PKG_VERSION"),
+        state.config.profile.environment_name(),
         env::consts::OS,
         env::consts::ARCH,
         if state.config.packaged {
@@ -437,6 +545,8 @@ pub fn run() {
         ])
         .setup(|app| {
             let config = backend_config(app).map_err(std::io::Error::other)?;
+            let window_title = config.profile.display_name();
+            let webview_data_dir = config.webview_data_dir.clone();
             let allowed_port = Arc::new(AtomicU16::new(0));
             let process = start_backend(&config);
             let (initial_url, initial_error) = match process.as_ref() {
@@ -456,8 +566,8 @@ pub fn run() {
                 last_error: Mutex::new(initial_error),
             });
 
-            WebviewWindowBuilder::new(app, "main", initial_url)
-                .title("StudyHub Local")
+            let mut window_builder = WebviewWindowBuilder::new(app, "main", initial_url)
+                .title(window_title)
                 .inner_size(1280.0, 820.0)
                 .min_inner_size(900.0, 620.0)
                 .devtools(cfg!(debug_assertions))
@@ -469,8 +579,12 @@ pub fn run() {
                         && candidate.port_or_known_default()
                             == Some(allowed_port.load(Ordering::SeqCst));
                     fallback || backend
-                })
-                .build()?;
+                });
+            if let Some(directory) = webview_data_dir {
+                std::fs::create_dir_all(&directory)?;
+                window_builder = window_builder.data_directory(directory);
+            }
+            window_builder.build()?;
             start_backend_monitor(app.handle().clone());
             Ok(())
         })
@@ -489,4 +603,39 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn production_requires_the_production_identifier_and_release_build() {
+        assert_eq!(
+            resolve_runtime_profile(PRODUCTION_IDENTIFIER, false, false),
+            Ok(RuntimeProfile::Production)
+        );
+        assert!(resolve_runtime_profile(PRODUCTION_IDENTIFIER, true, false).is_err());
+    }
+
+    #[test]
+    fn development_and_demo_require_distinct_debug_identifiers() {
+        assert_eq!(
+            resolve_runtime_profile(DEVELOPMENT_IDENTIFIER, true, false),
+            Ok(RuntimeProfile::Development)
+        );
+        assert_eq!(
+            resolve_runtime_profile(DEMO_IDENTIFIER, true, false),
+            Ok(RuntimeProfile::DemoTest)
+        );
+        assert!(resolve_runtime_profile(DEVELOPMENT_IDENTIFIER, false, false).is_err());
+    }
+
+    #[test]
+    fn explicit_test_root_always_selects_demo_test() {
+        assert_eq!(
+            resolve_runtime_profile(PRODUCTION_IDENTIFIER, true, true),
+            Ok(RuntimeProfile::DemoTest)
+        );
+    }
 }
