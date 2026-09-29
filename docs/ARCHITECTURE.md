@@ -61,10 +61,19 @@ This foundation is additive. Current scanner/import/API/UI reads continue to
 use the legacy tables while the new domain tables are kept coherent at existing
 boundaries.
 
+Phase 2 has implemented a local ingestion boundary for current filesystem
+inputs. The local scanner, manual file import, and course-folder import now
+feed accepted local candidates through the same internal ingestion helper for
+byte identity, compatibility-row persistence, extraction, local indexing,
+question/solution extraction, and MaterialVersion/domain projection
+reconciliation. This is a local-input boundary only; it is not a remote sync
+engine or Canvas connector.
+
 Stable IDs and additive metadata support term/course/material management, but
-the scanner, extraction, persistence, and indexing responsibilities still
-coexist in the Python backend. This is current truth, not the final module
-boundary.
+the local scanner still performs filesystem discovery, course/week inference,
+and missing-file reconciliation. Extraction and indexing implementations remain
+the current Python backend implementations behind that boundary. This is
+current truth, not the final module boundary.
 
 Not implemented yet: Canvas/remote connectors, SourceAnchor, Evidence,
 DerivedArtifact/ProcessingRecipe, Entity Resolution, the Assessments target
@@ -184,6 +193,11 @@ Acquire -> Identify -> Persist Blob -> Extract -> Normalize
 Every stage must retain provenance and support retry/rebuild without damaging
 the authoritative source, retained local copy, or user overlay. Canvas-specific
 target boundaries are in [Canvas Import](CANVAS_IMPORT.md).
+
+The current local ingestion helper is an implemented prerequisite for this
+target direction. It handles current local scanner/import candidates only.
+`SyncPlan`, remote connector polling, remote deletion handling, SourceAnchor,
+Evidence, and background-job orchestration remain not implemented.
 
 ## TARGET: Adapter Boundaries
 
