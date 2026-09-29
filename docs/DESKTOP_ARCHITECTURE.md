@@ -1,10 +1,12 @@
 # Desktop Architecture
 
-Status: source-available prototype. No desktop binary has been published.
+Status: **CURRENT packaged desktop architecture for `v0.3.0-beta.1`**.
 
-The Python-free packaging gate is proven on Apple Silicon through a packaged
-`.app`, a stripped-PATH launch, and synthetic acceptance tests. A separate clean
-Mac or VM has not been tested, so public distribution remains blocked.
+The Python-free end-user packaging gate is proven on Apple Silicon through a
+packaged `.app`, a stripped-PATH launch, synthetic acceptance tests, and a
+public DMG prerelease. The current DMG is unsigned and not notarized. A separate
+clean physical Mac or VM has not been independently validated, so this remains
+an early prerelease rather than a broad compatibility claim.
 
 StudyHub Local remains a local-first application for course files from any
 university. A school or LMS API is not required.
@@ -29,7 +31,7 @@ optional OpenAI synchronization, and the read-only MCP endpoint.
 | --- | --- | --- |
 | Build-time | Node.js and npm | Install KaTeX and run the existing test/build scripts |
 | Build-time | Rust toolchain | Compile the Tauri desktop shell |
-| Build-time | Tauri CLI and crates | Build the internal macOS `.app` prototype |
+| Build-time | Tauri CLI and crates | Build the macOS `.app` and DMG |
 | Runtime required | macOS WebKit | Render the existing StudyHub UI in the Tauri window |
 | Runtime bundled | PyInstaller one-folder backend | Python 3.13, SQLite, standard library, and `certifi` |
 | Runtime bundled | Compiled Tauri shell and static assets | Existing UI and local KaTeX distribution |
@@ -41,7 +43,7 @@ optional OpenAI synchronization, and the read-only MCP endpoint.
 requests. Core browsing, local search, notes, stars, and the clean empty
 workspace do not need OpenAI.
 
-End users of the packaged prototype do not need Python, pip, a virtual
+End users of the packaged beta do not need Python, pip, a virtual
 environment, Node.js, or npm. Those remain build-time dependencies only.
 
 ## Proven Prototype
@@ -75,10 +77,10 @@ User-selected StudyLibrary
 Future updates and uninstall flows must treat these as separate ownership
 domains. Updating or removing the app must not delete the user-controlled
 StudyLibrary. Migration from an existing source install requires an explicit,
-tested import plan; the prototype does not silently move or overwrite an
+tested import plan; the current desktop package does not silently move or overwrite an
 existing database, settings file, notes, indexes, or AI configuration.
 
-The prototype uses Tauri [resource bundling](https://v2.tauri.app/develop/resources/)
+The desktop package uses Tauri [resource bundling](https://v2.tauri.app/develop/resources/)
 for the complete PyInstaller one-folder directory, [native folder
 dialogs](https://v2.tauri.app/plugin/dialog/), and [remote-origin capability
 rules](https://v2.tauri.app/security/capabilities/). Rust launches the resource
@@ -87,7 +89,7 @@ system-Python fallback; debug builds may still launch source Python.
 
 ## Packaging Decision
 
-The selected prototype architecture is:
+The selected desktop architecture is:
 
 ```text
 Tauri application
@@ -108,8 +110,8 @@ PyInstaller one-folder was selected for reliability and inspectability:
 
 The build uses a pinned uv-managed CPython 3.13.15 runtime. This avoids
 builder-specific home paths found in another Python distribution and makes the
-artifact privacy scan reproducible. PyInstaller and `certifi` versions are
-pinned through `requirements-desktop.txt`.
+artifact privacy scan reproducible. PyInstaller is pinned and `certifi` has a
+minimum version constraint through the requirements files.
 
 Tauri remains a good fit because:
 
@@ -179,7 +181,7 @@ The packaged backend includes a verified `certifi` CA bundle and reports only
 its availability, never its path. A real API-key request is not part of the
 public synthetic artifact test.
 
-Secure macOS Keychain storage is not implemented. The prototype does not copy a
+Secure macOS Keychain storage is not implemented. The desktop package does not copy a
 maintainer key and does not fall back to plaintext key storage. AI being
 unconfigured is a valid state and does not block local features.
 
@@ -203,9 +205,11 @@ Proven with synthetic data on the current Apple Silicon Mac:
 ## Experimental Or Not Implemented
 
 1. A truly clean physical Mac or VM has not been tested; the current result is
-   `SIMULATED / PARTIAL`, not a distribution claim.
-2. The build is Apple Silicon only and unsigned. Signing, notarization, DMG, and
-   public release are not implemented.
+   based on packaged and isolated synthetic acceptance rather than independent
+   hardware coverage.
+2. The public build is Apple Silicon only, unsigned, and not notarized. A DMG
+   prerelease exists, but Developer ID signing and Apple notarization are not on
+   `main`.
 3. Keychain-backed BYOK is not implemented.
 4. Poppler and LibreOffice are not bundled; their missing states are graceful.
 5. Installed-tool detection from a separate Finder-launched clean Mac remains
@@ -214,8 +218,10 @@ Proven with synthetic data on the current Apple Silicon Mac:
 
 The future update design must preserve the selected StudyLibrary, notes,
 settings, stars, indexes, local database, and AI configuration. Auto-update is
-not implemented in this prototype.
+not implemented in the current desktop package.
 
-Signing, notarization, DMG creation, auto-update, Windows packaging, App Store
-work, telemetry, SaaS infrastructure, and public desktop release are explicitly
-outside this spike.
+Developer ID signing, notarization, auto-update, Windows packaging, App Store
+work, telemetry, and SaaS infrastructure are not implemented on `main`.
+
+The [Engineering Constitution](ENGINEERING_CONSTITUTION.md) governs future
+infrastructure selection, domain boundaries, and migration claims.

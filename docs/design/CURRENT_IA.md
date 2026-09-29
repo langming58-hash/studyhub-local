@@ -1,5 +1,11 @@
 # Current IA
 
+Status: **CURRENT / IMPLEMENTED**.
+
+This document records the navigation currently shipped on `main`. Future
+design direction is governed by the
+[Design and Interaction Constitution](DESIGN_SYSTEM_PLAN.md).
+
 StudyHub Local now uses six primary destinations:
 
 - Home

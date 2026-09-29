@@ -1,5 +1,7 @@
 # Read-Only MCP
 
+Status: **CURRENT / IMPLEMENTED**.
+
 StudyHub Local includes a read-only MCP endpoint for local integrations.
 
 ## Tools
