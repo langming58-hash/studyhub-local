@@ -39,8 +39,8 @@ normalization, conflict behavior, and ingestion.
 
 ## Sync Is Not Ingestion
 
-Sync discovers remote state and produces a reviewable plan. Ingestion turns
-approved acquired content into StudyHub content:
+Sync discovers remote state and produces an observable plan. Ingestion turns
+acquired content into StudyHub content:
 
 ```text
 Acquire -> Identify -> Persist Blob -> Extract -> Normalize
@@ -53,8 +53,8 @@ overwrite user intent.
 
 ## Change Safety
 
-New downloads, changed files, removed remote items, due-date changes, and
-identity conflicts should use:
+Destructive, ambiguous, conflicting, identity-changing, or broad-impact
+changes should use:
 
 ```text
 Preview -> Explain -> Apply -> Undo
@@ -62,7 +62,9 @@ Preview -> Explain -> Apply -> Undo
 
 A plan should state what will be added or updated, which user overlays are
 preserved, what content crosses an external boundary, and how a failed or
-partial sync recovers.
+partial sync recovers. Safe idempotent additions and refreshes may execute
+automatically according to the user's sync policy, while remaining observable,
+auditable, and recoverable.
 
 ## Implementation Gate
 

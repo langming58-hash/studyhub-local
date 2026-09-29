@@ -56,9 +56,10 @@ boundary.
 
 ### Current Source And Preview Rules
 
-The original file under the configured StudyLibrary remains authoritative.
-SQLite, extracted text, previews, full-text indexes, and vector resources are
-retrieval or derived layers and can be rebuilt.
+For the CURRENT local-library workflow, a user-owned original under the
+configured StudyLibrary remains user-controlled and authoritative for that
+source. SQLite, extracted text, previews, full-text indexes, and vector
+resources are retrieval or derived layers and can be rebuilt.
 
 Visual preview and readable extraction are separate:
 
@@ -120,7 +121,10 @@ alone.
 
 ## TARGET: Ownership Model
 
-Each future domain record belongs conceptually to one class:
+Apply these semantics at the datum, field, or artifact layer rather than
+requiring every normalized entity to have exactly one ownership class. For
+example, an Assessment may combine remote-authoritative title and due-date
+fields with a user-owned personal target, notes, and review state.
 
 | Ownership | Meaning | Examples |
 | --- | --- | --- |
@@ -131,7 +135,9 @@ Each future domain record belongs conceptually to one class:
 
 Remote sync never silently overwrites user intent. Derived data never becomes
 the sole copy of user-owned information. Ephemeral data is always safe to
-delete.
+delete. Retrieved remote content may be retained as local Blob or
+MaterialVersion data with provenance, without changing the authority of the
+remote provider facts or files.
 
 ## TARGET: Sync And Ingestion
 
@@ -158,8 +164,8 @@ Acquire -> Identify -> Persist Blob -> Extract -> Normalize
 ```
 
 Every stage must retain provenance and support retry/rebuild without damaging
-the original file or user overlay. Canvas-specific target boundaries are in
-[Canvas Import](CANVAS_IMPORT.md).
+the authoritative source, retained local copy, or user overlay. Canvas-specific
+target boundaries are in [Canvas Import](CANVAS_IMPORT.md).
 
 ## TARGET: Adapter Boundaries
 
@@ -193,8 +199,13 @@ or external connector implementation.
 
 ## Architecture Invariants
 
-- Original academic files remain user-controlled and authoritative.
-- No normal metadata action renames, overwrites, moves, or deletes originals.
+- User-owned imported originals remain user-controlled and authoritative for
+  those user-owned sources.
+- Remote provider facts and files remain remote-authoritative; retained local
+  Blob or MaterialVersion copies preserve provenance and offline utility.
+- Derived data never replaces either authoritative source.
+- No normal metadata action renames, overwrites, moves, or deletes user-owned
+  originals.
 - User intent survives rescans, remote sync, reclassification, and rebuilds.
 - Runtime state remains outside the public repository and packaged resources.
 - Real academic content never appears in public fixtures, screenshots, logs,

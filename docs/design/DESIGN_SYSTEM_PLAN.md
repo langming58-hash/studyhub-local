@@ -43,15 +43,28 @@ spacing, typography, icons, and interaction behavior.
 
 ## Information Architecture
 
-Current global destinations remain Home, Courses, Search, Study, AI, and
-Settings unless real user evidence justifies a separate architecture change.
+The TARGET information architecture is distinct from the navigation currently
+shipped and does not claim implementation. Current behavior remains documented
+in [Current IA](CURRENT_IA.md).
 
-- Home answers what to continue now.
-- Courses owns academic library navigation and import management.
-- Search finds known or remembered material across the library.
-- Study owns practice, wrong-question, review, and note workflows.
-- AI owns source-grounded conversations and their history.
-- Settings owns configuration, capability state, privacy, and diagnostics.
+- Home provides environmental awareness: what changed, what can be continued,
+  and an overview across courses.
+- Today is an executable queue of `AcademicAction` items.
+- Library contains all academic materials across sources and courses.
+- Course is the contextual workspace for one course or course offering.
+- Search provides global information retrieval.
+- Review supports long-term memory and review work.
+- Inbox resolves conflicts, uncertain matches, sync issues, and other items
+  requiring user judgment.
+- Settings owns capabilities, configuration, privacy, and diagnostics.
+
+A Course workspace may contain Overview, Materials, Assessments, Notes, Review,
+and Timeline views.
+
+Ask/AI is a contextual, source-grounded knowledge capability. It may preserve
+conversation history and dedicated working surfaces, but the target
+architecture does not require AI to occupy a permanent primary-navigation
+destination.
 
 Command, Search, and Ask are separate semantic concepts even when they share an
 input, menu, or overlay primitive.

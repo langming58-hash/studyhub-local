@@ -151,7 +151,9 @@ and AI history. See [Architecture](ARCHITECTURE.md) for the explicit gap.
 
 ## Data Ownership And Trust
 
-Every future domain object belongs conceptually to one of four classes:
+Apply these four semantics at the datum, field, or artifact layer. Do not force
+an entire normalized entity into exactly one class: an Assessment, for example,
+may contain remote-authoritative fields and a user-owned overlay.
 
 - **REMOTE_AUTHORITATIVE**: facts mirrored from an institution or provider.
 - **USER_OWNED**: notes, annotations, targets, classifications, review state,
@@ -165,6 +167,12 @@ Invariants:
 - Remote synchronization never silently overwrites user intent.
 - Derived data never becomes the only copy of user-owned information.
 - Ephemeral data is always safe to delete.
+- User-owned imported originals remain authoritative for their user-owned
+  source.
+- Remote provider facts and files remain remote-authoritative; locally retained
+  Blob or MaterialVersion copies preserve provenance without changing that
+  authority.
+- Derived data never replaces either authoritative source.
 - Original academic files remain outside the public repository.
 - Production academic data never appears in public fixtures, screenshots,
   tests, README examples, public logs, or Git history.
@@ -262,7 +270,8 @@ StudyHub into SaaS, a public file host, a telemetry product, or an autonomous
 LMS agent.
 
 Target-domain migration is incremental and additive. Preserve stable IDs,
-source provenance, user overlays, notes, study history, and original files.
+source provenance, user overlays, notes, study history, user-owned imported
+originals, and provenance for locally retained remote content.
 Separate architecture extraction, schema migration, infrastructure adoption,
 and visual redesign into independently reversible changes. See
 [Roadmap](ROADMAP.md) for scope and open decisions.

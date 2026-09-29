@@ -16,7 +16,8 @@ architecture must preserve. Security controls are documented separately in
 - local logs
 
 These paths stay outside public Git and must not be uploaded to issues or pull
-requests. Original files remain in a user-controlled StudyLibrary.
+requests. User-owned imported originals remain in a user-controlled
+StudyLibrary and are authoritative for those user-owned sources.
 
 ## CURRENT: Optional External Processing
 
@@ -25,16 +26,20 @@ extracted content and safe academic metadata may be sent to OpenAI and uploaded
 to a vector store for retrieval. Users are responsible for confirming that
 they may process the selected material with a cloud provider.
 
-The local original remains authoritative. Provider resources, embeddings, and
-vector indexes are derived retrieval layers. Local filesystem paths, cache
-paths, database paths, API keys, provider file IDs, and vector-store IDs must
-not be returned through public-facing responses.
+For a user-imported local source, the local original remains authoritative.
+Provider resources, embeddings, and vector indexes used for optional AI are
+derived retrieval layers. Local filesystem paths, cache paths, database paths,
+API keys, provider file IDs, and vector-store IDs must not be returned through
+public-facing responses.
 
 StudyHub includes no analytics or telemetry by default.
 
 ## Ownership Classes
 
-Future domain work classifies data conceptually as:
+Future domain work applies these semantics at the datum, field, or artifact
+layer. A normalized entity may contain more than one ownership class. For
+example, an Assessment may combine remote-authoritative fields with a
+user-owned overlay.
 
 ### `REMOTE_AUTHORITATIVE`
 
@@ -117,10 +122,15 @@ committed.
 ## Invariants
 
 - Remote synchronization never silently overwrites user intent.
-- Original files are never replaced by previews, extraction, or AI indexes.
+- User-owned imported originals remain authoritative for their source.
+- Remote provider facts/files remain remote-authoritative; StudyHub may retain
+  local Blob or MaterialVersion copies with provenance for offline use.
+- Previews, extraction, AI indexes, and other derived data never replace either
+  authoritative source.
 - User-owned data survives cache clearing and derived-data rebuilds.
 - Ephemeral data is safely disposable.
-- Normal metadata actions do not rename, move, overwrite, or delete originals.
+- Normal metadata actions do not rename, move, overwrite, or delete user-owned
+  originals.
 - Optional cloud features remain explicit and local features remain useful
   without them.
 - Every public PR passes the repository privacy checks with synthetic inputs.

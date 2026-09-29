@@ -12,9 +12,37 @@ The current product is a local-first desktop study workspace with course and
 week organization, local preview/search, notes and study state, source-grounded
 optional AI, a read-only MCP surface, and an Apple Silicon unsigned beta.
 
-Original academic files remain user-controlled. The current implementation is
-a Python localhost backend, SQLite runtime database, plain web frontend, and
-Tauri desktop shell with a packaged Python sidecar.
+For the current local-library workflow, user-imported originals remain
+user-controlled and authoritative for those user-owned sources. The current
+implementation is a Python localhost backend, SQLite runtime database, plain
+web frontend, and Tauri desktop shell with a packaged Python sidecar.
+
+## V1 Product Loop
+
+The TARGET V1 loop is:
+
+```text
+Connect Canvas
+  -> discover and select courses
+  -> sync materials and academic changes
+  -> organize them in StudyHub
+  -> open and read materials
+  -> search
+  -> understand What's New
+  -> know what matters Today
+  -> review
+  -> take source-linked notes and evidence
+  -> continue useful offline work
+  -> back up and restore user-owned state
+  -> update safely
+```
+
+Canvas work must be delivered through focused connector, sync, ingestion,
+credential, and migration PRs. This target loop does not authorize Canvas
+implementation in Phase 0 or a single broad integration change.
+
+Ask/AI can improve understanding and retrieval, but it is an optional
+enhancement and is not a V1 completion blocker.
 
 ## Near-Term V1 Direction
 
@@ -63,12 +91,15 @@ The canonical registry and licensing rules are in the constitution.
 ## Explicitly Out Of Scope For V1
 
 - SaaS accounts or hosted academic-file storage
+- Blackboard, Moodle, or deep Ed/Gradescope integrations
+- cloud sync, collaboration, or a plugin marketplace
+- native mobile applications
 - public deployment of the localhost server
 - telemetry or analytics by default
 - autonomous submission of quizzes, assignments, or Canvas work
 - AI-generated official-looking practice questions
 - social, marketplace, or gamification systems
-- a mobile rewrite of the desktop product
+- making optional AI/Ask a prerequisite for the core product loop
 
 ## Open Decisions
 
@@ -84,7 +115,9 @@ alternatives, licensing, trust boundary, ownership, migration, and tests.
 
 ## Product Principles
 
-- Keep originals authoritative and user-controlled.
+- Keep user-owned imported originals authoritative for their source, and keep
+  remote provider facts/files remote-authoritative with retained-copy
+  provenance.
 - Keep user intent separate from remote state and derived data.
 - Keep synthetic fixtures test-only and out of production bundles.
 - Avoid telemetry by default.
