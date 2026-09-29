@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import os
 import sqlite3
 import sys
@@ -98,6 +99,10 @@ def file_by_name(conn: sqlite3.Connection, filename: str) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM files WHERE filename=? ORDER BY id LIMIT 1", (filename,)).fetchone()
     assert row is not None, filename
     return row
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def check_clean_empty(tmp: Path) -> bool:
@@ -246,15 +251,16 @@ def check_missing_original(tmp: Path) -> bool:
 def check_duplicate_content(tmp: Path) -> bool:
     scenario = build_scenario("duplicate_content", tmp)
     server = load_server(scenario.name, tmp, scenario.library, scenario.database)
+    original_hashes = {path.name: sha256(path) for path in scenario.library.rglob("*.txt")}
     conn = connect(server)
     imported = server.import_course_folder(conn, {"path": str(scenario.library), "display_name": "Synthetic Duplicate Course", "is_official": True})
-    originals_exist = all(path.exists() for path in scenario.library.rglob("*.txt"))
+    original_hashes_after = {path.name: sha256(path) for path in scenario.library.rglob("*.txt")}
     ok = (
         imported["detected"] == scenario.expectations["detected"]
         and imported["added"] == scenario.expectations["added"]
         and imported["duplicates"] == scenario.expectations["duplicates"]
         and active_file_count(conn) == 1
-        and originals_exist
+        and original_hashes_after == original_hashes
     )
     conn.close()
     return ok
@@ -276,6 +282,7 @@ def check_modified_material(tmp: Path) -> bool:
     conn = connect(server)
     updated = file_by_name(conn, scenario.expectations["filename"])
     text = server.read_cached_text(updated, 1000)
+    matches = server.search_local_context(conn, scenario.expectations["updated_phrase"], {"fileId": first_id}, limit=3)
     version_count = scalar(conn, "SELECT COUNT(*) FROM file_versions WHERE file_id=?", (first_id,))
     ok = (
         stats.updated_files == 1
@@ -284,6 +291,7 @@ def check_modified_material(tmp: Path) -> bool:
         and updated["sha256"] != first_sha
         and version_count >= 2
         and scenario.expectations["updated_phrase"] in text
+        and any(match["source_file_id"] == first_id and scenario.expectations["updated_phrase"] in match["text"] for match in matches)
     )
     conn.close()
     return ok
@@ -311,7 +319,10 @@ def check_cloud_unavailable(tmp: Path) -> bool:
 def check_unreadable_material(tmp: Path) -> bool:
     scenario = build_scenario("unreadable_material", tmp)
     server = load_server(scenario.name, tmp, scenario.library, scenario.database)
+    source = next(scenario.library.rglob("*.pdf"))
+    original_hash = sha256(source)
     stats = server.scan_library(scenario.library)
+    after_hash = sha256(source)
     conn = connect(server)
     row = file_by_name(conn, scenario.expectations["filename"])
     ok = (
@@ -320,6 +331,7 @@ def check_unreadable_material(tmp: Path) -> bool:
         and row["suspicious"] == scenario.expectations["suspicious"]
         and row["active"] == 1
         and Path(row["original_path"]).exists()
+        and after_hash == original_hash
         and chunk_count(conn, row["id"]) == 0
         and row["ai_index_status"] == "not_indexed"
     )
