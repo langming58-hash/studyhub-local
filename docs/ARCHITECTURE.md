@@ -66,6 +66,8 @@ inputs. The local scanner, manual file import, and course-folder import now
 feed accepted local candidates through the same internal ingestion helper for
 byte identity, compatibility-row persistence, extraction, local indexing,
 question/solution extraction, and MaterialVersion/domain projection
+linking for the ingested candidate. Callers still own transaction commit
+policy, batch/full reconciliation, filesystem discovery, and missing-file
 reconciliation. This is a local-input boundary only; it is not a remote sync
 engine or Canvas connector.
 

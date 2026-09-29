@@ -120,6 +120,37 @@ def active_version(conn: sqlite3.Connection, material_id: int) -> sqlite3.Row:
     return row
 
 
+def make_candidate(server: Any, path: Path, course: sqlite3.Row | dict[str, Any], week: sqlite3.Row | dict[str, Any], *, material_type: str = "reading", identity: Any = None):
+    category = server.material_type_label(material_type)
+    section = server.section_for_material_type(material_type)
+    return server.IngestionCandidate(
+        path=path,
+        course_id=int(course["id"]),
+        week_id=int(week["id"]),
+        course_code=course["course_code"],
+        course_name=course["display_name"],
+        week_label=week["week_label"],
+        week_number=week["week_number"],
+        section=section,
+        category=category,
+        exercise_type=category if section == "02 Exercises" else "",
+        material_type=material_type,
+        source="official",
+        source_label="Teacher-provided material",
+        source_type="Local Reference",
+        rel_path=f"references/test/{path.name}",
+        import_mode="reference",
+        is_official=1,
+        is_solution=0,
+        is_question_source=0,
+        metadata_locked=1,
+        display_name=path.name,
+        stable_id=server.new_stable_id("material"),
+        force_index=True,
+        identity=identity,
+    )
+
+
 def install_ingestion_counter(server: Any) -> dict[str, Any]:
     original = server.ingest_material_candidate
     calls: list[dict[str, Any]] = []
@@ -138,6 +169,43 @@ def install_ingestion_counter(server: Any) -> dict[str, Any]:
 
     server.ingest_material_candidate = counted
     return {"calls": calls, "restore": lambda: setattr(server, "ingest_material_candidate", original)}
+
+
+def check_direct_helper_transaction_and_targeted_domain(tmp: Path) -> bool:
+    library = tmp / "direct-library"
+    database = tmp / "direct-runtime" / "studyhub.sqlite"
+    server = load_server(tmp / "direct-loader", library, database)
+    conn = connect(server)
+    course = server.manage_course(conn, {"action": "create", "course_code": "TEST7001", "display_name": "Direct Ingestion"})
+    week = server.manage_week(conn, {"action": "create", "course_id": course["id"], "label": "Week 01", "kind": "week"})
+    assert conn.in_transaction is False
+    original = write_text(tmp / "direct" / "Direct Material.txt", "Direct helper delta-content is indexed.")
+    result = server.ingest_material_candidate(conn, make_candidate(server, original, course, week))
+    row = conn.execute("SELECT * FROM files WHERE id=?", (result.legacy_file_id,)).fetchone()
+    material = material_for_file(conn, result.legacy_file_id)
+    version = active_version(conn, material["id"])
+    source = conn.execute("SELECT * FROM sources WHERE id=?", (version["source_id"],)).fetchone()
+    blob = conn.execute("SELECT * FROM blobs WHERE id=?", (version["blob_id"],)).fetchone()
+    in_transaction_after_helper = conn.in_transaction
+    conn.rollback()
+    row_after_rollback = conn.execute("SELECT * FROM files WHERE id=?", (result.legacy_file_id,)).fetchone()
+    material_after_rollback = conn.execute("SELECT * FROM materials WHERE legacy_file_id=?", (result.legacy_file_id,)).fetchone()
+    conn.close()
+    reopened = sqlite3.connect(database)
+    reopened.row_factory = sqlite3.Row
+    persisted = reopened.execute("SELECT * FROM files WHERE filename='Direct Material.txt'").fetchone()
+    reopened.close()
+    return (
+        in_transaction_after_helper is True
+        and row is not None
+        and material is not None
+        and version is not None
+        and source["local_locator"] == str(original.resolve())
+        and blob["sha256"] == digest(original)
+        and row_after_rollback is None
+        and material_after_rollback is None
+        and persisted is None
+    )
 
 
 def check_scanned_and_modified_material(tmp: Path) -> bool:
@@ -257,6 +325,63 @@ def check_manual_reference_and_duplicates(tmp: Path) -> bool:
     )
 
 
+def check_snapshot_consistency(tmp: Path) -> bool:
+    library = tmp / "snapshot-library"
+    server = load_server(tmp / "snapshot-loader", library, tmp / "snapshot-runtime" / "studyhub.sqlite")
+    conn = connect(server)
+    course = server.manage_course(conn, {"action": "create", "course_code": "TEST7251", "display_name": "Snapshot Consistency"})
+    week = server.manage_week(conn, {"action": "create", "course_id": course["id"], "label": "Week 03", "kind": "week"})
+
+    stale = write_text(tmp / "snapshot" / "Stale Identity.txt", "stale-alpha-content")
+    identity_a = server.identify_ingestion_path(stale)
+    write_text(stale, "stale-beta-content", mtime=1_700_000_200)
+    expected_b = digest(stale)
+    stale_result = server.ingest_material_candidate(conn, make_candidate(server, stale, course, week, identity=identity_a))
+    stale_row = conn.execute("SELECT * FROM files WHERE id=?", (stale_result.legacy_file_id,)).fetchone()
+    stale_material = material_for_file(conn, stale_result.legacy_file_id)
+    stale_version = active_version(conn, stale_material["id"])
+    stale_blob = conn.execute("SELECT * FROM blobs WHERE id=?", (stale_version["blob_id"],)).fetchone()
+    stale_search = server.search_local_context(conn, "stale-beta-content", {"fileId": stale_result.legacy_file_id}, limit=3)
+
+    changing = write_text(tmp / "snapshot" / "Changing During Extract.txt", "changing-alpha-content", mtime=1_700_000_300)
+    expected_before_change = digest(changing)
+    original_extract = server.extract_text
+    mutation = {"done": False}
+
+    def mutating_extract(path: Path) -> str:
+        if path.name == changing.name and not mutation["done"]:
+            mutation["done"] = True
+            write_text(path, "changing-beta-content", mtime=1_700_000_400)
+            return "changing-beta-content"
+        return original_extract(path)
+
+    server.extract_text = mutating_extract
+    try:
+        changing_result = server.ingest_material_candidate(conn, make_candidate(server, changing, course, week))
+    finally:
+        server.extract_text = original_extract
+    expected_after_change = digest(changing)
+    changing_row = conn.execute("SELECT * FROM files WHERE id=?", (changing_result.legacy_file_id,)).fetchone()
+    changing_material = material_for_file(conn, changing_result.legacy_file_id)
+    changing_version = active_version(conn, changing_material["id"])
+    changing_blob = conn.execute("SELECT * FROM blobs WHERE id=?", (changing_version["blob_id"],)).fetchone()
+    old_mixed_row = conn.execute("SELECT * FROM files WHERE sha256=?", (expected_before_change,)).fetchone()
+    changing_search = server.search_local_context(conn, "changing-beta-content", {"fileId": changing_result.legacy_file_id}, limit=3)
+    conn.rollback()
+    conn.close()
+    return (
+        stale_row["sha256"] == expected_b
+        and stale_version["sha256"] == expected_b
+        and stale_blob["sha256"] == expected_b
+        and any("stale-beta-content" in match["text"] for match in stale_search)
+        and changing_row["sha256"] == expected_after_change
+        and changing_version["sha256"] == expected_after_change
+        and changing_blob["sha256"] == expected_after_change
+        and old_mixed_row is None
+        and any("changing-beta-content" in match["text"] for match in changing_search)
+    )
+
+
 def check_suspicious_and_missing_source(tmp: Path) -> bool:
     library = tmp / "degraded-library"
     bad = write_bytes(
@@ -324,6 +449,7 @@ def check_batch_import_and_failure_safety(tmp: Path) -> bool:
     )
     stable_id = stable_result["items"][0]["id"]
     stable_hash = digest(stable)
+    valid_a = write_text(tmp / "failure" / "Valid A.txt", "Valid A should not be partially committed.")
     failing = write_text(tmp / "failure" / "Failing.txt", "This extraction will fail.")
     original_extract = server.extract_text
 
@@ -337,13 +463,15 @@ def check_batch_import_and_failure_safety(tmp: Path) -> bool:
     try:
         server.register_material_paths(
             conn,
-            {"paths": [str(failing)], "course_id": course["id"], "week_id": week["id"], "material_type": "reading"},
+            {"paths": [str(valid_a), str(failing)], "course_id": course["id"], "week_id": week["id"], "material_type": "reading"},
         )
     except RuntimeError:
+        conn.rollback()
         stable_row = conn.execute("SELECT * FROM files WHERE id=?", (stable_id,)).fetchone()
         stable_material = material_for_file(conn, stable_id)
         stable_chunks = scalar(conn, "SELECT COUNT(*) FROM document_chunks WHERE file_id=?", (stable_id,))
         stable_text = server.read_cached_text(stable_row, 500)
+        valid_a_row = conn.execute("SELECT * FROM files WHERE original_path=?", (str(valid_a.resolve()),)).fetchone()
         failing_row = conn.execute("SELECT * FROM files WHERE original_path=?", (str(failing.resolve()),)).fetchone()
         failed_without_damage = (
             stable_row["active"] == 1
@@ -351,6 +479,7 @@ def check_batch_import_and_failure_safety(tmp: Path) -> bool:
             and stable_material is not None
             and stable_chunks > 0
             and "survives failed ingestion" in stable_text
+            and valid_a_row is None
             and failing_row is None
         )
     finally:
@@ -369,8 +498,10 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="studyhub-ingestion-core-") as tmp_name:
         tmp = Path(tmp_name)
         checks = {
+            "direct_helper_keeps_transaction_open_and_rolls_back_targeted_domain": check_direct_helper_transaction_and_targeted_domain(tmp),
             "scanned_material_uses_ingestion_core_and_projects_domain": check_scanned_and_modified_material(tmp),
             "manual_reference_uses_ingestion_core_and_preserves_duplicates": check_manual_reference_and_duplicates(tmp),
+            "source_snapshot_consistency_detects_stale_and_mid_ingest_changes": check_snapshot_consistency(tmp),
             "suspicious_input_and_missing_source_preserve_current_behavior": check_suspicious_and_missing_source(tmp),
             "batch_import_uses_core_once_per_file_without_n_reconciles": check_batch_import_and_failure_safety(tmp),
         }
