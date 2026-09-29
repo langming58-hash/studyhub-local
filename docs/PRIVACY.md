@@ -34,6 +34,21 @@ public-facing responses.
 
 StudyHub includes no analytics or telemetry by default.
 
+## Runtime Environment Isolation
+
+Production, Development, and Demo/Test persistence are separate trust domains.
+Production retains the existing `io.studyhublocal.desktop` application identity
+and existing OS data/config locations. Development and Demo/Test use distinct
+application identities, databases, settings, caches, logs, managed workspaces,
+and WebView storage. They do not fall back to Production state.
+
+The desktop shell removes inherited database, runtime, StudyLibrary, and OpenAI
+provider variables before launching the backend, then supplies explicit paths
+for the selected profile. Demo/Test additionally rejects external library/file
+selection and ignores inherited or configured OpenAI keys and provider IDs.
+Tests use temporary synthetic roots and reset only their active temporary
+profile. No profile selection moves or rewrites original academic files.
+
 ## Ownership Classes
 
 Future domain work applies these semantics at the datum, field, or artifact
@@ -134,3 +149,5 @@ committed.
 - Optional cloud features remain explicit and local features remain useful
   without them.
 - Every public PR passes the repository privacy checks with synthetic inputs.
+- Development and Demo/Test never implicitly read Production persistence or
+  credentials; release builds always resolve to Production.

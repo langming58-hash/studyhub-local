@@ -36,6 +36,7 @@ node_modules/
 .tools/
 .venv-desktop/
 .desktop-build/
+.studyhub-dev/
 .release/
 src-tauri/target/
 src-tauri/backend/studyhub-backend/*

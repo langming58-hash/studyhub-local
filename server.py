@@ -43,6 +43,22 @@ except ImportError:
 
 APP_NAME = "StudyHub Local"
 APP_ROOT = Path(__file__).resolve().parent
+RUNTIME_PROFILE = os.environ.get("STUDYHUB_RUNTIME_PROFILE", "source").strip().lower() or "source"
+if RUNTIME_PROFILE not in {"source", "production", "development", "demo-test"}:
+    raise RuntimeError("Unknown StudyHub runtime profile")
+
+DEMO_BLOCKED_CONFIG_KEYS = {
+    "DEMO_MODE",
+    "OPENAI_API_BASE",
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL",
+    "OPENAI_VECTOR_STORE_ID",
+    "STUDY_LIBRARY_PATH",
+}
+if RUNTIME_PROFILE == "demo-test":
+    for blocked_key in DEMO_BLOCKED_CONFIG_KEYS:
+        os.environ.pop(blocked_key, None)
+
 ENV_LOCAL_PATH = Path(os.environ.get("STUDYHUB_CONFIG_PATH", APP_ROOT / ".env.local")).expanduser()
 if not ENV_LOCAL_PATH.is_absolute():
     ENV_LOCAL_PATH = APP_ROOT / ENV_LOCAL_PATH
@@ -57,7 +73,10 @@ def load_local_env() -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        key = key.strip()
+        if RUNTIME_PROFILE == "demo-test" and key in DEMO_BLOCKED_CONFIG_KEYS:
+            continue
+        os.environ.setdefault(key, value.strip().strip('"').strip("'"))
 
 
 load_local_env()
@@ -94,12 +113,17 @@ def read_local_env_entries() -> dict[str, str]:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        entries[key.strip()] = value.strip().strip('"').strip("'")
+        key = key.strip()
+        if RUNTIME_PROFILE == "demo-test" and key in DEMO_BLOCKED_CONFIG_KEYS:
+            continue
+        entries[key] = value.strip().strip('"').strip("'")
     return entries
 
 
 def write_local_env_entries(entries: dict[str, str]) -> None:
     ensure_dirs()
+    if RUNTIME_PROFILE == "demo-test":
+        entries = {key: value for key, value in entries.items() if key not in DEMO_BLOCKED_CONFIG_KEYS}
     ENV_LOCAL_PATH.parent.mkdir(parents=True, exist_ok=True)
     ordered = [
         "STUDY_LIBRARY_PATH",
@@ -122,6 +146,8 @@ def write_local_env_entries(entries: dict[str, str]) -> None:
 
 
 def validate_user_library_path(raw_path: str) -> Path:
+    if RUNTIME_PROFILE == "demo-test":
+        raise PermissionError("Demo/Test mode cannot connect an external study library.")
     value = (raw_path or "").strip()
     if not value:
         raise ValueError("Enter the folder where your study files live.")
@@ -2622,6 +2648,8 @@ def classification_suggestion(conn: sqlite3.Connection, path: Path) -> dict[str,
 
 
 def validate_reference_path(raw: Any) -> Path:
+    if RUNTIME_PROFILE == "demo-test":
+        raise PermissionError("Demo/Test mode cannot reference external study files.")
     text = str(raw or "")
     if not text or "\x00" in text:
         raise ValueError("Choose a normal local file")
@@ -2711,6 +2739,8 @@ def register_material_paths(conn: sqlite3.Connection, body: dict[str, Any]) -> d
 
 
 def import_course_folder(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
+    if RUNTIME_PROFILE == "demo-test":
+        raise PermissionError("Demo/Test mode cannot import an external course folder.")
     raw = str(body.get("path") or "")
     if not raw or "\x00" in raw:
         raise ValueError("Choose a normal local course folder")
@@ -3086,6 +3116,7 @@ def api_health(conn: sqlite3.Connection) -> dict[str, Any]:
     return {
         "app": APP_NAME,
         "version": "0.3.0-beta.1",
+        "runtimeProfile": RUNTIME_PROFILE,
         "desktopMode": DESKTOP_MODE,
         "packagedBackend": PACKAGED_BACKEND,
         "studyLibraryConnected": DEFAULT_STUDY_ROOT.exists(),
@@ -5333,6 +5364,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         )
 
     def handle_upload(self) -> None:
+        if RUNTIME_PROFILE == "demo-test":
+            raise PermissionError("Demo/Test mode cannot import external files.")
         ctype = self.headers.get("Content-Type", "")
         upload = MultipartUpload(ctype, self.read_limited_body(MAX_UPLOAD_REQUEST_SIZE))
         course_id = int(upload.fields.get("course_id", "0") or 0)
