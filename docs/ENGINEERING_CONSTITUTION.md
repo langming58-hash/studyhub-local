@@ -119,6 +119,7 @@ normal manifest/lockfile.
 | Rich text | TARGET DECISION, not implemented | Tiptap | Dependency with narrow extensions | Academic/source-reference extensions and persistence semantics |
 | Spaced repetition | TARGET DECISION, not implemented | `fsrs-rs` / FSRS ecosystem | Dependency behind `ReviewScheduler` | ReviewItem, academic-learning integration, user state |
 | Canvas | TARGET BOUNDARY, not implemented | Official Canvas API is authoritative | Connector plus audited references | CanvasConnector, SyncPlan, normalization, provenance, change detection, ingestion |
+| Credential storage | IMPLEMENTED FOUNDATION | `keyring` 4.2.0, native OS credential stores | Dependency behind internal `CredentialStore` boundary | typed slots, runtime-profile namespaces, trust boundary, sanitized failure categories |
 | Background jobs | OPEN DECISION | Effectum and Apalis SQLite are benchmark candidates | No selection in Phase 0 | Job semantics, privacy boundary, progress and recovery UX |
 
 Canvas-related open-source projects may inform endpoint coverage,

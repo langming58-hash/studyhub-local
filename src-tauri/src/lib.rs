@@ -16,6 +16,8 @@ use tauri::path::BaseDirectory;
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 
+mod credential_store;
+
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(4);
 const FALLBACK_URL: &str = "tauri://localhost/index.html";

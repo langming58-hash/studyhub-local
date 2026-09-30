@@ -12,7 +12,10 @@ an LMS connection.
 - Access only accounts and materials the user is authorized to access.
 - Do not bypass login, MFA, DRM, course permissions, or access controls.
 - Do not submit assignments, quizzes, or other coursework.
-- Authentication and credential storage require an explicit security design.
+- Authentication and token enrollment remain not implemented. The native
+  CredentialStore foundation provides a future storage boundary, but Canvas
+  credential capture, account management, OAuth, revocation UX, and backend
+  handoff still require explicit follow-up designs.
 - Existing open-source Canvas clients may be audited for endpoint coverage,
   authentication strategy, discovery, pagination, and workflow behavior.
 - Incompatible, restrictive, non-commercial, or unlicensed implementations
@@ -76,7 +79,8 @@ auditable, and recoverable.
 Before any connector implementation:
 
 1. audit official API capabilities and current authentication requirements
-2. define credential storage and revocation
+2. define Canvas credential enrollment, account selection, revocation, and
+   secure backend handoff on top of the native CredentialStore foundation
 3. define Source, Blob, Material, MaterialVersion, and CourseOffering mapping
 4. define SyncPlan and conflict semantics
 5. select or reject a background-job foundation through a separate decision
