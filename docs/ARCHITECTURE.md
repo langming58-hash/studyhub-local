@@ -29,7 +29,8 @@ not seed sample courses or scan unrelated user directories.
   requests, and read-only MCP.
 - `static/`: plain HTML, CSS, and JavaScript frontend served by the backend.
 - `src-tauri/`: desktop process lifecycle, native folder selection, narrow
-  capabilities, and packaged-resource wiring.
+  capabilities, packaged-resource wiring, and the internal native-only
+  CredentialStore foundation.
 - `desktop-shell/`: startup/failure surface used by the desktop shell.
 - `tests/fixtures/`: synthetic acceptance inputs; never production resources.
 - `data/`, `cache/`, and `logs/`: local runtime state, ignored by Git.
@@ -106,6 +107,10 @@ See [Preview Matrix](design/PREVIEW_MATRIX.md) for current format behavior.
 - Mutating browser routes use Host, exact-origin, and CSRF protections.
 - MCP is read-only and exposes safe IDs and academic metadata rather than local
   absolute paths or provider IDs.
+- CredentialStore is an internal Rust boundary only. It uses typed slots,
+  runtime-profile namespaces, native OS credential storage for Production and
+  Development, and Demo/Test denial. It has no frontend, localhost HTTP, MCP,
+  diagnostics, SQLite, browser-storage, or Tauri raw-secret retrieval surface.
 - OpenAI is optional, server-side, and scoped to indexed source material.
 - Practice questions come from indexed teacher-provided material only. The app
   must not invent practice questions.

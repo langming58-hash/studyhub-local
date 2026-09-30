@@ -195,6 +195,37 @@ The stripped-PATH packaged test proves startup and graceful missing-tool states.
 Detection of an installed LibreOffice and Poppler from a real Finder launch is
 implemented but still needs a separate clean-machine confirmation.
 
+## Native CredentialStore Foundation
+
+The desktop shell now includes a narrow Rust `CredentialStore` foundation for
+future optional integrations. The adopted storage dependency is `keyring`
+4.2.0, licensed MIT OR Apache-2.0. Its native backends are macOS Keychain,
+Windows Credential Manager, and Linux Secret Service through the crate's
+platform support. Automated tests use fake and Demo/Test-denied stores only;
+they do not inspect or mutate the user's real Keychain.
+
+Implemented behavior:
+
+- typed internal credential slots with stable profile namespaces
+- store/replace, configured check, trusted native retrieval, and delete/revoke
+- sanitized failure categories for missing, backend unavailable, access
+  denied, and operation failed
+- Production namespace `io.studyhublocal.desktop.credentials`
+- Development namespace `io.studyhublocal.desktop.dev.credentials`
+- Demo/Test denial that never touches real native credential storage
+
+Trust boundary:
+
+- raw credential retrieval is not exposed as a Tauri command
+- no localhost HTTP, MCP, diagnostics, browser storage, SQLite, logs, or
+  frontend bundle can return raw credentials
+- future Python/backend handoff requires a separate reviewed design
+
+Unsigned/ad-hoc package limitation: real macOS Keychain behavior across app
+renames, executable changes, updates, and user approval prompts has not been
+claimed by CI. A Development-only manual Keychain smoke test should be added
+before any feature relies on OS-backed credentials in production workflows.
+
 ## AI Boundary
 
 AI remains optional and uses the user's own OpenAI API account. OpenAI API usage
@@ -211,15 +242,17 @@ The packaged backend includes a verified `certifi` CA bundle and reports only
 its availability, never its path. A real API-key request is not part of the
 public synthetic artifact test.
 
-Secure macOS Keychain storage is not implemented. The desktop package does not copy a
-maintainer key and does not fall back to plaintext key storage. AI being
-unconfigured is a valid state and does not block local features.
+The CredentialStore foundation does not automatically protect or migrate
+existing OpenAI configuration. Existing OpenAI API keys and vector-store IDs
+remain in the current environment/settings workflow for compatibility. The
+desktop package does not copy a maintainer key and does not fall back to
+plaintext key storage. AI being unconfigured is a valid state and does not
+block local features.
 
-This profile isolation does not introduce a credential system. Existing
 Production and Development OpenAI settings remain in their own configured
 settings environment. Demo/Test ignores inherited or configured OpenAI keys and
-provider identifiers. Diagnostics expose only the profile name, never paths or
-credential values.
+provider identifiers. Diagnostics expose only the profile name, never paths,
+provider identifiers, or credential values.
 
 ## Acceptance Evidence
 
@@ -249,7 +282,8 @@ Proven with synthetic data on the current Apple Silicon Mac:
 2. The public build is Apple Silicon only, unsigned, and not notarized. A DMG
    prerelease exists, but Developer ID signing and Apple notarization are not on
    `main`.
-3. Keychain-backed BYOK is not implemented.
+3. Canvas authentication, token enrollment, OAuth, account management, Python
+   backend credential handoff, and OpenAI key migration are not implemented.
 4. Poppler and LibreOffice are not bundled; their missing states are graceful.
 5. Installed-tool detection from a separate Finder-launched clean Mac remains
    to be confirmed.

@@ -49,6 +49,12 @@ selection and ignores inherited or configured OpenAI keys and provider IDs.
 Tests use temporary synthetic roots and reset only their active temporary
 profile. No profile selection moves or rewrites original academic files.
 
+The native CredentialStore foundation follows the same profile boundary.
+Production uses the `io.studyhublocal.desktop.credentials` namespace,
+Development uses `io.studyhublocal.desktop.dev.credentials`, and Demo/Test
+uses an explicit denied backend that never touches real OS credential storage.
+No fallback, migration, or cross-profile lookup is allowed.
+
 ## Ownership Classes
 
 Future domain work applies these semantics at the datum, field, or artifact
@@ -102,6 +108,10 @@ deletion/revocation path where applicable.
 Secrets should be represented by handles and platform credential storage where
 practical. They must never appear in frontend bundles, public logs, fixtures,
 screenshots, issues, commits, SQLite exports, or diagnostic payloads.
+The implemented native CredentialStore boundary is trusted-native-only: it can
+store, replace, check, retrieve for internal native use, and revoke typed
+credential slots. No frontend, localhost HTTP, MCP, diagnostics, browser
+storage, SQLite, or public API may retrieve raw credentials.
 
 ## Public Data Boundary
 
