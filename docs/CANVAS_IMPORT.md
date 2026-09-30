@@ -37,6 +37,11 @@ domain tables directly.
 StudyHub owns SyncPlan, provenance, change detection, user overlays,
 normalization, conflict behavior, and ingestion.
 
+The generic local ingestion boundary prerequisite is implemented for current
+filesystem scanner/import inputs. Canvas discovery, authentication, sync
+planning, remote change handling, and Canvas-specific provenance mapping remain
+not implemented.
+
 ## Sync Is Not Ingestion
 
 Sync discovers remote state and produces an observable plan. Ingestion turns

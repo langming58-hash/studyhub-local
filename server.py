@@ -2150,6 +2150,64 @@ class ScanStats:
     solutions_detected: int = 0
 
 
+@dataclass(frozen=True)
+class IngestionIdentity:
+    sha256: str
+    size: int
+    mtime_ns: int
+    modified_at: str
+    extension: str
+    mime_type: str
+    suspicious: str
+
+
+@dataclass(frozen=True)
+class IngestionCandidate:
+    path: Path
+    course_id: int
+    week_id: int | None
+    course_code: str
+    course_name: str
+    week_label: str
+    week_number: int | None
+    section: str
+    category: str
+    exercise_type: str
+    material_type: str
+    source: str
+    source_label: str
+    source_type: str
+    rel_path: str
+    import_mode: str
+    is_official: int
+    is_solution: int
+    is_question_source: int
+    inbox: int = 0
+    metadata_locked: int = 0
+    display_name: str = ""
+    stable_id: str | None = None
+    force_index: bool = False
+    identity: IngestionIdentity | None = None
+
+
+@dataclass(frozen=True)
+class IngestionResult:
+    status: str
+    legacy_file_id: int
+    material_stable_id: str
+    sha256: str
+    version_changed: bool
+    indexed: bool
+    suspicious: str
+    error: str
+    questions: int = 0
+    solutions: int = 0
+
+
+class IngestionSourceChanged(RuntimeError):
+    pass
+
+
 def source_index_map(study_root: Path) -> dict[str, dict[str, str]]:
     mapping: dict[str, dict[str, str]] = {}
     p = study_root / "Source Index.csv"
@@ -2583,7 +2641,51 @@ def _legacy_scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
     return stats
 
 
-def index_material_content(conn: sqlite3.Connection, file_id: int, path: Path, *, force: bool = False) -> dict[str, Any]:
+def ingestion_stat_fingerprint(path: Path) -> tuple[int, int]:
+    stat = path.stat()
+    return stat.st_size, stat.st_mtime_ns
+
+
+def identity_matches_path(path: Path, identity: IngestionIdentity) -> bool:
+    try:
+        size, mtime_ns = ingestion_stat_fingerprint(path)
+    except OSError:
+        return False
+    return size == identity.size and mtime_ns == identity.mtime_ns
+
+
+def identify_ingestion_path(path: Path) -> IngestionIdentity:
+    path = path.expanduser().resolve()
+    for _attempt in range(3):
+        before_size, before_mtime_ns = ingestion_stat_fingerprint(path)
+        digest = sha256_file(path)
+        stat = path.stat()
+        if before_size == stat.st_size and before_mtime_ns == stat.st_mtime_ns:
+            break
+    else:
+        raise IngestionSourceChanged("Source file changed during identification. Try again.")
+    modified = datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds")
+    ext = path.suffix.lower()
+    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return IngestionIdentity(
+        sha256=digest,
+        size=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
+        modified_at=modified,
+        extension=ext,
+        mime_type=mime,
+        suspicious=is_suspicious_file(path),
+    )
+
+
+def index_material_content(
+    conn: sqlite3.Connection,
+    file_id: int,
+    path: Path,
+    *,
+    force: bool = False,
+    identity: IngestionIdentity | None = None,
+) -> dict[str, Any]:
     path = path.expanduser().resolve()
     row = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
     if row is None:
@@ -2594,11 +2696,11 @@ def index_material_content(conn: sqlite3.Connection, file_id: int, path: Path, *
             (now_iso(), file_id),
         )
         return {"indexed": False, "missing": True, "updated": False, "questions": 0, "solutions": 0}
-    digest = sha256_file(path)
-    stat = path.stat()
-    modified = datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds")
-    ext = path.suffix.lower()
-    suspicious = is_suspicious_file(path)
+    identified = identity or identify_ingestion_path(path)
+    digest = identified.sha256
+    modified = identified.modified_at
+    ext = identified.extension
+    suspicious = identified.suspicious
     chunk_count = conn.execute("SELECT COUNT(*) AS c FROM document_chunks WHERE file_id=?", (file_id,)).fetchone()["c"]
     ai_seen = conn.execute("SELECT status, error FROM ai_index_state WHERE file_id=? AND provider='local'", (file_id,)).fetchone()
     same_file = row["sha256"] == digest and row["modified_at"] == modified
@@ -2620,7 +2722,7 @@ def index_material_content(conn: sqlite3.Connection, file_id: int, path: Path, *
     elif text_cache_available(text_cache):
         cache_path = safe_cache_path(text_cache)
         text = cache_path.read_text(encoding="utf-8", errors="ignore") if cache_path else ""
-    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    mime = identified.mime_type
     stable_id = row["stable_id"] or new_stable_id("material")
     conn.execute(
         """
@@ -2628,10 +2730,10 @@ def index_material_content(conn: sqlite3.Connection, file_id: int, path: Path, *
           suspicious=?, text_cache_path=?, stable_id=?, absolute_path=?, file_extension=?, file_size=?, sha256=?,
           source_missing=0, missing_at=NULL, active=1, ai_index_error=? WHERE id=?
         """,
-        (path.name, digest, stat.st_size, modified, now_iso(), ext, mime, suspicious, text_cache, stable_id,
-         str(path), ext, stat.st_size, digest, extraction_error, file_id),
+        (path.name, digest, identified.size, modified, now_iso(), ext, mime, suspicious, text_cache, stable_id,
+         str(path), ext, identified.size, digest, extraction_error, file_id),
     )
-    upsert_file_version(conn, file_id, stable_id, digest, stat.st_size, modified, text_cache)
+    upsert_file_version(conn, file_id, stable_id, digest, identified.size, modified, text_cache)
     question_count = solution_count = 0
     if needs_reindex:
         current = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
@@ -2643,6 +2745,168 @@ def index_material_content(conn: sqlite3.Connection, file_id: int, path: Path, *
         "questions": question_count,
         "solutions": solution_count,
     }
+
+
+def ingest_material_candidate(conn: sqlite3.Connection, candidate: IngestionCandidate) -> IngestionResult:
+    """Central local ingestion boundary for current scanner/import inputs.
+
+    Callers own discovery, duplicate policy, missing-file reconciliation, and
+    commit/reconcile policy. This helper owns per-file identity, compatibility
+    persistence, extraction, indexing, and version recording.
+    """
+
+    path = candidate.path.expanduser().resolve()
+    if not conn.in_transaction:
+        conn.execute("BEGIN")
+    supplied_identity = candidate.identity
+    last_source_change: IngestionSourceChanged | None = None
+    for attempt in range(2):
+        identity = supplied_identity if attempt == 0 and supplied_identity and identity_matches_path(path, supplied_identity) else identify_ingestion_path(path)
+        savepoint = f"ingest_{hashlib.sha256(f'{id(conn)}|{path}|{attempt}|{now_iso()}'.encode()).hexdigest()[:16]}"
+        conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            if not identity_matches_path(path, identity):
+                raise IngestionSourceChanged("Source file changed before ingestion. Try again.")
+            existing = conn.execute("SELECT * FROM files WHERE original_path=?", (str(path),)).fetchone()
+            now = now_iso()
+            if existing is None:
+                stable_id = candidate.stable_id or new_stable_id("material")
+                display_name = candidate.display_name or path.name
+                conn.execute(
+                    """
+                    INSERT INTO files(course_id, week_id, course_code, week_label, section, category, exercise_type,
+                      filename, original_path, rel_path, source, source_label, hash, size, modified_at, indexed_at,
+                      extension, mime_type, is_official, suspicious, text_cache_path, stable_id, course_name,
+                      week_number, absolute_path, source_type, file_extension, file_size, sha256, is_solution,
+                      is_question_source, active, missing_at, display_name, material_type, import_mode, inbox,
+                      metadata_locked, source_missing, removed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?, ?, ?, 0, NULL)
+                    """,
+                    (
+                        candidate.course_id,
+                        candidate.week_id,
+                        candidate.course_code,
+                        candidate.week_label,
+                        candidate.section,
+                        candidate.category,
+                        candidate.exercise_type,
+                        path.name,
+                        str(path),
+                        candidate.rel_path,
+                        candidate.source,
+                        candidate.source_label,
+                        identity.sha256,
+                        identity.size,
+                        identity.modified_at,
+                        now,
+                        identity.extension,
+                        identity.mime_type,
+                        candidate.is_official,
+                        identity.suspicious,
+                        stable_id,
+                        candidate.course_name,
+                        candidate.week_number,
+                        str(path),
+                        candidate.source_type,
+                        identity.extension,
+                        identity.size,
+                        identity.sha256,
+                        candidate.is_solution,
+                        candidate.is_question_source,
+                        display_name,
+                        candidate.material_type,
+                        candidate.import_mode,
+                        candidate.inbox,
+                        candidate.metadata_locked,
+                    ),
+                )
+                file_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+                status = "added"
+                force = True
+            else:
+                file_id = int(existing["id"])
+                locked = int(bool(existing["metadata_locked"]))
+                conn.execute(
+                    """
+                    UPDATE files SET course_id=CASE WHEN ?=1 THEN course_id ELSE ? END,
+                      week_id=CASE WHEN ?=1 THEN week_id ELSE ? END,
+                      course_code=CASE WHEN ?=1 THEN course_code ELSE ? END,
+                      course_name=CASE WHEN ?=1 THEN course_name ELSE ? END,
+                      week_label=CASE WHEN ?=1 THEN week_label ELSE ? END,
+                      week_number=CASE WHEN ?=1 THEN week_number ELSE ? END,
+                      section=CASE WHEN ?=1 THEN section ELSE ? END,
+                      category=CASE WHEN ?=1 THEN category ELSE ? END,
+                      exercise_type=CASE WHEN ?=1 THEN exercise_type ELSE ? END,
+                      material_type=CASE WHEN ?=1 THEN material_type ELSE ? END,
+                      rel_path=?, source=?, source_label=?, is_official=?, import_mode=?,
+                      active=1, source_missing=0, missing_at=NULL, removed_at=NULL WHERE id=?
+                    """,
+                    (
+                        locked,
+                        candidate.course_id,
+                        locked,
+                        candidate.week_id,
+                        locked,
+                        candidate.course_code,
+                        locked,
+                        candidate.course_name,
+                        locked,
+                        candidate.week_label,
+                        locked,
+                        candidate.week_number,
+                        locked,
+                        candidate.section,
+                        locked,
+                        candidate.category,
+                        locked,
+                        candidate.exercise_type,
+                        locked,
+                        candidate.material_type,
+                        candidate.rel_path,
+                        candidate.source,
+                        candidate.source_label,
+                        candidate.is_official,
+                        candidate.import_mode,
+                        file_id,
+                    ),
+                )
+                status = "existing"
+                force = candidate.force_index
+            conn.execute(
+                "UPDATE files SET material_created_at=COALESCE(NULLIF(material_created_at, ''), indexed_at), material_updated_at=? WHERE id=?",
+                (now, file_id),
+            )
+            indexed = index_material_content(conn, file_id, path, force=force, identity=identity)
+            if not identity_matches_path(path, identity):
+                raise IngestionSourceChanged("Source file changed during ingestion. Try again.")
+            current = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
+            upsert_domain_projection_for_file(conn, current)
+            current = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
+            result = IngestionResult(
+                status=status,
+                legacy_file_id=file_id,
+                material_stable_id=current["stable_id"],
+                sha256=identity.sha256,
+                version_changed=bool(indexed["updated"]),
+                indexed=bool(indexed["indexed"]),
+                suspicious=identity.suspicious,
+                error=current["ai_index_error"] or "",
+                questions=int(indexed["questions"]),
+                solutions=int(indexed["solutions"]),
+            )
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            return result
+        except IngestionSourceChanged as exc:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            last_source_change = exc
+            supplied_identity = None
+            continue
+        except Exception:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
+    raise RuntimeError(str(last_source_change) if last_source_change else "Source file changed during ingestion. Try again.")
 
 
 def scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
@@ -2722,68 +2986,46 @@ def scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
             exercise_type = category if section == "02 Exercises" else ""
             existing = conn.execute("SELECT * FROM files WHERE original_path=?", (resolved_path,)).fetchone()
             if existing is None:
-                digest = sha256_file(path)
-                stat = path.stat()
-                modified = datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds")
-                ext = path.suffix.lower()
-                mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-                conn.execute(
-                    """
-                    INSERT INTO files(course_id, week_id, course_code, week_label, section, category, exercise_type,
-                      filename, original_path, rel_path, source, source_label, hash, size, modified_at, indexed_at,
-                      extension, mime_type, is_official, suspicious, text_cache_path, stable_id, course_name,
-                      week_number, absolute_path, source_type, file_extension, file_size, sha256, is_solution,
-                      is_question_source, active, missing_at, display_name, material_type, import_mode, inbox,
-                      metadata_locked, source_missing, removed_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, 'scanned', 0, 0, 0, NULL)
-                    """,
-                    (course_id, week["id"], code, week_label, section, category, exercise_type, path.name,
-                     resolved_path, rel, source, source_label, digest, stat.st_size, modified, now_iso(), ext, mime,
-                     1 if source == "official" else 0, new_stable_id("material"), name, week_number, resolved_path,
-                     source_type_for(source_label), ext, stat.st_size, digest, is_solution_file(path, category),
-                     is_question_source_file(path, section, category), path.name, material_type),
-                )
-                file_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
                 stats.new_files += 1
                 force = True
             else:
-                file_id = int(existing["id"])
-                locked = int(bool(existing["metadata_locked"]))
-                conn.execute(
-                    """
-                    UPDATE files SET course_id=CASE WHEN ?=1 THEN course_id ELSE ? END,
-                      week_id=CASE WHEN ?=1 THEN week_id ELSE ? END,
-                      course_code=CASE WHEN ?=1 THEN course_code ELSE ? END,
-                      course_name=CASE WHEN ?=1 THEN course_name ELSE ? END,
-                      week_label=CASE WHEN ?=1 THEN week_label ELSE ? END,
-                      week_number=CASE WHEN ?=1 THEN week_number ELSE ? END,
-                      section=CASE WHEN ?=1 THEN section ELSE ? END,
-                      category=CASE WHEN ?=1 THEN category ELSE ? END,
-                      exercise_type=CASE WHEN ?=1 THEN exercise_type ELSE ? END,
-                      material_type=CASE WHEN ?=1 THEN material_type ELSE ? END,
-                      rel_path=?, source=?, source_label=?, is_official=?, import_mode='scanned', active=1,
-                      source_missing=0, missing_at=NULL, removed_at=NULL WHERE id=?
-                    """,
-                    (locked, course_id, locked, week["id"], locked, code, locked, name, locked, week_label,
-                     locked, week_number, locked, section, locked, category, locked, exercise_type, locked,
-                     material_type, rel, source, source_label, 1 if source == "official" else 0, file_id),
-                )
                 force = False
-            conn.execute(
-                "UPDATE files SET material_created_at=COALESCE(NULLIF(material_created_at, ''), indexed_at), material_updated_at=? WHERE id=?",
-                (now_iso(), file_id),
+            result = ingest_material_candidate(
+                conn,
+                IngestionCandidate(
+                    path=path,
+                    course_id=course_id,
+                    week_id=int(week["id"]),
+                    course_code=code,
+                    course_name=name,
+                    week_label=week_label,
+                    week_number=week_number,
+                    section=section,
+                    category=category,
+                    exercise_type=exercise_type,
+                    material_type=material_type,
+                    source=source,
+                    source_label=source_label,
+                    source_type=source_type_for(source_label),
+                    rel_path=rel,
+                    import_mode="scanned",
+                    is_official=1 if source == "official" else 0,
+                    is_solution=is_solution_file(path, category),
+                    is_question_source=is_question_source_file(path, section, category),
+                    display_name=path.name,
+                    force_index=force,
+                ),
             )
-            indexed = index_material_content(conn, file_id, path, force=force)
             stats.files += 1
-            if indexed["updated"] and not force:
+            if result.version_changed and not force:
                 stats.updated_files += 1
-            elif not indexed["updated"]:
+            elif not result.version_changed:
                 stats.unchanged_files += 1
-            if indexed["indexed"]:
+            if result.indexed:
                 stats.indexed_text += 1
-            stats.questions_detected += int(indexed["questions"])
-            stats.solutions_detected += int(indexed["solutions"])
-            if is_suspicious_file(path):
+            stats.questions_detected += result.questions
+            stats.solutions_detected += result.solutions
+            if result.suspicious:
                 stats.suspicious += 1
                 stats.failed_files += 1
 
@@ -3042,41 +3284,44 @@ def register_material_paths(conn: sqlite3.Connection, body: dict[str, Any], *, d
                 conn.execute("UPDATE files SET active=1, removed_at=NULL, source_missing=0, missing_at=NULL WHERE id=?", (existing_path["id"],))
             results.append({"status": "existing", "id": existing_path["id"], "filename": existing_path["filename"]})
             continue
-        digest = sha256_file(path)
-        duplicate = conn.execute("SELECT id, filename, course_code, week_label, material_type FROM files WHERE sha256=? AND active=1 AND removed_at IS NULL ORDER BY id LIMIT 1", (digest,)).fetchone()
+        identity = identify_ingestion_path(path)
+        duplicate = conn.execute("SELECT id, filename, course_code, week_label, material_type FROM files WHERE sha256=? AND active=1 AND removed_at IS NULL ORDER BY id LIMIT 1", (identity.sha256,)).fetchone()
         if duplicate and duplicate_policy != "add_anyway":
             results.append({"status": "duplicate", "id": duplicate["id"], "filename": path.name, "existing": public_file(duplicate)})
             continue
         stable_id = new_stable_id("material")
-        stat = path.stat()
-        modified = datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds")
-        ext = path.suffix.lower()
-        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         rel_path = f"references/{stable_id}/{path.name}"
-        conn.execute(
-            """
-            INSERT INTO files(course_id, week_id, course_code, week_label, section, category, exercise_type,
-              filename, original_path, rel_path, source, source_label, hash, size, modified_at, indexed_at,
-              extension, mime_type, is_official, suspicious, text_cache_path, stable_id, course_name,
-              week_number, absolute_path, source_type, file_extension, file_size, sha256, is_solution,
-              is_question_source, active, missing_at, display_name, material_type, import_mode, inbox,
-              metadata_locked, source_missing, removed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, NULL, ?, ?, 'reference', ?, 1, 0, NULL)
-            """,
-            (course_id, week["id"], course["course_code"], week["week_label"], section, category_label,
-             exercise_type, path.name, str(path), rel_path, "official" if is_official else "user",
-             "Teacher-provided material" if is_official else "User-selected local file", digest, stat.st_size,
-             modified, now_iso(), ext, mime, 1 if is_official else 0, stable_id, course["display_name"],
-             week["week_number"], str(path), "Local Reference", ext, stat.st_size, digest, path.name,
-             material_type, inbox),
+        result = ingest_material_candidate(
+            conn,
+            IngestionCandidate(
+                path=path,
+                course_id=course_id,
+                week_id=int(week["id"]),
+                course_code=course["course_code"],
+                course_name=course["display_name"],
+                week_label=week["week_label"],
+                week_number=week["week_number"],
+                section=section,
+                category=category_label,
+                exercise_type=exercise_type,
+                material_type=material_type,
+                source="official" if is_official else "user",
+                source_label="Teacher-provided material" if is_official else "User-selected local file",
+                source_type="Local Reference",
+                rel_path=rel_path,
+                import_mode="reference",
+                is_official=1 if is_official else 0,
+                is_solution=0,
+                is_question_source=0,
+                inbox=inbox,
+                metadata_locked=1,
+                display_name=path.name,
+                stable_id=stable_id,
+                force_index=True,
+                identity=identity,
+            ),
         )
-        file_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-        conn.execute(
-            "UPDATE files SET material_created_at=?, material_updated_at=? WHERE id=?",
-            (now_iso(), now_iso(), file_id),
-        )
-        indexed = index_material_content(conn, file_id, path, force=True)
-        results.append({"status": "added", "id": file_id, "filename": path.name, "indexed": indexed["indexed"]})
+        results.append({"status": "added", "id": result.legacy_file_id, "filename": path.name, "indexed": result.indexed})
     refresh_course_week_counts(conn)
     if not defer_domain_reconcile:
         reconcile_domain_projection(conn)
