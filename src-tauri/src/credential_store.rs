@@ -199,10 +199,9 @@ impl CredentialStore for NativeCredentialStore {
 fn map_keyring_error(error: keyring::Error) -> CredentialStoreError {
     let failure = match error {
         keyring::Error::NoEntry => CredentialStoreFailure::Missing,
-        keyring::Error::NoDefaultStore | keyring::Error::NoStorageAccess(_) => {
-            CredentialStoreFailure::BackendUnavailable
-        }
-        keyring::Error::PlatformFailure(_) => CredentialStoreFailure::AccessDenied,
+        keyring::Error::NoDefaultStore => CredentialStoreFailure::BackendUnavailable,
+        keyring::Error::NoStorageAccess(_) => CredentialStoreFailure::AccessDenied,
+        keyring::Error::PlatformFailure(_) => CredentialStoreFailure::OperationFailed,
         _ => CredentialStoreFailure::OperationFailed,
     };
     CredentialStoreError::new(failure)
@@ -327,6 +326,28 @@ mod tests {
     const SLOT: CredentialSlot = CredentialSlot::CanvasDefault;
     const SYNTHETIC_SECRET: &str = "synthetic-credential-value";
     const REPLACEMENT_SECRET: &str = "synthetic-replacement-value";
+    const SYNTHETIC_ERROR: &str = "synthetic-secret-bearing-platform-error";
+
+    #[derive(Debug)]
+    struct SyntheticPlatformError(&'static str);
+
+    impl fmt::Display for SyntheticPlatformError {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for SyntheticPlatformError {}
+
+    fn platform_error(message: &'static str) -> Box<dyn std::error::Error + Send + Sync> {
+        Box::new(SyntheticPlatformError(message))
+    }
+
+    fn assert_sanitized(error: CredentialStoreError, expected: CredentialStoreFailure) {
+        assert_eq!(error.failure(), expected);
+        assert!(!format!("{error:?}").contains(SYNTHETIC_ERROR));
+        assert!(!error.to_string().contains(SYNTHETIC_ERROR));
+    }
 
     #[test]
     fn memory_store_covers_store_exists_get_replace_delete() {
@@ -376,6 +397,53 @@ mod tests {
             .store_replace(SLOT, &SecretValue::new(REPLACEMENT_SECRET))
             .unwrap_err();
         assert_eq!(error.failure(), CredentialStoreFailure::OperationFailed);
+        assert_eq!(
+            store
+                .get_for_trusted_native_use(SLOT)
+                .expect("trusted test retrieval")
+                .expose_for_trusted_native_use(),
+            SYNTHETIC_SECRET
+        );
+    }
+
+    #[test]
+    fn keyring_error_mapping_is_conservative_and_sanitized() {
+        assert_sanitized(
+            map_keyring_error(keyring::Error::NoEntry),
+            CredentialStoreFailure::Missing,
+        );
+        assert_sanitized(
+            map_keyring_error(keyring::Error::NoDefaultStore),
+            CredentialStoreFailure::BackendUnavailable,
+        );
+        assert_sanitized(
+            map_keyring_error(keyring::Error::NoStorageAccess(platform_error(SYNTHETIC_ERROR))),
+            CredentialStoreFailure::AccessDenied,
+        );
+        assert_sanitized(
+            map_keyring_error(keyring::Error::PlatformFailure(platform_error(SYNTHETIC_ERROR))),
+            CredentialStoreFailure::OperationFailed,
+        );
+        assert_sanitized(
+            map_keyring_error(keyring::Error::Invalid(
+                "synthetic-parameter".to_string(),
+                SYNTHETIC_ERROR.to_string(),
+            )),
+            CredentialStoreFailure::OperationFailed,
+        );
+    }
+
+    #[test]
+    fn error_classification_does_not_modify_stored_credentials() {
+        let store = MemoryCredentialStore::new(namespace_for_profile(RuntimeProfile::Development));
+        store
+            .store_replace(SLOT, &SecretValue::new(SYNTHETIC_SECRET))
+            .expect("synthetic store");
+
+        let classified = map_keyring_error(keyring::Error::PlatformFailure(platform_error(
+            SYNTHETIC_ERROR,
+        )));
+        assert_eq!(classified.failure(), CredentialStoreFailure::OperationFailed);
         assert_eq!(
             store
                 .get_for_trusted_native_use(SLOT)
