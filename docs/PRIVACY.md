@@ -116,7 +116,11 @@ The internal credential-handoff broker keeps that boundary narrow for future
 backend work: only typed slots and an authorized child identity can reach the
 native retrieval path, stale child authorizations are invalidated on restart,
 and malformed or unsupported requests fail before credential-store access. The
-live Python backend does not yet receive credentials through this mechanism.
+desktop shell now connects the exact spawned Python backend child over a
+private inherited Unix stream for the single internal `canvas_default`
+credential operation. Credentials still do not pass through environment
+variables, command-line arguments, disk files, SQLite, logs, diagnostics,
+WebView JavaScript, localhost HTTP, or MCP.
 
 ## Public Data Boundary
 

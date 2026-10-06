@@ -18,6 +18,7 @@ use tauri_plugin_dialog::DialogExt;
 
 mod credential_handoff;
 mod credential_store;
+mod credential_transport;
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(4);
@@ -223,6 +224,9 @@ fn start_backend(config: &BackendConfig) -> Result<BackendProcess, String> {
         "OPENAI_API_KEY",
         "OPENAI_MODEL",
         "OPENAI_VECTOR_STORE_ID",
+        credential_transport::TRANSPORT_FD_ENV,
+        credential_transport::TRANSPORT_KIND_ENV,
+        credential_transport::TRANSPORT_PROTOCOL_ENV,
         "STUDYHUB_CACHE_DIR",
         "STUDYHUB_CONFIG_PATH",
         "STUDYHUB_DATA_DIR",
@@ -255,11 +259,22 @@ fn start_backend(config: &BackendConfig) -> Result<BackendProcess, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    #[cfg(unix)]
+    let credential_transport = credential_transport::configure_child_transport(&mut command).ok();
+
     let mut child = command.spawn().map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => "backend_missing".to_string(),
         std::io::ErrorKind::PermissionDenied => "backend_permission".to_string(),
         _ => "backend_spawn_failed".to_string(),
     })?;
+    #[cfg(unix)]
+    if let Some(transport) = credential_transport {
+        credential_transport::spawn_backend_credential_transport(
+            transport,
+            child.id(),
+            config.profile,
+        );
+    }
     let stdout = child
         .stdout
         .take()

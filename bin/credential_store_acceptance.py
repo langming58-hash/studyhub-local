@@ -26,6 +26,8 @@ def main() -> int:
     credential_store = (ROOT / "src-tauri" / "src" / "credential_store.rs").read_text(encoding="utf-8")
     credential_handoff_path = ROOT / "src-tauri" / "src" / "credential_handoff.rs"
     credential_handoff = credential_handoff_path.read_text(encoding="utf-8")
+    credential_transport_path = ROOT / "src-tauri" / "src" / "credential_transport.rs"
+    credential_transport = credential_transport_path.read_text(encoding="utf-8")
     capability = json.loads((ROOT / "src-tauri" / "capabilities" / "default.json").read_text(encoding="utf-8"))
     cargo = (ROOT / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
     desktop_arch = (ROOT / "docs" / "DESKTOP_ARCHITECTURE.md").read_text(encoding="utf-8")
@@ -39,7 +41,9 @@ def main() -> int:
         "keychain",
     )
     public_api_leak = any(f'"/api/{term}' in server or f"'/api/{term}" in server for term in public_route_terms)
-    mcp_leak = any(f'"{term}_' in server or f"'{term}_" in server for term in public_route_terms)
+    mcp_section = re.search(r"MCP_TOOLS\s*:\s*dict\[.*?(?=\ndef mcp_tool_descriptors)", server, re.S)
+    mcp_text = mcp_section.group(0) if mcp_section else ""
+    mcp_leak = any(f'"{term}_' in mcp_text or f"'{term}_" in mcp_text for term in public_route_terms)
     capability_text = json.dumps(capability).lower()
 
     results = {
@@ -107,6 +111,28 @@ def main() -> int:
         in credential_store
         and "STUDYHUB_RUN_DEV_KEYCHAIN_SMOKE" in credential_store
         and "RuntimeProfile::Development" in credential_store,
+        "live_transport_module_present": credential_transport_path.exists()
+        and "UnixStream::pair" in credential_transport
+        and "STUDYHUB_CREDENTIAL_TRANSPORT_FD" in credential_transport,
+        "live_transport_uses_random_session_authority": "new_os_random" in credential_transport
+        and "/dev/urandom" in credential_transport
+        and "LiveSessionAuthority(<redacted>)" in credential_transport,
+        "live_transport_has_strict_frames": "MAX_FRAME_BYTES" in credential_transport
+        and "OversizedFrame" in credential_transport
+        and "TruncatedFrame" in credential_transport,
+        "live_transport_not_registered_as_tauri_command": "credential_transport" not in re.search(
+            r"generate_handler!\s*\[(?P<body>[^\]]*)\]", lib, re.S
+        ).group("body").lower(),
+        "launch_env_has_no_secret_values": "CANVAS" not in lib
+        and "TOKEN" not in lib
+        and "OPENAI_API_KEY" in lib
+        and "env_remove(inherited)" in lib,
+        "python_internal_client_present": "class CredentialClient" in server
+        and "with_canvas_default_credential" in server
+        and "CredentialClient.from_environment" in server,
+        "python_client_not_http_exposed": "/api/credentials" not in server
+        and "/api/keychain" not in server
+        and "/api/canvas-token" not in server,
     }
 
     failed = [name for name, passed in results.items() if not passed]
