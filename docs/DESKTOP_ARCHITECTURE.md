@@ -220,8 +220,10 @@ Trust boundary:
 - no localhost HTTP, MCP, diagnostics, browser storage, SQLite, logs, or
   frontend bundle can return raw credentials
 - a reviewed internal credential-handoff broker now models typed,
-  child-authorized, restart-invalidated access for future backend work, but it
-  is not wired to a live Python IPC path
+  child-authorized, restart-invalidated access for backend work
+- live Unix/macOS private parent/backend credential transport is implemented
+  through an inherited anonymous Unix stream and an internal Python
+  `CredentialClient`
 
 ## Secure Credential Handoff Boundary
 
@@ -239,9 +241,7 @@ API:
 
 This boundary is covered with fake credential stores and synthetic child
 participants. It is not a Canvas connector, OAuth flow, account-management UI,
-or live Python IPC implementation. A future Canvas PR must still define and
-review the concrete parent/child handoff transport before any real Canvas
-request uses a credential.
+or Canvas authentication implementation.
 
 The desktop shell also implements the first live private parent/backend
 credential transport on Unix/macOS. For each backend launch, the Tauri parent
@@ -333,8 +333,8 @@ Proven with synthetic data on the current Apple Silicon Mac:
 2. The public build is Apple Silicon only, unsigned, and not notarized. A DMG
    prerelease exists, but Developer ID signing and Apple notarization are not on
    `main`.
-3. Canvas authentication, token enrollment, OAuth, account management, Python
-   backend credential handoff, and OpenAI key migration are not implemented.
+3. Canvas authentication, token enrollment, OAuth, account management, real
+   Canvas API requests, and OpenAI key migration are not implemented.
 4. Poppler and LibreOffice are not bundled; their missing states are graceful.
 5. Installed-tool detection from a separate Finder-launched clean Mac remains
    to be confirmed.
