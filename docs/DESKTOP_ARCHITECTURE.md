@@ -219,12 +219,41 @@ Trust boundary:
 - raw credential retrieval is not exposed as a Tauri command
 - no localhost HTTP, MCP, diagnostics, browser storage, SQLite, logs, or
   frontend bundle can return raw credentials
-- future Python/backend handoff requires a separate reviewed design
+- a reviewed internal credential-handoff broker now models typed,
+  child-authorized, restart-invalidated access for future backend work, but it
+  is not wired to a live Python IPC path
+
+## Secure Credential Handoff Boundary
+
+StudyHub now has an internal Rust handoff boundary for future trusted backend
+use of stored credentials. It is intentionally narrower than a general secret
+API:
+
+- only typed StudyHub credential slots are addressable
+- an explicitly authorized backend child identity is required
+- backend restart creates a new authorization and invalidates stale handles
+- malformed or unsupported requests are rejected before credential-store access
+- failures are categorized without raw OS error or secret material
+- WebView commands, localhost HTTP routes, MCP tools, diagnostics, logs,
+  SQLite, and browser storage still cannot retrieve raw credentials
+
+This boundary is covered with fake credential stores and synthetic child
+participants. It is not a Canvas connector, OAuth flow, account-management UI,
+or live Python IPC implementation. A future Canvas PR must still define and
+review the concrete parent/child handoff transport before any real Canvas
+request uses a credential.
 
 Unsigned/ad-hoc package limitation: real macOS Keychain behavior across app
 renames, executable changes, updates, and user approval prompts has not been
-claimed by CI. A Development-only manual Keychain smoke test should be added
-before any feature relies on OS-backed credentials in production workflows.
+claimed by CI. A Development-only ignored smoke test exists for manual
+validation of the Development namespace:
+
+```bash
+STUDYHUB_RUN_DEV_KEYCHAIN_SMOKE=1 cargo test --manifest-path src-tauri/Cargo.toml development_keychain_smoke_test_opt_in -- --ignored
+```
+
+That test must not be run against Production credentials and is not part of
+normal CI.
 
 ## AI Boundary
 

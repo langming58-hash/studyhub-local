@@ -11,12 +11,14 @@ use crate::RuntimeProfile;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(crate) enum CredentialSlot {
     CanvasDefault,
+    DevelopmentSmokeTest,
 }
 
 impl CredentialSlot {
     fn account_name(self) -> &'static str {
         match self {
             Self::CanvasDefault => "canvas.default",
+            Self::DevelopmentSmokeTest => "development.smoke-test",
         }
     }
 }
@@ -41,7 +43,7 @@ pub(crate) struct CredentialStoreError {
 }
 
 impl CredentialStoreError {
-    fn new(failure: CredentialStoreFailure) -> Self {
+    pub(crate) fn new(failure: CredentialStoreFailure) -> Self {
         Self { failure }
     }
 
@@ -95,9 +97,16 @@ impl fmt::Debug for SecretValue {
 }
 
 pub(crate) trait CredentialStore {
-    fn store_replace(&self, slot: CredentialSlot, secret: &SecretValue) -> CredentialStoreResult<()>;
+    fn store_replace(
+        &self,
+        slot: CredentialSlot,
+        secret: &SecretValue,
+    ) -> CredentialStoreResult<()>;
     fn exists(&self, slot: CredentialSlot) -> CredentialStoreResult<CredentialAvailability>;
-    fn get_for_trusted_native_use(&self, slot: CredentialSlot) -> CredentialStoreResult<SecretValue>;
+    fn get_for_trusted_native_use(
+        &self,
+        slot: CredentialSlot,
+    ) -> CredentialStoreResult<SecretValue>;
     fn delete(&self, slot: CredentialSlot) -> CredentialStoreResult<()>;
 }
 
@@ -115,7 +124,11 @@ pub(crate) enum CredentialStoreBackend {
 }
 
 impl CredentialStore for CredentialStoreBackend {
-    fn store_replace(&self, slot: CredentialSlot, secret: &SecretValue) -> CredentialStoreResult<()> {
+    fn store_replace(
+        &self,
+        slot: CredentialSlot,
+        secret: &SecretValue,
+    ) -> CredentialStoreResult<()> {
         match self {
             Self::Native(store) => store.store_replace(slot, secret),
             Self::DemoDenied(store) => store.store_replace(slot, secret),
@@ -129,7 +142,10 @@ impl CredentialStore for CredentialStoreBackend {
         }
     }
 
-    fn get_for_trusted_native_use(&self, slot: CredentialSlot) -> CredentialStoreResult<SecretValue> {
+    fn get_for_trusted_native_use(
+        &self,
+        slot: CredentialSlot,
+    ) -> CredentialStoreResult<SecretValue> {
         match self {
             Self::Native(store) => store.get_for_trusted_native_use(slot),
             Self::DemoDenied(store) => store.get_for_trusted_native_use(slot),
@@ -146,9 +162,9 @@ impl CredentialStore for CredentialStoreBackend {
 
 pub(crate) fn credential_store_for_profile(profile: RuntimeProfile) -> CredentialStoreBackend {
     match profile {
-        RuntimeProfile::Production | RuntimeProfile::Development => {
-            CredentialStoreBackend::Native(NativeCredentialStore::new(namespace_for_profile(profile)))
-        }
+        RuntimeProfile::Production | RuntimeProfile::Development => CredentialStoreBackend::Native(
+            NativeCredentialStore::new(namespace_for_profile(profile)),
+        ),
         RuntimeProfile::DemoTest => CredentialStoreBackend::DemoDenied(DemoDeniedCredentialStore),
     }
 }
@@ -168,7 +184,11 @@ impl NativeCredentialStore {
 }
 
 impl CredentialStore for NativeCredentialStore {
-    fn store_replace(&self, slot: CredentialSlot, secret: &SecretValue) -> CredentialStoreResult<()> {
+    fn store_replace(
+        &self,
+        slot: CredentialSlot,
+        secret: &SecretValue,
+    ) -> CredentialStoreResult<()> {
         self.entry(slot)?
             .set_password(secret.expose_for_trusted_native_use())
             .map_err(map_keyring_error)
@@ -182,7 +202,10 @@ impl CredentialStore for NativeCredentialStore {
         }
     }
 
-    fn get_for_trusted_native_use(&self, slot: CredentialSlot) -> CredentialStoreResult<SecretValue> {
+    fn get_for_trusted_native_use(
+        &self,
+        slot: CredentialSlot,
+    ) -> CredentialStoreResult<SecretValue> {
         self.entry(slot)?
             .get_password()
             .map(SecretValue::new)
@@ -268,7 +291,11 @@ impl MemoryCredentialStore {
 
 #[cfg(test)]
 impl CredentialStore for MemoryCredentialStore {
-    fn store_replace(&self, slot: CredentialSlot, secret: &SecretValue) -> CredentialStoreResult<()> {
+    fn store_replace(
+        &self,
+        slot: CredentialSlot,
+        secret: &SecretValue,
+    ) -> CredentialStoreResult<()> {
         if self.failing_slots.lock().expect("test lock").remove(&slot) {
             return Err(CredentialStoreError::new(
                 CredentialStoreFailure::OperationFailed,
@@ -295,7 +322,10 @@ impl CredentialStore for MemoryCredentialStore {
         Ok(availability)
     }
 
-    fn get_for_trusted_native_use(&self, slot: CredentialSlot) -> CredentialStoreResult<SecretValue> {
+    fn get_for_trusted_native_use(
+        &self,
+        slot: CredentialSlot,
+    ) -> CredentialStoreResult<SecretValue> {
         self.values
             .lock()
             .expect("test lock")
@@ -380,7 +410,10 @@ mod tests {
         store.delete(SLOT).expect("synthetic delete");
         assert_eq!(store.exists(SLOT), Ok(CredentialAvailability::Missing));
         assert_eq!(
-            store.get_for_trusted_native_use(SLOT).unwrap_err().failure(),
+            store
+                .get_for_trusted_native_use(SLOT)
+                .unwrap_err()
+                .failure(),
             CredentialStoreFailure::Missing
         );
     }
@@ -417,11 +450,15 @@ mod tests {
             CredentialStoreFailure::BackendUnavailable,
         );
         assert_sanitized(
-            map_keyring_error(keyring::Error::NoStorageAccess(platform_error(SYNTHETIC_ERROR))),
+            map_keyring_error(keyring::Error::NoStorageAccess(platform_error(
+                SYNTHETIC_ERROR,
+            ))),
             CredentialStoreFailure::AccessDenied,
         );
         assert_sanitized(
-            map_keyring_error(keyring::Error::PlatformFailure(platform_error(SYNTHETIC_ERROR))),
+            map_keyring_error(keyring::Error::PlatformFailure(platform_error(
+                SYNTHETIC_ERROR,
+            ))),
             CredentialStoreFailure::OperationFailed,
         );
         assert_sanitized(
@@ -443,7 +480,10 @@ mod tests {
         let classified = map_keyring_error(keyring::Error::PlatformFailure(platform_error(
             SYNTHETIC_ERROR,
         )));
-        assert_eq!(classified.failure(), CredentialStoreFailure::OperationFailed);
+        assert_eq!(
+            classified.failure(),
+            CredentialStoreFailure::OperationFailed
+        );
         assert_eq!(
             store
                 .get_for_trusted_native_use(SLOT)
@@ -490,5 +530,51 @@ mod tests {
         let error = CredentialStoreError::new(CredentialStoreFailure::OperationFailed);
         assert!(!format!("{error:?}").contains(SYNTHETIC_SECRET));
         assert!(!error.to_string().contains(SYNTHETIC_SECRET));
+    }
+
+    #[test]
+    #[ignore = "development-only opt-in smoke test; touches the Development Keychain namespace"]
+    fn development_keychain_smoke_test_opt_in() {
+        if std::env::var("STUDYHUB_RUN_DEV_KEYCHAIN_SMOKE").as_deref() != Ok("1") {
+            return;
+        }
+
+        let store = NativeCredentialStore::new(namespace_for_profile(RuntimeProfile::Development));
+        let slot = CredentialSlot::DevelopmentSmokeTest;
+        let first = SecretValue::new(format!(
+            "synthetic-development-keychain-smoke-{}-first",
+            std::process::id()
+        ));
+        let second = SecretValue::new(format!(
+            "synthetic-development-keychain-smoke-{}-second",
+            std::process::id()
+        ));
+
+        let _ = store.delete(slot);
+        store
+            .store_replace(slot, &first)
+            .expect("store synthetic credential");
+        assert_eq!(store.exists(slot), Ok(CredentialAvailability::Configured));
+        assert_eq!(
+            store
+                .get_for_trusted_native_use(slot)
+                .expect("retrieve synthetic credential")
+                .expose_for_trusted_native_use(),
+            first.expose_for_trusted_native_use()
+        );
+
+        store
+            .store_replace(slot, &second)
+            .expect("replace synthetic credential");
+        assert_eq!(
+            store
+                .get_for_trusted_native_use(slot)
+                .expect("retrieve replacement credential")
+                .expose_for_trusted_native_use(),
+            second.expose_for_trusted_native_use()
+        );
+
+        store.delete(slot).expect("delete synthetic credential");
+        assert_eq!(store.exists(slot), Ok(CredentialAvailability::Missing));
     }
 }
