@@ -220,8 +220,10 @@ Trust boundary:
 - no localhost HTTP, MCP, diagnostics, browser storage, SQLite, logs, or
   frontend bundle can return raw credentials
 - a reviewed internal credential-handoff broker now models typed,
-  child-authorized, restart-invalidated access for future backend work, but it
-  is not wired to a live Python IPC path
+  child-authorized, restart-invalidated access for backend work
+- live Unix/macOS private parent/backend credential transport is implemented
+  through an inherited anonymous Unix stream and an internal Python
+  `CredentialClient`
 
 ## Secure Credential Handoff Boundary
 
@@ -239,9 +241,29 @@ API:
 
 This boundary is covered with fake credential stores and synthetic child
 participants. It is not a Canvas connector, OAuth flow, account-management UI,
-or live Python IPC implementation. A future Canvas PR must still define and
-review the concrete parent/child handoff transport before any real Canvas
-request uses a credential.
+or Canvas authentication implementation.
+
+The desktop shell also implements the first live private parent/backend
+credential transport on Unix/macOS. For each backend launch, the Tauri parent
+creates an anonymous bidirectional Unix stream pair, keeps one endpoint, and
+passes only the other endpoint to the exact spawned backend child as an
+inherited file descriptor. The environment contains only non-secret bootstrap
+metadata: the descriptor number, protocol version, and transport kind. No
+credential, bearer capability, session secret, socket path, command-line
+argument, localhost route, or temporary file is used for the handoff.
+
+The parent creates a fresh OS-random session authority for every backend
+process and validates a minimal versioned protocol before satisfying the only
+implemented operation: `canvas_default` credential use for the trusted backend
+action. Backend restart or retry creates a new channel and session; stale
+sessions fail closed, and PID reuse alone cannot authorize a request. The
+Python backend has an internal `CredentialClient` for this private channel, but
+it is not an HTTP handler and does not expose credentials to WebView code,
+MCP, diagnostics, SQLite, logs, or browser storage.
+
+Current platform scope: the live transport is implemented for Unix/macOS.
+Windows remains not implemented for this boundary until a separately reviewed
+safe equivalent is selected.
 
 Unsigned/ad-hoc package limitation: real macOS Keychain behavior across app
 renames, executable changes, updates, and user approval prompts has not been
@@ -311,8 +333,8 @@ Proven with synthetic data on the current Apple Silicon Mac:
 2. The public build is Apple Silicon only, unsigned, and not notarized. A DMG
    prerelease exists, but Developer ID signing and Apple notarization are not on
    `main`.
-3. Canvas authentication, token enrollment, OAuth, account management, Python
-   backend credential handoff, and OpenAI key migration are not implemented.
+3. Canvas authentication, token enrollment, OAuth, account management, real
+   Canvas API requests, and OpenAI key migration are not implemented.
 4. Poppler and LibreOffice are not bundled; their missing states are graceful.
 5. Installed-tool detection from a separate Finder-launched clean Mac remains
    to be confirmed.

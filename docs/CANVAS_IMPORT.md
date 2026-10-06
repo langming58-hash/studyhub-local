@@ -14,11 +14,12 @@ an LMS connection.
 - Do not submit assignments, quizzes, or other coursework.
 - Authentication and token enrollment remain not implemented. The native
   CredentialStore foundation provides a future storage boundary, but Canvas
-  credential capture, account management, OAuth, revocation UX, and live
-  Python/backend handoff still require explicit follow-up designs. The current
-  internal handoff broker proves typed slot checks, child authorization,
-  restart invalidation, and sanitized failure behavior with synthetic
-  participants; it is not a Canvas login or request implementation.
+  credential capture, account management, OAuth, and revocation UX still
+  require explicit follow-up designs. The current internal handoff broker and
+  private Unix/macOS parent/backend transport prove typed slot checks, child
+  authorization, restart invalidation, sanitized failure behavior, and one
+  narrow backend `canvas_default` credential operation; they are not a Canvas
+  login or request implementation.
 - Existing open-source Canvas clients may be audited for endpoint coverage,
   authentication strategy, discovery, pagination, and workflow behavior.
 - Incompatible, restrictive, non-commercial, or unlicensed implementations
@@ -83,8 +84,7 @@ Before any connector implementation:
 
 1. audit official API capabilities and current authentication requirements
 2. define Canvas credential enrollment, account selection, revocation, and
-   concrete secure backend transport on top of the native CredentialStore and
-   internal handoff foundations
+   use of the existing private backend transport for real Canvas requests
 3. define Source, Blob, Material, MaterialVersion, and CourseOffering mapping
 4. define SyncPlan and conflict semantics
 5. select or reject a background-job foundation through a separate decision

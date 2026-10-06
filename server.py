@@ -189,6 +189,11 @@ MAX_JSON_BODY_SIZE = int(os.environ.get("MAX_JSON_BODY_SIZE", str(512 * 1024)))
 MAX_MCP_BODY_SIZE = int(os.environ.get("MAX_MCP_BODY_SIZE", str(512 * 1024)))
 MAX_UPLOAD_FILE_SIZE = int(os.environ.get("MAX_UPLOAD_FILE_SIZE", str(50 * 1024 * 1024)))
 MAX_UPLOAD_REQUEST_SIZE = int(os.environ.get("MAX_UPLOAD_REQUEST_SIZE", str(60 * 1024 * 1024)))
+CREDENTIAL_TRANSPORT_FD_ENV = "STUDYHUB_CREDENTIAL_TRANSPORT_FD"
+CREDENTIAL_TRANSPORT_PROTOCOL_ENV = "STUDYHUB_CREDENTIAL_PROTOCOL"
+CREDENTIAL_TRANSPORT_KIND_ENV = "STUDYHUB_CREDENTIAL_TRANSPORT"
+CREDENTIAL_PROTOCOL = "studyhub-credential/1"
+CREDENTIAL_MAX_FRAME_BYTES = 8192
 CHUNK_TARGET_CHARS = 3200
 QUESTION_RE = re.compile(r"^\s*(?:Q(?:uestion)?\.?\s*)?(?P<num>\d{1,3}|[A-Z])[\).\:]\s+(?P<body>.{12,})", re.IGNORECASE)
 SOLUTION_RE = re.compile(r"\b(solution|solutions|answer|answers|worked|key)\b", re.IGNORECASE)
@@ -236,6 +241,112 @@ LOCAL_SEARCH_STOPWORDS = {
     "why",
     "with",
 }
+
+
+class CredentialClientError(RuntimeError):
+    pass
+
+
+class CredentialClient:
+    """Internal client for the private parent/child credential transport."""
+
+    def __init__(self, sock: socket.socket, session: str):
+        self._sock = sock
+        self._session = session
+        self._lock = threading.Lock()
+
+    @classmethod
+    def from_environment(cls) -> "CredentialClient | None":
+        fd_raw = os.environ.pop(CREDENTIAL_TRANSPORT_FD_ENV, "").strip()
+        protocol = os.environ.pop(CREDENTIAL_TRANSPORT_PROTOCOL_ENV, "").strip()
+        transport = os.environ.pop(CREDENTIAL_TRANSPORT_KIND_ENV, "").strip()
+        if not fd_raw:
+            return None
+        if protocol != "1" or transport != "unix-fd":
+            raise CredentialClientError("credential_transport_unavailable")
+        try:
+            fd = int(fd_raw)
+        except ValueError as exc:
+            raise CredentialClientError("credential_transport_unavailable") from exc
+        try:
+            sock = socket.socket(fileno=fd)
+            sock.set_inheritable(False)
+            greeting = cls._read_frame(sock)
+            session = cls._parse_greeting(greeting)
+            return cls(sock, session)
+        except OSError as exc:
+            raise CredentialClientError("credential_transport_unavailable") from exc
+
+    @staticmethod
+    def _read_exact(sock: socket.socket, size: int) -> bytes:
+        chunks: list[bytes] = []
+        remaining = size
+        while remaining:
+            chunk = sock.recv(remaining)
+            if not chunk:
+                raise CredentialClientError("credential_transport_closed")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    @classmethod
+    def _read_frame(cls, sock: socket.socket) -> str:
+        length = int.from_bytes(cls._read_exact(sock, 4), "big")
+        if length > CREDENTIAL_MAX_FRAME_BYTES:
+            raise CredentialClientError("credential_response_oversized")
+        try:
+            return cls._read_exact(sock, length).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise CredentialClientError("credential_response_malformed") from exc
+
+    @staticmethod
+    def _write_frame(sock: socket.socket, payload: str) -> None:
+        data = payload.encode("utf-8")
+        if len(data) > CREDENTIAL_MAX_FRAME_BYTES:
+            raise CredentialClientError("credential_request_oversized")
+        sock.sendall(len(data).to_bytes(4, "big") + data)
+
+    @staticmethod
+    def _parse_greeting(payload: str) -> str:
+        parts = payload.split()
+        if len(parts) != 2 or parts[0] != CREDENTIAL_PROTOCOL or not parts[1].startswith("session="):
+            raise CredentialClientError("credential_response_malformed")
+        session = parts[1].removeprefix("session=")
+        if not re.fullmatch(r"[0-9a-f]{64}", session):
+            raise CredentialClientError("credential_response_malformed")
+        return session
+
+    @staticmethod
+    def _parse_response(payload: str) -> str:
+        parts = payload.split()
+        if len(parts) < 3 or parts[0] != CREDENTIAL_PROTOCOL:
+            raise CredentialClientError("credential_response_malformed")
+        if parts[1] == "err":
+            code = next((part.removeprefix("code=") for part in parts[2:] if part.startswith("code=")), "operation_failed")
+            raise CredentialClientError(code)
+        if len(parts) != 3 or parts[1] != "ok" or not parts[2].startswith("credential_hex="):
+            raise CredentialClientError("credential_response_malformed")
+        encoded = parts[2].removeprefix("credential_hex=")
+        try:
+            return bytes.fromhex(encoded).decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise CredentialClientError("credential_response_malformed") from exc
+
+    def with_canvas_default_credential(self, action: Callable[[str], Any]) -> Any:
+        with self._lock:
+            self._write_frame(self._sock, f"{CREDENTIAL_PROTOCOL} use canvas_default session={self._session}")
+            credential = self._parse_response(self._read_frame(self._sock))
+        return action(credential)
+
+
+_CREDENTIAL_CLIENT: CredentialClient | None = None
+
+
+def initialize_credential_client() -> CredentialClient | None:
+    global _CREDENTIAL_CLIENT
+    if _CREDENTIAL_CLIENT is None:
+        _CREDENTIAL_CLIENT = CredentialClient.from_environment()
+    return _CREDENTIAL_CLIENT
 
 ACADEMIC_EXTS = {
     ".pdf",
@@ -6023,6 +6134,10 @@ def find_free_port(start_port: int) -> int:
 
 
 def serve(port: int, open_browser: bool = False, scan_first: bool = True) -> None:
+    try:
+        initialize_credential_client()
+    except CredentialClientError:
+        pass
     ensure_dirs()
     bind_host = validate_loopback_bind_host(DEFAULT_HOST)
     if scan_first:

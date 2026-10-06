@@ -30,7 +30,16 @@ MCP is read-only. It may list/search/fetch indexed study-library content by safe
 
 ## Credential Boundary
 
-Native credentials are not exposed through frontend JavaScript, localhost HTTP, MCP, diagnostics, browser storage, SQLite, logs, or Tauri raw-secret commands. The internal credential handoff boundary is typed, child-authorized, restart-invalidated, and currently tested with synthetic participants only; live Canvas authentication and Python backend credential transport are not implemented.
+Native credentials are not exposed through frontend JavaScript, localhost HTTP, MCP, diagnostics, browser storage, SQLite, logs, or Tauri raw-secret commands. The internal credential handoff boundary is typed, child-authorized, restart-invalidated, and covered with synthetic participants; live Canvas authentication is not implemented.
+
+The macOS/Unix desktop shell additionally creates a private inherited stream
+between the Tauri parent and the exact spawned Python backend child. Only
+non-secret bootstrap metadata is placed in the child environment. Credentials
+are not passed through argv, environment variables, localhost TCP, socket
+paths, temporary files, logs, diagnostics, SQLite, WebView JavaScript, or MCP.
+The implemented protocol supports only a narrow internal `canvas_default`
+credential operation; Canvas authentication and Canvas API calls remain not
+implemented.
 
 ## Academic Materials
 

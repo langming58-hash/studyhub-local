@@ -112,8 +112,10 @@ See [Preview Matrix](design/PREVIEW_MATRIX.md) for current format behavior.
   Development, and Demo/Test denial. It has no frontend, localhost HTTP, MCP,
   diagnostics, SQLite, browser-storage, or Tauri raw-secret retrieval surface.
   Its internal handoff broker models typed child-authorized access for future
-  backend work and invalidates stale child authorizations after restart, but no
-  live Python credential handoff or Canvas connector is implemented.
+  backend work and invalidates stale child authorizations after restart. The
+  desktop shell now provides a Unix/macOS private inherited stream transport to
+  the exact spawned Python backend child for one narrow internal
+  `canvas_default` credential operation. No Canvas connector is implemented.
 - OpenAI is optional, server-side, and scoped to indexed source material.
 - Practice questions come from indexed teacher-provided material only. The app
   must not invent practice questions.
