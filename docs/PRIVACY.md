@@ -112,6 +112,11 @@ The implemented native CredentialStore boundary is trusted-native-only: it can
 store, replace, check, retrieve for internal native use, and revoke typed
 credential slots. No frontend, localhost HTTP, MCP, diagnostics, browser
 storage, SQLite, or public API may retrieve raw credentials.
+The internal credential-handoff broker keeps that boundary narrow for future
+backend work: only typed slots and an authorized child identity can reach the
+native retrieval path, stale child authorizations are invalidated on restart,
+and malformed or unsupported requests fail before credential-store access. The
+live Python backend does not yet receive credentials through this mechanism.
 
 ## Public Data Boundary
 

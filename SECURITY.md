@@ -28,6 +28,10 @@ Mutating HTTP routes require a per-process CSRF token and exact same-origin head
 
 MCP is read-only. It may list/search/fetch indexed study-library content by safe file IDs, but must not expose local absolute paths, local cache paths, database paths, OpenAI provider file IDs, vector-store IDs, write tools, delete tools, shell execution, app-opening actions, or indexing/upload actions.
 
+## Credential Boundary
+
+Native credentials are not exposed through frontend JavaScript, localhost HTTP, MCP, diagnostics, browser storage, SQLite, logs, or Tauri raw-secret commands. The internal credential handoff boundary is typed, child-authorized, restart-invalidated, and currently tested with synthetic participants only; live Canvas authentication and Python backend credential transport are not implemented.
+
 ## Academic Materials
 
 Do not upload private or copyrighted course content to issues, pull requests, tests, or demo fixtures.

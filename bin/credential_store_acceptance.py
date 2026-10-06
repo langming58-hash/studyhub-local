@@ -24,6 +24,8 @@ def contains_raw_secret_command(rust: str) -> bool:
 def main() -> int:
     lib = (ROOT / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
     credential_store = (ROOT / "src-tauri" / "src" / "credential_store.rs").read_text(encoding="utf-8")
+    credential_handoff_path = ROOT / "src-tauri" / "src" / "credential_handoff.rs"
+    credential_handoff = credential_handoff_path.read_text(encoding="utf-8")
     capability = json.loads((ROOT / "src-tauri" / "capabilities" / "default.json").read_text(encoding="utf-8"))
     cargo = (ROOT / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
     desktop_arch = (ROOT / "docs" / "DESKTOP_ARCHITECTURE.md").read_text(encoding="utf-8")
@@ -79,6 +81,32 @@ def main() -> int:
         "docs_trust_boundary": all(
             term in privacy for term in ("No frontend", "localhost HTTP", "MCP", "browser", "SQLite")
         ),
+        "handoff_module_present": credential_handoff_path.exists()
+        and "CredentialHandoffBroker" in credential_handoff
+        and "BackendChildAuthorization" in credential_handoff,
+        "handoff_uses_typed_canvas_slot_only": "HandoffRequest::UseCanvasDefault" in credential_handoff
+        and "CredentialSlot::CanvasDefault" in credential_handoff
+        and "UnsupportedSlot" in credential_handoff,
+        "handoff_rejects_stale_and_unauthorized_children": all(
+            token in credential_handoff
+            for token in (
+                "UnauthorizedChild",
+                "StaleAuthorization",
+                "restart_backend_child",
+                "verify_authorization",
+            )
+        ),
+        "handoff_errors_are_sanitized": "impl fmt::Debug for HandoffError" in credential_handoff
+        and "credential_handoff_operation_failed" in credential_handoff
+        and "SecretValue(<redacted>)" in credential_store,
+        "handoff_not_registered_as_tauri_command": "credential_handoff" not in re.search(
+            r"generate_handler!\s*\[(?P<body>[^\]]*)\]", lib, re.S
+        ).group("body").lower(),
+        "development_keychain_smoke_is_opt_in": "development_keychain_smoke_test_opt_in" in credential_store
+        and '#[ignore = "development-only opt-in smoke test; touches the Development Keychain namespace"]'
+        in credential_store
+        and "STUDYHUB_RUN_DEV_KEYCHAIN_SMOKE" in credential_store
+        and "RuntimeProfile::Development" in credential_store,
     }
 
     failed = [name for name, passed in results.items() if not passed]

@@ -111,6 +111,9 @@ See [Preview Matrix](design/PREVIEW_MATRIX.md) for current format behavior.
   runtime-profile namespaces, native OS credential storage for Production and
   Development, and Demo/Test denial. It has no frontend, localhost HTTP, MCP,
   diagnostics, SQLite, browser-storage, or Tauri raw-secret retrieval surface.
+  Its internal handoff broker models typed child-authorized access for future
+  backend work and invalidates stale child authorizations after restart, but no
+  live Python credential handoff or Canvas connector is implemented.
 - OpenAI is optional, server-side, and scoped to indexed source material.
 - Practice questions come from indexed teacher-provided material only. The app
   must not invent practice questions.
