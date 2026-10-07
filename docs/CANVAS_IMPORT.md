@@ -1,6 +1,6 @@
 # Canvas Import
 
-Status: **AUTHENTICATED CONNECTOR / DISCOVERY FOUNDATION IMPLEMENTED;
+Status: **AUTHENTICATED CONNECTOR / COURSE SELECTION FOUNDATION IMPLEMENTED;
 PRODUCTION AUTH ENROLLMENT NOT IMPLEMENTED; SYNC NOT IMPLEMENTED**.
 
 StudyHub Local does not currently include a public universal Canvas downloader
@@ -57,10 +57,13 @@ StudyHub owns SyncPlan, provenance, change detection, user overlays,
 normalization, conflict behavior, and ingestion.
 
 The generic local ingestion boundary prerequisite is implemented for current
-filesystem scanner/import inputs. Canvas authenticated identity validation and
-current-user course discovery are implemented as read-only discovery. Sync
-planning, remote change handling, Canvas-specific provenance mapping, course
-selection persistence, and Canvas content ingestion remain not implemented.
+filesystem scanner/import inputs. Canvas authenticated identity validation,
+current-user course discovery, persistent CourseOffering remote identity, and
+user-owned CourseOffering selection are implemented as local read-only
+selection foundations. Sync planning, remote change handling beyond safe
+metadata refresh, Canvas-specific content provenance mapping, local
+Course/CourseOffering mapping, and Canvas content ingestion remain not
+implemented.
 
 ## Implemented Discovery Boundary
 
@@ -75,9 +78,22 @@ headers, never query-string or form access tokens. Pagination follows Canvas
 `Link` headers by `rel="next"`, treats next URLs as opaque, rejects
 cross-origin next links, and enforces page/item limits.
 
-Discovery results are returned as normalized metadata only. They are not
-written into `courses`, `sources`, `materials`, `material_versions`, `files`,
-or `file_versions`.
+Discovery results can be used to persist last-known Canvas CourseOffering
+metadata and user-owned selection state. The browser submits only opaque remote
+course IDs and selection intent; StudyHub re-reads authoritative metadata from
+`CanvasConnector` before persisting anything. This never writes to Canvas and
+does not write into `courses`, `terms`, `sources`, `materials`,
+`material_versions`, `files`, or `file_versions`.
+
+Current selection APIs:
+
+- `POST /api/canvas/course-selection/preview`: validates requested remote IDs
+  against current discovery and returns a non-mutating plan.
+- `POST /api/canvas/course-selection/apply`: revalidates current discovery,
+  checks the preview revision, and transactionally updates local selected state.
+- `GET /api/canvas/selected-courses`: lists locally remembered selected
+  offerings with last-known metadata. This is offline remembered state, not a
+  fresh Canvas sync.
 
 ## Sync Is Not Ingestion
 
@@ -121,5 +137,6 @@ Before any Canvas sync implementation:
 7. verify no real Canvas data, credentials, or academic content enters public
    fixtures, logs, screenshots, or Git history
 
-Canvas file/material download, assignments/modules/pages sync, background sync,
-and conflict handling are not implemented by the discovery boundary.
+Canvas file/material download, assignments/modules/pages sync, local
+Course/Term mapping, remote deletion semantics, background sync, and conflict
+handling are not implemented by the course-selection foundation.

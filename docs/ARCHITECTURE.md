@@ -82,11 +82,15 @@ Phase 2 also implements the first narrow Canvas connector foundation:
 origin-bound connection records, Development-only manual token enrollment for
 local testing, authenticated current-user validation, and read-only current-user
 course discovery. Production end-user Canvas authentication is not implemented.
-Discovery results are normalized metadata only and are not persisted into the
-academic/domain model.
+Discovery results can now be persisted into an additive Canvas CourseOffering
+foundation: stable origin-bound remote identity, remote-authoritative
+last-known course metadata, and separate user-owned selected/deselected state.
+Selection preview/apply is local-only and does not mutate Canvas, download
+content, create local Course/Term rows, or ingest materials.
 
 Not implemented yet: Canvas content synchronization, Canvas file/material
-download, CourseOffering mapping, SyncPlan persistence, SourceAnchor, Evidence,
+download, local Course/CourseOffering mapping, remote Term mapping, SyncPlan
+persistence, remote deletion semantics, SourceAnchor, Evidence,
 DerivedArtifact/ProcessingRecipe, Entity Resolution, the Assessments target
 model, background jobs, and target-domain UI reads.
 
