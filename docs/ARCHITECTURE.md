@@ -78,10 +78,12 @@ and missing-file reconciliation. Extraction and indexing implementations remain
 the current Python backend implementations behind that boundary. This is
 current truth, not the final module boundary.
 
-Phase 2 also implements the first narrow Canvas connector boundary:
-origin-bound manual access-token storage, authenticated current-user
-validation, and read-only current-user course discovery. Discovery results are
-normalized metadata only and are not persisted into the academic/domain model.
+Phase 2 also implements the first narrow Canvas connector foundation:
+origin-bound connection records, Development-only manual token enrollment for
+local testing, authenticated current-user validation, and read-only current-user
+course discovery. Production end-user Canvas authentication is not implemented.
+Discovery results are normalized metadata only and are not persisted into the
+academic/domain model.
 
 Not implemented yet: Canvas content synchronization, Canvas file/material
 download, CourseOffering mapping, SyncPlan persistence, SourceAnchor, Evidence,
@@ -121,8 +123,9 @@ See [Preview Matrix](design/PREVIEW_MATRIX.md) for current format behavior.
   trusted backend work and invalidates stale child authorizations after restart. The
   desktop shell now provides a Unix/macOS private inherited stream transport to
   the exact spawned Python backend child for one narrow internal
-  `canvas_default` credential operation. The current Canvas connector uses that
-  boundary for read-only identity validation and course discovery only.
+  `canvas_default` credential operation. The current Canvas connector can use
+  that boundary for read-only identity validation and course discovery only when
+  an approved mechanism has stored a valid connection record.
 - OpenAI is optional, server-side, and scoped to indexed source material.
 - Practice questions come from indexed teacher-provided material only. The app
   must not invent practice questions.

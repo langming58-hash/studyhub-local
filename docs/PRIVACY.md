@@ -123,12 +123,13 @@ variables, command-line arguments, disk files, SQLite, logs, diagnostics,
 WebView JavaScript, localhost HTTP, or MCP.
 
 The implemented Canvas discovery boundary stores a versioned connection record
-behind that slot: normalized HTTPS Canvas origin plus user-provided access
-token. The frontend may configure or remove the connection through narrow
-write/status commands, but no frontend, HTTP route, MCP tool, diagnostic, log,
-or SQLite row may read the raw token. The backend uses the record only for
-read-only identity validation and current-user course discovery against the
-bound origin.
+behind that slot: normalized HTTPS Canvas origin plus access token. The
+Development profile has a narrow manual-token configuration command for local
+testing, while Production rejects manual-token enrollment before touching
+credential storage. Status/remove commands remain non-secret management
+operations. No frontend, HTTP route, MCP tool, diagnostic, log, or SQLite row
+may read the raw token. The backend uses the record only for read-only identity
+validation and current-user course discovery against the bound origin.
 
 ## Public Data Boundary
 

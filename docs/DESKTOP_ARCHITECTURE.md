@@ -264,9 +264,11 @@ MCP, diagnostics, SQLite, logs, or browser storage.
 The first Canvas use of this boundary is implemented for authenticated
 current-user validation and read-only course discovery. The stored value is a
 versioned Canvas connection record containing a normalized HTTPS Canvas origin
-and access token. Request input cannot override that bound origin, pagination
-and redirects are same-origin guarded, and discovery results remain metadata
-only rather than StudyHub academic-domain rows.
+and access token. Manual token enrollment exists only for Development profile
+local testing; Production rejects that command before touching credential
+storage. Request input cannot override the bound origin, pagination and
+redirects are same-origin guarded, and discovery results remain metadata only
+rather than StudyHub academic-domain rows.
 
 Current platform scope: the live transport is implemented for Unix/macOS.
 Windows remains not implemented for this boundary until a separately reviewed
@@ -340,9 +342,10 @@ Proven with synthetic data on the current Apple Silicon Mac:
 2. The public build is Apple Silicon only, unsigned, and not notarized. A DMG
    prerelease exists, but Developer ID signing and Apple notarization are not on
    `main`.
-3. Canvas OAuth, institution Developer Key provisioning, account management,
-   Canvas content synchronization, file/material download, Windows credential
-   transport, and OpenAI key migration are not implemented.
+3. Production Canvas authentication enrollment, Canvas OAuth, institution
+   Developer Key provisioning, account management, Canvas content
+   synchronization, file/material download, Windows credential transport, and
+   OpenAI key migration are not implemented.
 4. Poppler and LibreOffice are not bundled; their missing states are graceful.
 5. Installed-tool detection from a separate Finder-launched clean Mac remains
    to be confirmed.

@@ -52,8 +52,9 @@ enhancement and is not a V1 completion blocker.
   review-item workflows without inventing teacher content
 - improve extraction and graceful capability discovery for PDFs, Office files,
   OCR, and workbook-aware reading
-- extend the implemented Canvas manual-token connection and course discovery
-  boundary into explicit course selection, mapping, and sync planning
+- extend the implemented Canvas connector/discovery foundation into compliant
+  Production authentication, explicit course selection, mapping, and sync
+  planning
 - refine search ranking, filtering, and source navigation
 - complete human keyboard and VoiceOver validation
 - provide privacy-safe backup/export for user-owned metadata and study history

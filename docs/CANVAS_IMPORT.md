@@ -1,6 +1,7 @@
 # Canvas Import
 
-Status: **AUTHENTICATED DISCOVERY IMPLEMENTED / SYNC NOT IMPLEMENTED**.
+Status: **AUTHENTICATED CONNECTOR / DISCOVERY FOUNDATION IMPLEMENTED;
+PRODUCTION AUTH ENROLLMENT NOT IMPLEMENTED; SYNC NOT IMPLEMENTED**.
 
 StudyHub Local does not currently include a public universal Canvas downloader
 or automatic Canvas synchronization. The local folder and scanner work without
@@ -12,13 +13,21 @@ an LMS connection.
 - Access only accounts and materials the user is authorized to access.
 - Do not bypass login, MFA, DRM, course permissions, or access controls.
 - Do not submit assignments, quizzes, or other coursework.
-- Manual, user-provided Canvas access-token enrollment is implemented as a
-  narrow native desktop boundary where the institution permits such tokens.
-  The token is stored with its normalized HTTPS Canvas origin in the native
-  CredentialStore and is never returned to frontend JavaScript, localhost HTTP,
-  MCP, diagnostics, SQLite, logs, or browser storage.
+- Development-only manual Canvas access-token enrollment is implemented as a
+  narrow native desktop boundary for local developer/integration testing.
+  Production manual-token enrollment is not supported and fails closed.
+- According to Canvas OAuth documentation, manual token generation is for
+  developer testing before OAuth; StudyHub must not ask general end users to
+  manually generate tokens as its production authentication flow. A
+  multi-user/distributed StudyHub workflow requires compliant OAuth or an
+  approved institution-authorized authentication mechanism.
+- When a connection record is configured by an approved mechanism, the token is
+  stored with its normalized HTTPS Canvas origin in the native CredentialStore
+  and is never returned to frontend JavaScript, localhost HTTP, MCP,
+  diagnostics, SQLite, logs, or browser storage.
 - OAuth, institution Developer Key provisioning, Canvas passwords, account
-  management, and token refresh flows are not implemented.
+  management, production connection UX, and token refresh flows are not
+  implemented.
 - The Python backend reuses the private Unix/macOS parent/backend credential
   transport for the single internal `canvas_default` connection record. Canvas
   API requests use the bound origin only; request input cannot override the

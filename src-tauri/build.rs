@@ -4,7 +4,7 @@ fn main() {
             "choose_study_folder",
             "choose_study_files",
             "canvas_connection_status",
-            "configure_canvas_connection",
+            "configure_canvas_development_connection",
             "remove_canvas_connection",
             "restart_backend",
             "retry_backend",

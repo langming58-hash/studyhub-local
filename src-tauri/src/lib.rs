@@ -22,7 +22,7 @@ mod credential_store;
 mod credential_transport;
 
 use crate::canvas_connection::{
-    canvas_connection_status_in_store, configure_canvas_connection_in_store,
+    canvas_connection_status_in_store, configure_canvas_development_connection_in_store,
     remove_canvas_connection_in_store,
 };
 use crate::credential_store::{credential_store_for_profile, CredentialAvailability};
@@ -567,15 +567,23 @@ fn canvas_connection_status(state: tauri::State<'_, BackendState>) -> Result<Str
 }
 
 #[tauri::command]
-fn configure_canvas_connection(
+fn configure_canvas_development_connection(
     state: tauri::State<'_, BackendState>,
     origin: String,
     access_token: String,
 ) -> Result<String, String> {
+    if state.config.profile != RuntimeProfile::Development {
+        return Err("canvas_manual_token_development_only".to_string());
+    }
     let store = credential_store_for_profile(state.config.profile);
-    configure_canvas_connection_in_store(&store, &origin, &access_token)
-        .map(|()| "configured".to_string())
-        .map_err(|error| error.to_string())
+    configure_canvas_development_connection_in_store(
+        state.config.profile,
+        &store,
+        &origin,
+        &access_token,
+    )
+    .map(|()| "configured".to_string())
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -595,7 +603,7 @@ pub fn run() {
             choose_study_folder,
             choose_study_files,
             canvas_connection_status,
-            configure_canvas_connection,
+            configure_canvas_development_connection,
             remove_canvas_connection,
             restart_backend,
             retry_backend,

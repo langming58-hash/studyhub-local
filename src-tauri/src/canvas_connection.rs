@@ -9,6 +9,7 @@ use crate::credential_store::{
     CredentialAvailability, CredentialSlot, CredentialStore, CredentialStoreError,
     CredentialStoreFailure, SecretValue,
 };
+use crate::RuntimeProfile;
 
 const RECORD_PREFIX: &str = "studyhub-canvas-connection-v1";
 const MAX_ORIGIN_BYTES: usize = 512;
@@ -23,10 +24,17 @@ impl CanvasAccessToken {
         let value = value.into();
         let trimmed = value.trim();
         if trimmed.is_empty() || trimmed.len() > MAX_TOKEN_BYTES {
-            return Err(CanvasConnectionError::new(CanvasConnectionFailure::InvalidToken));
+            return Err(CanvasConnectionError::new(
+                CanvasConnectionFailure::InvalidToken,
+            ));
         }
-        if trimmed.chars().any(|ch| ch.is_control() || ch.is_whitespace()) {
-            return Err(CanvasConnectionError::new(CanvasConnectionFailure::InvalidToken));
+        if trimmed
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace())
+        {
+            return Err(CanvasConnectionError::new(
+                CanvasConnectionFailure::InvalidToken,
+            ));
         }
         Ok(Self(trimmed.to_string()))
     }
@@ -48,21 +56,31 @@ pub(crate) struct CanvasOrigin(String);
 impl CanvasOrigin {
     pub(crate) fn parse(raw: &str) -> Result<Self, CanvasConnectionError> {
         if raw.to_ascii_lowercase().contains(CANVAS_TOKEN_FIELD) {
-            return Err(CanvasConnectionError::new(CanvasConnectionFailure::InvalidOrigin));
+            return Err(CanvasConnectionError::new(
+                CanvasConnectionFailure::InvalidOrigin,
+            ));
         }
-        let parsed =
-            Url::parse(raw.trim()).map_err(|_| CanvasConnectionError::new(CanvasConnectionFailure::InvalidOrigin))?;
+        let parsed = Url::parse(raw.trim())
+            .map_err(|_| CanvasConnectionError::new(CanvasConnectionFailure::InvalidOrigin))?;
         if parsed.scheme() != "https" {
-            return Err(CanvasConnectionError::new(CanvasConnectionFailure::InvalidOrigin));
+            return Err(CanvasConnectionError::new(
+                CanvasConnectionFailure::InvalidOrigin,
+            ));
         }
         if !parsed.username().is_empty() || parsed.password().is_some() {
-            return Err(CanvasConnectionError::new(CanvasConnectionFailure::InvalidOrigin));
+            return Err(CanvasConnectionError::new(
+                CanvasConnectionFailure::InvalidOrigin,
+            ));
         }
         if parsed.query().is_some() || parsed.fragment().is_some() {
-            return Err(CanvasConnectionError::new(CanvasConnectionFailure::InvalidOrigin));
+            return Err(CanvasConnectionError::new(
+                CanvasConnectionFailure::InvalidOrigin,
+            ));
         }
         if !matches!(parsed.path(), "" | "/") {
-            return Err(CanvasConnectionError::new(CanvasConnectionFailure::InvalidOrigin));
+            return Err(CanvasConnectionError::new(
+                CanvasConnectionFailure::InvalidOrigin,
+            ));
         }
         let host = parsed
             .host_str()
@@ -74,7 +92,9 @@ impl CanvasOrigin {
                 .parse::<IpAddr>()
                 .is_ok()
         {
-            return Err(CanvasConnectionError::new(CanvasConnectionFailure::InvalidOrigin));
+            return Err(CanvasConnectionError::new(
+                CanvasConnectionFailure::InvalidOrigin,
+            ));
         }
         let normalized_host = host.to_ascii_lowercase();
         let origin = if let Some(port) = parsed.port() {
@@ -83,7 +103,9 @@ impl CanvasOrigin {
             format!("https://{normalized_host}")
         };
         if origin.len() > MAX_ORIGIN_BYTES {
-            return Err(CanvasConnectionError::new(CanvasConnectionFailure::InvalidOrigin));
+            return Err(CanvasConnectionError::new(
+                CanvasConnectionFailure::InvalidOrigin,
+            ));
         }
         Ok(Self(origin))
     }
@@ -95,7 +117,10 @@ impl CanvasOrigin {
 
 impl fmt::Debug for CanvasOrigin {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_tuple("CanvasOrigin").field(&self.0).finish()
+        formatter
+            .debug_tuple("CanvasOrigin")
+            .field(&self.0)
+            .finish()
     }
 }
 
@@ -132,8 +157,8 @@ impl CanvasConnectionRecord {
         }
         let origin = decode_hex_to_string(origin_hex, MAX_ORIGIN_BYTES)
             .and_then(|value| CanvasOrigin::parse(&value))?;
-        let decoded_secret = decode_hex_to_string(token_hex, MAX_TOKEN_BYTES)
-            .and_then(CanvasAccessToken::new)?;
+        let decoded_secret =
+            decode_hex_to_string(token_hex, MAX_TOKEN_BYTES).and_then(CanvasAccessToken::new)?;
         Ok(Self {
             origin,
             token: decoded_secret,
@@ -169,6 +194,7 @@ impl fmt::Debug for CanvasConnectionRecord {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CanvasConnectionFailure {
+    ManualTokenDevelopmentOnly,
     InvalidOrigin,
     InvalidToken,
     MalformedRecord,
@@ -205,6 +231,9 @@ impl fmt::Debug for CanvasConnectionError {
 impl fmt::Display for CanvasConnectionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self.failure {
+            CanvasConnectionFailure::ManualTokenDevelopmentOnly => {
+                "canvas_manual_token_development_only"
+            }
             CanvasConnectionFailure::InvalidOrigin => "canvas_invalid_origin",
             CanvasConnectionFailure::InvalidToken => "canvas_invalid_token",
             CanvasConnectionFailure::MalformedRecord => "canvas_malformed_connection_record",
@@ -235,10 +264,26 @@ pub(crate) fn configure_canvas_connection_in_store(
         .map_err(map_store_error)
 }
 
+pub(crate) fn configure_canvas_development_connection_in_store(
+    profile: RuntimeProfile,
+    store: &impl CredentialStore,
+    origin: &str,
+    access_token: &str,
+) -> Result<(), CanvasConnectionError> {
+    if profile != RuntimeProfile::Development {
+        return Err(CanvasConnectionError::new(
+            CanvasConnectionFailure::ManualTokenDevelopmentOnly,
+        ));
+    }
+    configure_canvas_connection_in_store(store, origin, access_token)
+}
+
 pub(crate) fn canvas_connection_status_in_store(
     store: &impl CredentialStore,
 ) -> Result<CredentialAvailability, CanvasConnectionError> {
-    store.exists(CredentialSlot::CanvasDefault).map_err(map_store_error)
+    store
+        .exists(CredentialSlot::CanvasDefault)
+        .map_err(map_store_error)
 }
 
 pub(crate) fn remove_canvas_connection_in_store(
@@ -304,11 +349,73 @@ fn decode_hex_nibble(byte: u8) -> Result<u8, CanvasConnectionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credential_store::{CredentialStore, MemoryCredentialStore, namespace_for_profile};
+    use crate::credential_store::{
+        namespace_for_profile, CredentialStore, CredentialStoreError, CredentialStoreFailure,
+        CredentialStoreResult, MemoryCredentialStore,
+    };
     use crate::RuntimeProfile;
+    use std::sync::Mutex;
 
     const TOKEN: &str = "syn-token";
     const SECRET_CANARY: &str = "syn-canary";
+
+    #[derive(Default)]
+    struct TrackingStore {
+        writes: Mutex<usize>,
+        deletes: Mutex<usize>,
+        value: Mutex<Option<SecretValue>>,
+    }
+
+    impl TrackingStore {
+        fn seed(&self, secret: SecretValue) {
+            *self.value.lock().expect("test lock") = Some(secret);
+        }
+
+        fn write_count(&self) -> usize {
+            *self.writes.lock().expect("test lock")
+        }
+
+        fn delete_count(&self) -> usize {
+            *self.deletes.lock().expect("test lock")
+        }
+    }
+
+    impl CredentialStore for TrackingStore {
+        fn store_replace(
+            &self,
+            _slot: CredentialSlot,
+            secret: &SecretValue,
+        ) -> CredentialStoreResult<()> {
+            *self.writes.lock().expect("test lock") += 1;
+            *self.value.lock().expect("test lock") = Some(secret.clone());
+            Ok(())
+        }
+
+        fn exists(&self, _slot: CredentialSlot) -> CredentialStoreResult<CredentialAvailability> {
+            Ok(if self.value.lock().expect("test lock").is_some() {
+                CredentialAvailability::Configured
+            } else {
+                CredentialAvailability::Missing
+            })
+        }
+
+        fn get_for_trusted_native_use(
+            &self,
+            _slot: CredentialSlot,
+        ) -> CredentialStoreResult<SecretValue> {
+            self.value
+                .lock()
+                .expect("test lock")
+                .clone()
+                .ok_or_else(|| CredentialStoreError::new(CredentialStoreFailure::Missing))
+        }
+
+        fn delete(&self, _slot: CredentialSlot) -> CredentialStoreResult<()> {
+            *self.deletes.lock().expect("test lock") += 1;
+            *self.value.lock().expect("test lock") = None;
+            Ok(())
+        }
+    }
 
     #[test]
     fn canvas_origin_validation_accepts_https_origin_and_normalizes() {
@@ -345,8 +452,10 @@ mod tests {
         let serialized = record.serialize();
         assert!(serialized.starts_with(RECORD_PREFIX));
         assert!(!format!("{record:?}").contains(SECRET_CANARY));
-        assert!(!format!("{:?}", CanvasAccessToken::new(SECRET_CANARY).unwrap())
-            .contains(SECRET_CANARY));
+        assert!(
+            !format!("{:?}", CanvasAccessToken::new(SECRET_CANARY).unwrap())
+                .contains(SECRET_CANARY)
+        );
 
         let parsed = CanvasConnectionRecord::parse(&serialized).expect("parse");
         assert_eq!(parsed.origin().as_str(), "https://canvas.example.edu");
@@ -379,14 +488,19 @@ mod tests {
     }
 
     #[test]
-    fn fake_store_covers_configure_status_replace_and_delete() {
+    fn development_manual_token_enrollment_succeeds_against_fake_store() {
         let store = MemoryCredentialStore::new(namespace_for_profile(RuntimeProfile::Development));
         assert_eq!(
             canvas_connection_status_in_store(&store).expect("status"),
             CredentialAvailability::Missing
         );
-        configure_canvas_connection_in_store(&store, "https://canvas.example.edu", TOKEN)
-            .expect("configure");
+        configure_canvas_development_connection_in_store(
+            RuntimeProfile::Development,
+            &store,
+            "https://canvas.example.edu",
+            TOKEN,
+        )
+        .expect("configure");
         assert_eq!(
             canvas_connection_status_in_store(&store).expect("status"),
             CredentialAvailability::Configured
@@ -400,8 +514,8 @@ mod tests {
         let stored = store
             .get_for_trusted_native_use(CredentialSlot::CanvasDefault)
             .expect("stored");
-        let parsed = CanvasConnectionRecord::parse(stored.expose_for_trusted_native_use())
-            .expect("record");
+        let parsed =
+            CanvasConnectionRecord::parse(stored.expose_for_trusted_native_use()).expect("record");
         assert_eq!(parsed.origin().as_str(), "https://canvas-alt.example.edu");
         remove_canvas_connection_in_store(&store).expect("delete");
         assert_eq!(
@@ -411,8 +525,79 @@ mod tests {
     }
 
     #[test]
+    fn production_manual_token_enrollment_is_rejected_before_store_access() {
+        let store = TrackingStore::default();
+        store.seed(SecretValue::new(
+            CanvasConnectionRecord::new(
+                CanvasOrigin::parse("https://existing.example.edu").expect("origin"),
+                CanvasAccessToken::new("old").expect("token"),
+            )
+            .serialize(),
+        ));
+        let error = configure_canvas_development_connection_in_store(
+            RuntimeProfile::Production,
+            &store,
+            "https://canvas.example.edu",
+            SECRET_CANARY,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.failure(),
+            CanvasConnectionFailure::ManualTokenDevelopmentOnly
+        );
+        assert!(!error.to_string().contains(SECRET_CANARY));
+        assert!(!format!("{error:?}").contains(SECRET_CANARY));
+        assert_eq!(store.write_count(), 0);
+        let stored = store
+            .get_for_trusted_native_use(CredentialSlot::CanvasDefault)
+            .expect("stored");
+        let parsed =
+            CanvasConnectionRecord::parse(stored.expose_for_trusted_native_use()).expect("record");
+        assert_eq!(parsed.origin().as_str(), "https://existing.example.edu");
+    }
+
+    #[test]
+    fn demo_test_manual_token_enrollment_is_rejected_before_store_access() {
+        let store = TrackingStore::default();
+        let error = configure_canvas_development_connection_in_store(
+            RuntimeProfile::DemoTest,
+            &store,
+            "https://canvas.example.edu",
+            SECRET_CANARY,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.failure(),
+            CanvasConnectionFailure::ManualTokenDevelopmentOnly
+        );
+        assert_eq!(store.write_count(), 0);
+    }
+
+    #[test]
+    fn status_and_remove_never_return_secret_material() {
+        let store = TrackingStore::default();
+        configure_canvas_development_connection_in_store(
+            RuntimeProfile::Development,
+            &store,
+            "https://canvas.example.edu",
+            SECRET_CANARY,
+        )
+        .expect("configure");
+        let status = canvas_connection_status_in_store(&store).expect("status");
+        assert_eq!(status, CredentialAvailability::Configured);
+        assert!(!format!("{status:?}").contains(SECRET_CANARY));
+        remove_canvas_connection_in_store(&store).expect("remove");
+        assert_eq!(store.delete_count(), 1);
+        assert_eq!(
+            canvas_connection_status_in_store(&store).expect("status"),
+            CredentialAvailability::Missing
+        );
+    }
+
+    #[test]
     fn profile_namespaces_keep_canvas_records_isolated() {
-        let production = MemoryCredentialStore::new(namespace_for_profile(RuntimeProfile::Production));
+        let production =
+            MemoryCredentialStore::new(namespace_for_profile(RuntimeProfile::Production));
         let development =
             MemoryCredentialStore::new(namespace_for_profile(RuntimeProfile::Development));
         configure_canvas_connection_in_store(&production, "https://canvas.example.edu", TOKEN)
@@ -428,8 +613,9 @@ mod tests {
     }
 
     #[test]
-    fn demo_test_denial_remains_outside_native_storage() {
-        let denied = crate::credential_store::credential_store_for_profile(RuntimeProfile::DemoTest);
+    fn demo_test_native_store_still_denies_direct_store_access() {
+        let denied =
+            crate::credential_store::credential_store_for_profile(RuntimeProfile::DemoTest);
         assert_eq!(
             configure_canvas_connection_in_store(&denied, "https://canvas.example.edu", TOKEN)
                 .unwrap_err()

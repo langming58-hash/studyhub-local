@@ -74,6 +74,9 @@ def raises_connection_code(expected: str, action) -> bool:
 
 def main() -> int:
     failures: list[str] = []
+    rust_canvas = Path(ROOT / "src-tauri/src/canvas_connection.rs").read_text(encoding="utf-8")
+    rust_lib = Path(ROOT / "src-tauri/src/lib.rs").read_text(encoding="utf-8")
+    capability = Path(ROOT / "src-tauri/capabilities/default.json").read_text(encoding="utf-8")
 
     identity_connector, identity_http = connector_with([response(200, {"id": BIG_ID, "name": "Synthetic Learner"})])
     identity = identity_connector.identity()
@@ -208,6 +211,15 @@ def main() -> int:
     get_section = source.split("def handle_api_get", 1)[1].split("def handle_notes_get", 1)[0]
     check("canvas_api_routes_are_post_only", 'parsed.path == "/api/canvas/identity"' in source and "/api/canvas/identity" not in get_section and "/api/canvas/courses" not in get_section, failures)
     check("demo_test_never_touches_native_storage", "RuntimeProfile::DemoTest => CredentialStoreBackend::DemoDenied" in Path(ROOT / "src-tauri/src/credential_store.rs").read_text(encoding="utf-8"), failures)
+
+    development_command = "configure_canvas_development_connection"
+    check("production_manual_enrollment_unavailable", "canvas_manual_token_development_only" in rust_lib and "canvas_manual_token_development_only" in rust_canvas, failures)
+    command_body = rust_lib.split(f"fn {development_command}", 1)[1].split("#[tauri::command]", 1)[0]
+    check("production_rejects_before_store_access", command_body.find("canvas_manual_token_development_only") < command_body.find("credential_store_for_profile"), failures)
+    check("development_only_enrollment_boundary_explicit", "profile != RuntimeProfile::Development" in rust_canvas and "RuntimeProfile::Development" in command_body, failures)
+    check("old_general_enrollment_command_not_exposed", "configure_canvas_connection," not in rust_lib and "allow-configure-canvas-connection" not in capability, failures)
+    check("development_enrollment_command_acl_only", development_command in rust_lib and "allow-configure-canvas-development-connection" in capability, failures)
+    check("connector_independent_of_enrollment_mode", "class CanvasConnector" in source and "configure_canvas" not in source.split("class CanvasConnector", 1)[1].split("def header_value", 1)[0], failures)
 
     check("canvas_connector_does_not_persist_domain_rows", all(term not in source.split("class CanvasConnector", 1)[1].split("def header_value", 1)[0] for term in ["INSERT INTO", "import_course_folder", "register_material", "scan_library"]), failures)
 

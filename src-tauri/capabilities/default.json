@@ -20,7 +20,7 @@
     "allow-choose-study-folder",
     "allow-choose-study-files",
     "allow-canvas-connection-status",
-    "allow-configure-canvas-connection",
+    "allow-configure-canvas-development-connection",
     "allow-remove-canvas-connection",
     "allow-restart-backend",
     "allow-retry-backend",

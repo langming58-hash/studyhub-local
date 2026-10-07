@@ -363,10 +363,10 @@
           "markdownDescription": "Enables the choose_study_folder command without any pre-configured scope."
         },
         {
-          "description": "Enables the configure_canvas_connection command without any pre-configured scope.",
+          "description": "Enables the configure_canvas_development_connection command without any pre-configured scope.",
           "type": "string",
-          "const": "allow-configure-canvas-connection",
-          "markdownDescription": "Enables the configure_canvas_connection command without any pre-configured scope."
+          "const": "allow-configure-canvas-development-connection",
+          "markdownDescription": "Enables the configure_canvas_development_connection command without any pre-configured scope."
         },
         {
           "description": "Enables the remove_canvas_connection command without any pre-configured scope.",
@@ -411,10 +411,10 @@
           "markdownDescription": "Denies the choose_study_folder command without any pre-configured scope."
         },
         {
-          "description": "Denies the configure_canvas_connection command without any pre-configured scope.",
+          "description": "Denies the configure_canvas_development_connection command without any pre-configured scope.",
           "type": "string",
-          "const": "deny-configure-canvas-connection",
-          "markdownDescription": "Denies the configure_canvas_connection command without any pre-configured scope."
+          "const": "deny-configure-canvas-development-connection",
+          "markdownDescription": "Denies the configure_canvas_development_connection command without any pre-configured scope."
         },
         {
           "description": "Denies the remove_canvas_connection command without any pre-configured scope.",
