@@ -96,6 +96,14 @@ def table_count(conn: sqlite3.Connection, table: str) -> int:
     return int(scalar(conn, f"SELECT COUNT(*) FROM {table}"))
 
 
+def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone())
+
+
+def index_exists(conn: sqlite3.Connection, index: str) -> bool:
+    return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (index,)).fetchone())
+
+
 def course(server: Any, remote_id: str, name: str, code: str = "TEST1001", term_id: str | None = "2026S2", term_name: str | None = "Synthetic Term"):
     return server.CanvasCourse(
         remote_course_id=remote_id,
@@ -117,16 +125,150 @@ def raises(expected: str, action) -> bool:
     return False
 
 
+def seed_pre_pr23_database(server: Any, conn: sqlite3.Connection) -> dict[str, Any]:
+    now = "2026-01-01T00:00:00+00:00"
+    digest = hashlib.sha256(b"synthetic pre pr23 material").hexdigest()
+    conn.execute(
+        "INSERT INTO terms(id, stable_id, name, archived, sort_order, created_at, updated_at) VALUES (10, 'term_pre23', 'Synthetic Pre23 Term', 0, 0, ?, ?)",
+        (now, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO courses(id, code, name, folder_name, path, created_at, updated_at, stable_id,
+          display_name, course_code, term_id, source_folder, source_kind, active)
+        VALUES (20, 'TEST9001', 'Synthetic Pre23 Course', 'TEST9001 - Pre23', '/synthetic/pre23',
+          ?, ?, 'course_pre23', 'Synthetic Pre23 Course', 'TEST9001', 10, '/synthetic/pre23', 'folder', 1)
+        """,
+        (now, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO weeks(id, course_id, week_label, week_number, path, has_materials, file_count,
+          stable_id, kind, origin, created_at, updated_at)
+        VALUES (30, 20, 'Week 01', 1, '/synthetic/pre23/Week 01', 1, 1,
+          'week_pre23', 'week', 'scan', ?, ?)
+        """,
+        (now, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO files(id, course_id, week_id, course_code, week_label, section, category,
+          exercise_type, filename, original_path, rel_path, source, source_label, hash, size,
+          modified_at, indexed_at, extension, mime_type, stable_id, course_name, absolute_path,
+          source_type, file_extension, file_size, sha256, display_name, material_type,
+          import_mode, active, material_created_at, material_updated_at)
+        VALUES (40, 20, 30, 'TEST9001', 'Week 01', '01 Course Materials', 'Lecture', '',
+          'pre23.txt', '/synthetic/pre23/pre23.txt', 'TEST9001/Week 01/pre23.txt',
+          'official', 'Synthetic teacher material', ?, 27, ?, ?, '.txt', 'text/plain',
+          'material_pre23', 'Synthetic Pre23 Course', '/synthetic/pre23/pre23.txt',
+          'Local Reference', '.txt', 27, ?, 'pre23.txt', 'lecture', 'reference', 1, ?, ?)
+        """,
+        (digest, now, now, digest, now, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO file_versions(id, file_id, stable_id, sha256, file_size, modified_at, indexed_at, active)
+        VALUES (50, 40, 'file_version_pre23', ?, 27, ?, ?, 1)
+        """,
+        (digest, now, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO sources(id, stable_id, provider_kind, authority, source_label, source_type,
+          import_mode, local_locator, created_at, updated_at)
+        VALUES (60, 'source_pre23', 'local', 'USER_OWNED', 'Synthetic teacher material',
+          'Local Reference', 'reference', '/synthetic/pre23/pre23.txt', ?, ?)
+        """,
+        (now, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO blobs(id, stable_id, sha256, byte_size, mime_type, extension,
+          local_locator, created_at, updated_at)
+        VALUES (70, 'blob_pre23', ?, 27, 'text/plain', '.txt', '', ?, ?)
+        """,
+        (digest, now, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO materials(id, stable_id, legacy_file_id, course_id, week_id,
+          course_code, course_name, week_label, week_number, material_type, display_name,
+          active, current_version_id, created_at, updated_at)
+        VALUES (80, 'material_pre23', 40, 20, 30, 'TEST9001', 'Synthetic Pre23 Course',
+          'Week 01', 1, 'lecture', 'pre23.txt', 1, 90, ?, ?)
+        """,
+        (now, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO material_versions(id, stable_id, material_id, source_id, blob_id,
+          legacy_file_id, legacy_file_version_id, sha256, byte_size, modified_at,
+          indexed_at, active, created_at, updated_at)
+        VALUES (90, 'material_version_pre23', 80, 60, 70, 40, 50, ?, 27, ?, ?, 1, ?, ?)
+        """,
+        (digest, now, now, now, now),
+    )
+    snapshot = {
+        table: [dict(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()]
+        for table in ("terms", "courses", "weeks", "files", "file_versions", "sources", "blobs", "materials", "material_versions")
+    }
+    conn.commit()
+    return snapshot
+
+
+def check_pre_pr23_migration_upgrade(tmp: Path, failures: list[str]) -> None:
+    server = load_server(tmp / "migration-upgrade")
+    conn = connect(server)
+    conn.execute("DROP TABLE IF EXISTS course_offering_selections")
+    conn.execute("DROP TABLE IF EXISTS course_offerings")
+    conn.execute("DELETE FROM schema_migrations WHERE version=2")
+    conn.commit()
+    before = seed_pre_pr23_database(server, conn)
+    server.run_schema_migrations(conn)
+    after_once = table_count(conn, "schema_migrations")
+    after = {
+        table: [dict(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()]
+        for table in before
+    }
+    fk_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
+    server.run_schema_migrations(conn)
+    after_twice = table_count(conn, "schema_migrations")
+    check("pre_pr23_migration_creates_course_selection_tables", table_exists(conn, "course_offerings") and table_exists(conn, "course_offering_selections"), failures)
+    check("pre_pr23_migration_creates_expected_indexes", index_exists(conn, "idx_course_offerings_provider_authority") and index_exists(conn, "idx_course_offering_selections_selected"), failures)
+    check("pre_pr23_migration_records_version_two_once", scalar(conn, "SELECT COUNT(*) FROM schema_migrations WHERE version=2 AND name='phase2_canvas_course_selection'") == 1, failures)
+    check("pre_pr23_migration_rerun_idempotent", after_once == after_twice, failures)
+    check("pre_pr23_legacy_data_preserved", before["terms"] == after["terms"] and before["courses"] == after["courses"] and before["weeks"] == after["weeks"] and before["files"] == after["files"] and before["file_versions"] == after["file_versions"], failures)
+    check("pre_pr23_domain_rows_preserved", before["sources"] == after["sources"] and before["blobs"] == after["blobs"] and before["materials"] == after["materials"] and before["material_versions"] == after["material_versions"], failures)
+    check("pre_pr23_foreign_keys_valid", not fk_errors, failures)
+    conn.close()
+
+
+def check_remote_id_normalization(server: Any, failures: list[str]) -> None:
+    check("large_string_remote_id_normalizes_exactly", server.normalize_requested_remote_ids([BIG_ID]) == [BIG_ID], failures)
+    for name, value in (
+        ("integer_remote_id_rejected", 9007199254740995),
+        ("small_integer_remote_id_rejected", 42),
+        ("float_remote_id_rejected", 42.0),
+        ("boolean_remote_id_rejected", True),
+        ("null_remote_id_rejected", None),
+        ("object_remote_id_rejected", {}),
+        ("list_remote_id_rejected", []),
+    ):
+        check(name, raises("remote_course_ids must contain only strings", lambda value=value: server.normalize_requested_remote_ids([value])), failures)
+
+
 def main() -> int:
     failures: list[str] = []
     with tempfile.TemporaryDirectory(prefix="studyhub-canvas-selection-") as raw_tmp:
         tmp = Path(raw_tmp)
+        check_pre_pr23_migration_upgrade(tmp, failures)
         server = load_server(tmp)
         conn = connect(server)
         authority = server.canvas_authority_id("https://canvas.example.edu")
         other_authority = server.canvas_authority_id("https://canvas-alt.example.edu")
         c1 = course(server, BIG_ID, "Synthetic Calculus", "TEST1001")
         c2 = course(server, "42", "Synthetic Economics", "TEST2001")
+        check_remote_id_normalization(server, failures)
 
         migration_rows = conn.execute("SELECT version, name FROM schema_migrations ORDER BY version").fetchall()
         migration_count = table_count(conn, "schema_migrations")
@@ -139,7 +281,7 @@ def main() -> int:
         stable_again = server.canvas_course_offering_stable_id(authority, BIG_ID)
         stable_other_origin = server.canvas_course_offering_stable_id(other_authority, BIG_ID)
         check("identity_uses_provider_authority_and_remote_id", stable_one == stable_again and stable_one != stable_other_origin, failures)
-        check("canvas_id_greater_than_js_safe_integer_exact", BIG_ID in stable_one or isinstance(BIG_ID, str), failures)
+        check("stable_identity_does_not_parse_remote_id_numerically", server.canvas_course_offering_stable_id(authority, BIG_ID) != server.canvas_course_offering_stable_id(authority, str(float(BIG_ID))), failures)
 
         initial_revision = server.canvas_selection_revision(conn, authority)
         preview = server.canvas_course_selection_plan(conn, authority, [c1, c2], [BIG_ID])
@@ -147,12 +289,42 @@ def main() -> int:
         check("browser_selects_only_authoritative_discovered_ids", [item["remote_course_id"] for item in preview["select"]] == [BIG_ID], failures)
         check("unknown_requested_remote_id_identified", server.canvas_course_selection_plan(conn, authority, [c1], ["missing"])["unknown_remote_course_ids"] == ["missing"], failures)
 
+        tx_authority = server.canvas_authority_id("https://tx.example.edu")
+        tx_course = course(server, "tx-large-9007199254740995", "Transaction Course", "TESTTX")
+        tx_preview = server.canvas_course_selection_plan(conn, tx_authority, [tx_course], ["tx-large-9007199254740995"])
+        tx_result = server.apply_canvas_course_selection(conn, tx_authority, [tx_course], ["tx-large-9007199254740995"], tx_preview["selection_revision"])
+        hidden_conn = sqlite3.connect(server.DB_PATH)
+        hidden_count = hidden_conn.execute("SELECT COUNT(*) FROM course_offerings WHERE authority_id=?", (tx_authority,)).fetchone()[0]
+        hidden_conn.close()
+        rollback_visible_before = len(tx_result["selected"]) == 1 and conn.in_transaction and hidden_count == 0
+        conn.rollback()
+        rollback_removed = table_count(conn, "course_offerings") == 0 and table_count(conn, "course_offering_selections") == 0
+        check("successful_apply_does_not_auto_commit_and_caller_owns_commit", rollback_visible_before and rollback_removed, failures)
+
+        post_authority = server.canvas_authority_id("https://post-savepoint.example.edu")
+        post_course = course(server, "post-savepoint", "Post Savepoint Course")
+        post_preview = server.canvas_course_selection_plan(conn, post_authority, [post_course], ["post-savepoint"])
+        post_failure = raises(
+            "synthetic_post_savepoint_failure",
+            lambda: server.apply_canvas_course_selection(
+                conn,
+                post_authority,
+                [post_course],
+                ["post-savepoint"],
+                post_preview["selection_revision"],
+                fail_after_savepoint_release=True,
+            ),
+        )
+        post_in_transaction = conn.in_transaction
+        conn.rollback()
+        check("post_savepoint_failure_remains_caller_rollbackable", post_failure and post_in_transaction and table_count(conn, "course_offerings") == 0, failures)
+
         result = server.apply_canvas_course_selection(conn, authority, [c1, c2], [BIG_ID], preview["selection_revision"])
         conn.commit()
         selected = server.remembered_canvas_course_selections(conn, authority_id=authority)
         row = conn.execute("SELECT * FROM course_offerings WHERE stable_id=?", (stable_one,)).fetchone()
         check("apply_persists_selected_offerings_atomically", len(result["selected"]) == 1 and len(selected) == 1 and selected[0]["remote_course_id"] == BIG_ID, failures)
-        check("remote_ids_stored_as_text", isinstance(row["remote_course_id"], str) and row["remote_course_id"] == BIG_ID, failures)
+        check("large_string_id_survives_plan_apply_sqlite_public_response", preview["select"][0]["remote_course_id"] == BIG_ID and isinstance(row["remote_course_id"], str) and row["remote_course_id"] == BIG_ID and selected[0]["remote_course_id"] == BIG_ID, failures)
         check("existing_local_course_material_data_survives", before_legacy == {table: table_count(conn, table) for table in before_legacy}, failures)
 
         renamed = course(server, BIG_ID, "Synthetic Calculus Renamed", "TEST1001B", term_id="2026S3", term_name="Synthetic Term Renamed")

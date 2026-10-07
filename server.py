@@ -2282,7 +2282,9 @@ def normalize_requested_remote_ids(values: Any) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
     for value in values:
-        remote_id = str(value).strip()
+        if not isinstance(value, str):
+            raise ValueError("remote_course_ids must contain only strings")
+        remote_id = value.strip()
         if not remote_id or len(remote_id) > 160 or any(ord(char) < 32 for char in remote_id):
             raise ValueError("Invalid remote course id")
         if remote_id not in seen:
@@ -2354,7 +2356,10 @@ def apply_canvas_course_selection(
     expected_revision: str,
     *,
     fail_after_offerings: bool = False,
+    fail_after_savepoint_release: bool = False,
 ) -> dict[str, Any]:
+    if not conn.in_transaction:
+        conn.execute("BEGIN")
     before = canvas_selection_revision(conn, authority_id)
     if not expected_revision or expected_revision != before:
         raise ValueError("stale_canvas_course_selection_preview")
@@ -2406,6 +2411,8 @@ def apply_canvas_course_selection(
         conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
         conn.execute(f"RELEASE SAVEPOINT {savepoint}")
         raise
+    if fail_after_savepoint_release:
+        raise RuntimeError("synthetic_post_savepoint_failure")
     after_revision = canvas_selection_revision(conn, authority_id)
     rows = remembered_canvas_course_selections(conn, authority_id=authority_id)
     return {
