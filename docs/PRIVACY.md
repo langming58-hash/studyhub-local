@@ -131,6 +131,14 @@ operations. No frontend, HTTP route, MCP tool, diagnostic, log, or SQLite row
 may read the raw token. The backend uses the record only for read-only identity
 validation and current-user course discovery against the bound origin.
 
+The implemented Canvas CourseOffering selection foundation persists only a
+non-secret authority ID derived from the normalized Canvas origin, remote
+course IDs as strings, last-known remote course metadata, and user-owned
+selection state. It does not store the Canvas bearer token, the full credential
+record, credential-session authority, local filesystem paths, or Canvas content
+in SQLite. User selection is separate from remote-authoritative metadata and is
+not cleared by a metadata refresh or one missing discovery result.
+
 ## Public Data Boundary
 
 Public examples, fixtures, tests, screenshots, documentation, and demo assets

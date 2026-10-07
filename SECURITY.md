@@ -40,9 +40,12 @@ paths, temporary files, logs, diagnostics, SQLite, WebView JavaScript, or MCP.
 The implemented protocol supports only a narrow internal `canvas_default`
 connection-record operation. If a valid origin-bound connection record exists,
 the Python backend can use it for read-only Canvas identity validation and
-course discovery. OAuth, Canvas passwords, Developer Key provisioning, token
-refresh, production end-user connection UX, account management, Canvas content
-sync, file/material download, and Canvas writes remain not implemented.
+course discovery. The browser may submit only remote course IDs for local
+course-selection preview/apply; StudyHub re-reads Canvas metadata through the
+connector before persisting CourseOffering records. OAuth, Canvas passwords,
+Developer Key provisioning, token refresh, production end-user connection UX,
+account management, Canvas content sync, file/material download, and Canvas
+writes remain not implemented.
 
 ## Academic Materials
 
