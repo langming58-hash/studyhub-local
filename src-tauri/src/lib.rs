@@ -16,9 +16,16 @@ use tauri::path::BaseDirectory;
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 
+mod canvas_connection;
 mod credential_handoff;
 mod credential_store;
 mod credential_transport;
+
+use crate::canvas_connection::{
+    canvas_connection_status_in_store, configure_canvas_connection_in_store,
+    remove_canvas_connection_in_store,
+};
+use crate::credential_store::{credential_store_for_profile, CredentialAvailability};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(4);
@@ -549,6 +556,36 @@ fn startup_diagnostics(state: tauri::State<'_, BackendState>) -> String {
     )
 }
 
+#[tauri::command]
+fn canvas_connection_status(state: tauri::State<'_, BackendState>) -> Result<String, String> {
+    let store = credential_store_for_profile(state.config.profile);
+    match canvas_connection_status_in_store(&store) {
+        Ok(CredentialAvailability::Configured) => Ok("configured".to_string()),
+        Ok(CredentialAvailability::Missing) => Ok("missing".to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn configure_canvas_connection(
+    state: tauri::State<'_, BackendState>,
+    origin: String,
+    access_token: String,
+) -> Result<String, String> {
+    let store = credential_store_for_profile(state.config.profile);
+    configure_canvas_connection_in_store(&store, &origin, &access_token)
+        .map(|()| "configured".to_string())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn remove_canvas_connection(state: tauri::State<'_, BackendState>) -> Result<String, String> {
+    let store = credential_store_for_profile(state.config.profile);
+    remove_canvas_connection_in_store(&store)
+        .map(|()| "removed".to_string())
+        .map_err(|error| error.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -557,6 +594,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             choose_study_folder,
             choose_study_files,
+            canvas_connection_status,
+            configure_canvas_connection,
+            remove_canvas_connection,
             restart_backend,
             retry_backend,
             startup_diagnostics

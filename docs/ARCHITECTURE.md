@@ -70,7 +70,7 @@ question/solution extraction, and MaterialVersion/domain projection
 linking for the ingested candidate. Callers still own transaction commit
 policy, batch/full reconciliation, filesystem discovery, and missing-file
 reconciliation. This is a local-input boundary only; it is not a remote sync
-engine or Canvas connector.
+engine.
 
 Stable IDs and additive metadata support term/course/material management, but
 the local scanner still performs filesystem discovery, course/week inference,
@@ -78,7 +78,13 @@ and missing-file reconciliation. Extraction and indexing implementations remain
 the current Python backend implementations behind that boundary. This is
 current truth, not the final module boundary.
 
-Not implemented yet: Canvas/remote connectors, SourceAnchor, Evidence,
+Phase 2 also implements the first narrow Canvas connector boundary:
+origin-bound manual access-token storage, authenticated current-user
+validation, and read-only current-user course discovery. Discovery results are
+normalized metadata only and are not persisted into the academic/domain model.
+
+Not implemented yet: Canvas content synchronization, Canvas file/material
+download, CourseOffering mapping, SyncPlan persistence, SourceAnchor, Evidence,
 DerivedArtifact/ProcessingRecipe, Entity Resolution, the Assessments target
 model, background jobs, and target-domain UI reads.
 
@@ -111,11 +117,12 @@ See [Preview Matrix](design/PREVIEW_MATRIX.md) for current format behavior.
   runtime-profile namespaces, native OS credential storage for Production and
   Development, and Demo/Test denial. It has no frontend, localhost HTTP, MCP,
   diagnostics, SQLite, browser-storage, or Tauri raw-secret retrieval surface.
-  Its internal handoff broker models typed child-authorized access for future
-  backend work and invalidates stale child authorizations after restart. The
+  Its internal handoff broker provides typed child-authorized access for
+  trusted backend work and invalidates stale child authorizations after restart. The
   desktop shell now provides a Unix/macOS private inherited stream transport to
   the exact spawned Python backend child for one narrow internal
-  `canvas_default` credential operation. No Canvas connector is implemented.
+  `canvas_default` credential operation. The current Canvas connector uses that
+  boundary for read-only identity validation and course discovery only.
 - OpenAI is optional, server-side, and scoped to indexed source material.
 - Practice questions come from indexed teacher-provided material only. The app
   must not invent practice questions.

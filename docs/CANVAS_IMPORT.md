@@ -1,6 +1,6 @@
 # Canvas Import
 
-Status: **TARGET BOUNDARY / NOT IMPLEMENTED**.
+Status: **AUTHENTICATED DISCOVERY IMPLEMENTED / SYNC NOT IMPLEMENTED**.
 
 StudyHub Local does not currently include a public universal Canvas downloader
 or automatic Canvas synchronization. The local folder and scanner work without
@@ -12,14 +12,17 @@ an LMS connection.
 - Access only accounts and materials the user is authorized to access.
 - Do not bypass login, MFA, DRM, course permissions, or access controls.
 - Do not submit assignments, quizzes, or other coursework.
-- Authentication and token enrollment remain not implemented. The native
-  CredentialStore foundation provides a future storage boundary, but Canvas
-  credential capture, account management, OAuth, and revocation UX still
-  require explicit follow-up designs. The current internal handoff broker and
-  private Unix/macOS parent/backend transport prove typed slot checks, child
-  authorization, restart invalidation, sanitized failure behavior, and one
-  narrow backend `canvas_default` credential operation; they are not a Canvas
-  login or request implementation.
+- Manual, user-provided Canvas access-token enrollment is implemented as a
+  narrow native desktop boundary where the institution permits such tokens.
+  The token is stored with its normalized HTTPS Canvas origin in the native
+  CredentialStore and is never returned to frontend JavaScript, localhost HTTP,
+  MCP, diagnostics, SQLite, logs, or browser storage.
+- OAuth, institution Developer Key provisioning, Canvas passwords, account
+  management, and token refresh flows are not implemented.
+- The Python backend reuses the private Unix/macOS parent/backend credential
+  transport for the single internal `canvas_default` connection record. Canvas
+  API requests use the bound origin only; request input cannot override the
+  bearer-token destination.
 - Existing open-source Canvas clients may be audited for endpoint coverage,
   authentication strategy, discovery, pagination, and workflow behavior.
 - Incompatible, restrictive, non-commercial, or unlicensed implementations
@@ -45,9 +48,27 @@ StudyHub owns SyncPlan, provenance, change detection, user overlays,
 normalization, conflict behavior, and ingestion.
 
 The generic local ingestion boundary prerequisite is implemented for current
-filesystem scanner/import inputs. Canvas discovery, authentication, sync
-planning, remote change handling, and Canvas-specific provenance mapping remain
-not implemented.
+filesystem scanner/import inputs. Canvas authenticated identity validation and
+current-user course discovery are implemented as read-only discovery. Sync
+planning, remote change handling, Canvas-specific provenance mapping, course
+selection persistence, and Canvas content ingestion remain not implemented.
+
+## Implemented Discovery Boundary
+
+Implemented Canvas calls are limited to:
+
+- `GET /api/v1/users/self` for current-user validation.
+- `GET /api/v1/courses` for current-user course discovery.
+
+StudyHub requests `Accept: application/json+canvas-string-ids` and treats
+Canvas remote IDs as opaque strings. The connector uses `Authorization: Bearer`
+headers, never query-string or form access tokens. Pagination follows Canvas
+`Link` headers by `rel="next"`, treats next URLs as opaque, rejects
+cross-origin next links, and enforces page/item limits.
+
+Discovery results are returned as normalized metadata only. They are not
+written into `courses`, `sources`, `materials`, `material_versions`, `files`,
+or `file_versions`.
 
 ## Sync Is Not Ingestion
 
@@ -80,11 +101,10 @@ auditable, and recoverable.
 
 ## Implementation Gate
 
-Before any connector implementation:
+Before any Canvas sync implementation:
 
 1. audit official API capabilities and current authentication requirements
-2. define Canvas credential enrollment, account selection, revocation, and
-   use of the existing private backend transport for real Canvas requests
+2. define account selection UX beyond the single default connection
 3. define Source, Blob, Material, MaterialVersion, and CourseOffering mapping
 4. define SyncPlan and conflict semantics
 5. select or reject a background-job foundation through a separate decision
@@ -92,4 +112,5 @@ Before any connector implementation:
 7. verify no real Canvas data, credentials, or academic content enters public
    fixtures, logs, screenshots, or Git history
 
-No Canvas implementation is authorized by this Phase 0 documentation change.
+Canvas file/material download, assignments/modules/pages sync, background sync,
+and conflict handling are not implemented by the discovery boundary.

@@ -30,7 +30,7 @@ MCP is read-only. It may list/search/fetch indexed study-library content by safe
 
 ## Credential Boundary
 
-Native credentials are not exposed through frontend JavaScript, localhost HTTP, MCP, diagnostics, browser storage, SQLite, logs, or Tauri raw-secret commands. The internal credential handoff boundary is typed, child-authorized, restart-invalidated, and covered with synthetic participants; live Canvas authentication is not implemented.
+Native credentials are not exposed through frontend JavaScript, localhost HTTP, MCP, diagnostics, browser storage, SQLite, logs, or Tauri raw-secret commands. The internal credential handoff boundary is typed, child-authorized, restart-invalidated, and covered with synthetic participants. StudyHub now supports a narrow manual Canvas connection enrollment boundary where the user provides an institution-permitted access token; the token is stored with its normalized HTTPS Canvas origin and is never returned through a public surface.
 
 The macOS/Unix desktop shell additionally creates a private inherited stream
 between the Tauri parent and the exact spawned Python backend child. Only
@@ -38,8 +38,10 @@ non-secret bootstrap metadata is placed in the child environment. Credentials
 are not passed through argv, environment variables, localhost TCP, socket
 paths, temporary files, logs, diagnostics, SQLite, WebView JavaScript, or MCP.
 The implemented protocol supports only a narrow internal `canvas_default`
-credential operation; Canvas authentication and Canvas API calls remain not
-implemented.
+connection-record operation. The Python backend uses it for read-only Canvas
+identity validation and course discovery. OAuth, Canvas passwords, Developer
+Key provisioning, token refresh, account management, Canvas content sync,
+file/material download, and Canvas writes remain not implemented.
 
 ## Academic Materials
 

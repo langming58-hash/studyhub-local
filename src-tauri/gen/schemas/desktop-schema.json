@@ -345,6 +345,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the canvas_connection_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-canvas-connection-status",
+          "markdownDescription": "Enables the canvas_connection_status command without any pre-configured scope."
+        },
+        {
           "description": "Enables the choose_study_files command without any pre-configured scope.",
           "type": "string",
           "const": "allow-choose-study-files",
@@ -355,6 +361,18 @@
           "type": "string",
           "const": "allow-choose-study-folder",
           "markdownDescription": "Enables the choose_study_folder command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the configure_canvas_connection command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-configure-canvas-connection",
+          "markdownDescription": "Enables the configure_canvas_connection command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the remove_canvas_connection command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-remove-canvas-connection",
+          "markdownDescription": "Enables the remove_canvas_connection command without any pre-configured scope."
         },
         {
           "description": "Enables the restart_backend command without any pre-configured scope.",
@@ -375,6 +393,12 @@
           "markdownDescription": "Enables the startup_diagnostics command without any pre-configured scope."
         },
         {
+          "description": "Denies the canvas_connection_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-canvas-connection-status",
+          "markdownDescription": "Denies the canvas_connection_status command without any pre-configured scope."
+        },
+        {
           "description": "Denies the choose_study_files command without any pre-configured scope.",
           "type": "string",
           "const": "deny-choose-study-files",
@@ -385,6 +409,18 @@
           "type": "string",
           "const": "deny-choose-study-folder",
           "markdownDescription": "Denies the choose_study_folder command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the configure_canvas_connection command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-configure-canvas-connection",
+          "markdownDescription": "Denies the configure_canvas_connection command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the remove_canvas_connection command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-remove-canvas-connection",
+          "markdownDescription": "Denies the remove_canvas_connection command without any pre-configured scope."
         },
         {
           "description": "Denies the restart_backend command without any pre-configured scope.",

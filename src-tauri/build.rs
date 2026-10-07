@@ -3,6 +3,9 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "choose_study_folder",
             "choose_study_files",
+            "canvas_connection_status",
+            "configure_canvas_connection",
+            "remove_canvas_connection",
             "restart_backend",
             "retry_backend",
             "startup_diagnostics",

@@ -52,8 +52,8 @@ enhancement and is not a V1 completion blocker.
   review-item workflows without inventing teacher content
 - improve extraction and graceful capability discovery for PDFs, Office files,
   OCR, and workbook-aware reading
-- build Canvas credential enrollment and revocation on top of the native
-  CredentialStore and private backend transport foundations
+- extend the implemented Canvas manual-token connection and course discovery
+  boundary into explicit course selection, mapping, and sync planning
 - refine search ranking, filtering, and source navigation
 - complete human keyboard and VoiceOver validation
 - provide privacy-safe backup/export for user-owned metadata and study history
@@ -108,7 +108,8 @@ The canonical registry and licensing rules are in the constitution.
 - persistent background-job foundation and recovery semantics
 - migration of current OpenAI environment/settings credentials into native
   CredentialStore, if separately approved
-- Canvas authentication and account management
+- Canvas OAuth, account management, course selection persistence, and sync
+  planning
 - Windows equivalent for the live private backend credential transport
 - OCR and media-transcription providers and packaging strategy
 - universal/Intel macOS and Windows distribution sequence

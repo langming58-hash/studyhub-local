@@ -240,8 +240,8 @@ API:
   SQLite, and browser storage still cannot retrieve raw credentials
 
 This boundary is covered with fake credential stores and synthetic child
-participants. It is not a Canvas connector, OAuth flow, account-management UI,
-or Canvas authentication implementation.
+participants. It is not an OAuth flow, account-management UI, Canvas password
+flow, content-sync engine, or Canvas file downloader.
 
 The desktop shell also implements the first live private parent/backend
 credential transport on Unix/macOS. For each backend launch, the Tauri parent
@@ -260,6 +260,13 @@ sessions fail closed, and PID reuse alone cannot authorize a request. The
 Python backend has an internal `CredentialClient` for this private channel, but
 it is not an HTTP handler and does not expose credentials to WebView code,
 MCP, diagnostics, SQLite, logs, or browser storage.
+
+The first Canvas use of this boundary is implemented for authenticated
+current-user validation and read-only course discovery. The stored value is a
+versioned Canvas connection record containing a normalized HTTPS Canvas origin
+and access token. Request input cannot override that bound origin, pagination
+and redirects are same-origin guarded, and discovery results remain metadata
+only rather than StudyHub academic-domain rows.
 
 Current platform scope: the live transport is implemented for Unix/macOS.
 Windows remains not implemented for this boundary until a separately reviewed
@@ -333,8 +340,9 @@ Proven with synthetic data on the current Apple Silicon Mac:
 2. The public build is Apple Silicon only, unsigned, and not notarized. A DMG
    prerelease exists, but Developer ID signing and Apple notarization are not on
    `main`.
-3. Canvas authentication, token enrollment, OAuth, account management, real
-   Canvas API requests, and OpenAI key migration are not implemented.
+3. Canvas OAuth, institution Developer Key provisioning, account management,
+   Canvas content synchronization, file/material download, Windows credential
+   transport, and OpenAI key migration are not implemented.
 4. Poppler and LibreOffice are not bundled; their missing states are graceful.
 5. Installed-tool detection from a separate Finder-launched clean Mac remains
    to be confirmed.

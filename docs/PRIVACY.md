@@ -122,6 +122,14 @@ credential operation. Credentials still do not pass through environment
 variables, command-line arguments, disk files, SQLite, logs, diagnostics,
 WebView JavaScript, localhost HTTP, or MCP.
 
+The implemented Canvas discovery boundary stores a versioned connection record
+behind that slot: normalized HTTPS Canvas origin plus user-provided access
+token. The frontend may configure or remove the connection through narrow
+write/status commands, but no frontend, HTTP route, MCP tool, diagnostic, log,
+or SQLite row may read the raw token. The backend uses the record only for
+read-only identity validation and current-user course discovery against the
+bound origin.
+
 ## Public Data Boundary
 
 Public examples, fixtures, tests, screenshots, documentation, and demo assets
