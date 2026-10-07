@@ -123,7 +123,8 @@ def main() -> int:
         "live_transport_not_registered_as_tauri_command": "credential_transport" not in re.search(
             r"generate_handler!\s*\[(?P<body>[^\]]*)\]", lib, re.S
         ).group("body").lower(),
-        "launch_env_has_no_secret_values": "CANVAS" not in lib
+        "launch_env_has_no_secret_values": '".env("CANVAS' not in lib
+        and '".env("ACCESS_TOKEN' not in lib
         and "TOKEN" not in lib
         and "OPENAI_API_KEY" in lib
         and "env_remove(inherited)" in lib,

@@ -342,6 +342,325 @@ class CredentialClient:
 _CREDENTIAL_CLIENT: CredentialClient | None = None
 
 
+CANVAS_RECORD_PREFIX = "studyhub-canvas-connection-v1"
+CANVAS_ACCEPT_HEADER = "application/json+canvas-string-ids"
+CANVAS_MAX_RESPONSE_BYTES = 1_000_000
+CANVAS_MAX_PAGES = 10
+CANVAS_MAX_ITEMS = 500
+CANVAS_TIMEOUT_SECONDS = 10
+CANVAS_ALLOWED_GET_PATHS = {"/api/v1/users/self", "/api/v1/courses"}
+
+
+class CanvasConnectionError(RuntimeError):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class CanvasConnectionRecord:
+    origin: str
+    access_token: str
+
+
+@dataclass(frozen=True)
+class CanvasHTTPResponse:
+    status: int
+    headers: dict[str, str]
+    body: bytes
+
+
+@dataclass(frozen=True)
+class CanvasIdentity:
+    remote_user_id: str
+    display_name: str
+
+
+@dataclass(frozen=True)
+class CanvasCourse:
+    remote_course_id: str
+    name: str
+    course_code: str
+    workflow_state: str
+    start_at: str | None
+    end_at: str | None
+    term_id: str | None
+    term_name: str | None
+
+
+class CanvasConnectorError(RuntimeError):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+class CanvasCrossOriginRedirect(urllib.error.HTTPError):
+    pass
+
+
+def parse_canvas_connection_record(raw: str) -> CanvasConnectionRecord:
+    lines = raw.splitlines()
+    if len(lines) != 3 or lines[0] != CANVAS_RECORD_PREFIX:
+        raise CanvasConnectionError("malformed_canvas_connection")
+    origin_hex = lines[1].removeprefix("origin_hex=")
+    token_hex = lines[2].removeprefix("token_hex=")
+    if not lines[1].startswith("origin_hex=") or not lines[2].startswith("token_hex="):
+        raise CanvasConnectionError("malformed_canvas_connection")
+    try:
+        origin = bytes.fromhex(origin_hex).decode("utf-8")
+        token = bytes.fromhex(token_hex).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise CanvasConnectionError("malformed_canvas_connection") from exc
+    normalized_origin = normalize_canvas_origin(origin)
+    if not token.strip() or any(ch.isspace() or ord(ch) < 32 for ch in token) or len(token) > 4096:
+        raise CanvasConnectionError("malformed_canvas_connection")
+    return CanvasConnectionRecord(normalized_origin, token)
+
+
+def normalize_canvas_origin(raw: str) -> str:
+    if "access_token" in raw.lower():
+        raise CanvasConnectionError("invalid_canvas_origin")
+    parsed = urllib.parse.urlparse(raw.strip())
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise CanvasConnectionError("invalid_canvas_origin")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise CanvasConnectionError("invalid_canvas_origin")
+    if parsed.path not in {"", "/"}:
+        raise CanvasConnectionError("invalid_canvas_origin")
+    try:
+        ipaddress.ip_address(parsed.hostname)
+        raise CanvasConnectionError("invalid_canvas_origin")
+    except ValueError:
+        pass
+    host = parsed.hostname.lower()
+    return f"https://{host}:{parsed.port}" if parsed.port else f"https://{host}"
+
+
+def same_origin(left: str, right: str) -> bool:
+    a = urllib.parse.urlparse(left)
+    b = urllib.parse.urlparse(right)
+    return (
+        a.scheme == b.scheme
+        and (a.hostname or "").lower() == (b.hostname or "").lower()
+        and (a.port or (443 if a.scheme == "https" else 80))
+        == (b.port or (443 if b.scheme == "https" else 80))
+    )
+
+
+class NoAutomaticRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        raise CanvasCrossOriginRedirect(req.full_url, code, "canvas_redirect", headers, fp)
+
+
+def default_canvas_http_get(url: str, headers: dict[str, str], timeout: int = CANVAS_TIMEOUT_SECONDS) -> CanvasHTTPResponse:
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    context = ssl.create_default_context(cafile=certifi.where()) if certifi else ssl.create_default_context()
+    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context), NoAutomaticRedirect)
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            body = response.read(CANVAS_MAX_RESPONSE_BYTES + 1)
+            return CanvasHTTPResponse(response.status, dict(response.headers.items()), body)
+    except urllib.error.HTTPError as exc:
+        body = exc.read(CANVAS_MAX_RESPONSE_BYTES + 1)
+        return CanvasHTTPResponse(exc.code, dict(exc.headers.items()), body)
+    except TimeoutError as exc:
+        raise CanvasConnectorError("transport_failure") from exc
+    except urllib.error.URLError as exc:
+        raise CanvasConnectorError("transport_failure") from exc
+
+
+class CanvasConnector:
+    def __init__(
+        self,
+        record: CanvasConnectionRecord,
+        http_get: Callable[[str, dict[str, str], int], CanvasHTTPResponse] = default_canvas_http_get,
+        max_pages: int = CANVAS_MAX_PAGES,
+        max_items: int = CANVAS_MAX_ITEMS,
+    ):
+        self.record = record
+        self.http_get = http_get
+        self.max_pages = max_pages
+        self.max_items = max_items
+
+    def identity(self) -> CanvasIdentity:
+        payload = self._get_json("/api/v1/users/self")
+        if not isinstance(payload, dict):
+            raise CanvasConnectorError("malformed_canvas_response")
+        remote_id = payload.get("id")
+        display_name = payload.get("name") or payload.get("short_name") or ""
+        if remote_id is None or not isinstance(display_name, str):
+            raise CanvasConnectorError("malformed_canvas_response")
+        return CanvasIdentity(str(remote_id), display_name)
+
+    def courses(self, enrollment_state: str = "active") -> list[CanvasCourse]:
+        params = {"enrollment_state": enrollment_state, "per_page": "50"}
+        payloads = self._get_paginated_json("/api/v1/courses", params=params)
+        courses: list[CanvasCourse] = []
+        for item in payloads:
+            if not isinstance(item, dict):
+                raise CanvasConnectorError("malformed_canvas_response")
+            remote_id = item.get("id")
+            name = item.get("name") or ""
+            if remote_id is None or not isinstance(name, str):
+                raise CanvasConnectorError("malformed_canvas_response")
+            term = item.get("term") if isinstance(item.get("term"), dict) else {}
+            courses.append(
+                CanvasCourse(
+                    remote_course_id=str(remote_id),
+                    name=name,
+                    course_code=str(item.get("course_code") or ""),
+                    workflow_state=str(item.get("workflow_state") or ""),
+                    start_at=item.get("start_at") if isinstance(item.get("start_at"), str) else None,
+                    end_at=item.get("end_at") if isinstance(item.get("end_at"), str) else None,
+                    term_id=str(term.get("id")) if term.get("id") is not None else None,
+                    term_name=term.get("name") if isinstance(term.get("name"), str) else None,
+                )
+            )
+        return courses
+
+    def _get_json(self, path: str, params: dict[str, str] | None = None) -> Any:
+        url = self._build_url(path, params or {})
+        response = self._request_url(url)
+        return self._decode_json(response)
+
+    def _get_paginated_json(self, path: str, params: dict[str, str] | None = None) -> list[Any]:
+        url = self._build_url(path, params or {})
+        seen: set[str] = set()
+        items: list[Any] = []
+        for _page in range(self.max_pages):
+            if url in seen:
+                raise CanvasConnectorError("pagination_loop")
+            seen.add(url)
+            response = self._request_url(url)
+            payload = self._decode_json(response)
+            if not isinstance(payload, list):
+                raise CanvasConnectorError("malformed_canvas_response")
+            items.extend(payload)
+            if len(items) > self.max_items:
+                raise CanvasConnectorError("pagination_limit_exceeded")
+            next_url = next_canvas_link(response.headers, "next")
+            if not next_url:
+                return items
+            if not same_origin(self.record.origin, next_url):
+                raise CanvasConnectorError("cross_origin_pagination")
+            url = next_url
+        raise CanvasConnectorError("pagination_limit_exceeded")
+
+    def _build_url(self, path: str, params: dict[str, str]) -> str:
+        if path not in CANVAS_ALLOWED_GET_PATHS:
+            raise CanvasConnectorError("unsupported_canvas_endpoint")
+        query = urllib.parse.urlencode(params)
+        return f"{self.record.origin}{path}" + (f"?{query}" if query else "")
+
+    def _request_url(self, url: str) -> CanvasHTTPResponse:
+        if not same_origin(self.record.origin, url):
+            raise CanvasConnectorError("origin_mismatch")
+        headers = {
+            "Accept": CANVAS_ACCEPT_HEADER,
+            "Authorization": f"Bearer {self.record.access_token}",
+            "User-Agent": "StudyHub Local Canvas discovery",
+        }
+        try:
+            response = self.http_get(url, headers, CANVAS_TIMEOUT_SECONDS)
+        except CanvasConnectorError:
+            raise
+        except Exception as exc:
+            raise CanvasConnectorError("transport_failure") from exc
+        if len(response.body) > CANVAS_MAX_RESPONSE_BYTES:
+            raise CanvasConnectorError("response_too_large")
+        return self._classify_response(response)
+
+    def _classify_response(self, response: CanvasHTTPResponse) -> CanvasHTTPResponse:
+        if 200 <= response.status < 300:
+            return response
+        if response.status == 301 or response.status == 302 or response.status == 303 or response.status == 307 or response.status == 308:
+            location = header_value(response.headers, "location")
+            if location:
+                next_url = urllib.parse.urljoin(self.record.origin, location)
+                if not same_origin(self.record.origin, next_url):
+                    raise CanvasConnectorError("cross_origin_redirect")
+            raise CanvasConnectorError("canvas_unavailable")
+        if response.status == 401:
+            raise CanvasConnectorError("authentication_failed")
+        if response.status == 403:
+            raise CanvasConnectorError("permission_denied")
+        if response.status == 429:
+            raise CanvasConnectorError("rate_limited")
+        if response.status >= 500:
+            raise CanvasConnectorError("canvas_unavailable")
+        raise CanvasConnectorError("canvas_api_error")
+
+    def _decode_json(self, response: CanvasHTTPResponse) -> Any:
+        try:
+            return json.loads(response.body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise CanvasConnectorError("malformed_canvas_response") from exc
+
+
+def header_value(headers: dict[str, str], name: str) -> str | None:
+    lower = name.lower()
+    for key, value in headers.items():
+        if key.lower() == lower:
+            return value
+    return None
+
+
+def next_canvas_link(headers: dict[str, str], relation: str) -> str | None:
+    link = header_value(headers, "link")
+    if not link:
+        return None
+    for part in link.split(","):
+        match = re.search(r"<([^>]+)>\s*;\s*rel=\"?([^\";]+)\"?", part.strip(), re.IGNORECASE)
+        if match and match.group(2).lower() == relation.lower():
+            return match.group(1)
+    return None
+
+
+def canvas_connection_record_from_private_transport() -> CanvasConnectionRecord:
+    client = initialize_credential_client()
+    if client is None:
+        raise CanvasConnectorError("connection_not_configured")
+    try:
+        return client.with_canvas_default_credential(parse_canvas_connection_record)
+    except CredentialClientError as exc:
+        code = str(exc)
+        if code == "credential_missing":
+            raise CanvasConnectorError("credential_missing") from exc
+        if code == "credential_backend_unavailable":
+            raise CanvasConnectorError("credential_backend_unavailable") from exc
+        if code == "credential_access_denied":
+            raise CanvasConnectorError("credential_access_denied") from exc
+        raise CanvasConnectorError("credential_operation_failed") from exc
+    except CanvasConnectionError as exc:
+        raise CanvasConnectorError(exc.code) from exc
+
+
+def with_canvas_connector(action: Callable[[CanvasConnector], Any]) -> Any:
+    record = canvas_connection_record_from_private_transport()
+    return action(CanvasConnector(record))
+
+
+def public_canvas_identity(identity: CanvasIdentity) -> dict[str, str]:
+    return {
+        "remote_user_id": identity.remote_user_id,
+        "display_name": identity.display_name,
+    }
+
+
+def public_canvas_course(course: CanvasCourse) -> dict[str, Any]:
+    return {
+        "remote_course_id": course.remote_course_id,
+        "name": course.name,
+        "course_code": course.course_code,
+        "workflow_state": course.workflow_state,
+        "start_at": course.start_at,
+        "end_at": course.end_at,
+        "term": {"id": course.term_id, "name": course.term_name}
+        if course.term_id or course.term_name
+        else None,
+    }
+
+
 def initialize_credential_client() -> CredentialClient | None:
     global _CREDENTIAL_CLIENT
     if _CREDENTIAL_CLIENT is None:
@@ -5252,6 +5571,10 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.send_json(sync_openai_vector_store())
             elif parsed.path == "/api/config/study-library":
                 self.handle_study_library_config()
+            elif parsed.path == "/api/canvas/identity":
+                self.handle_canvas_identity()
+            elif parsed.path == "/api/canvas/courses":
+                self.handle_canvas_courses()
             elif parsed.path in {
                 "/api/terms/manage",
                 "/api/courses/manage",
@@ -5268,6 +5591,53 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.send_error_json(404, "Not found")
         except Exception as exc:
             self.handle_exception(exc)
+
+    def send_canvas_error(self, error: CanvasConnectorError) -> None:
+        status = {
+            "connection_not_configured": 409,
+            "credential_missing": 409,
+            "credential_backend_unavailable": 503,
+            "credential_access_denied": 403,
+            "credential_operation_failed": 503,
+            "invalid_canvas_origin": 400,
+            "malformed_canvas_connection": 409,
+            "authentication_failed": 401,
+            "permission_denied": 403,
+            "rate_limited": 429,
+            "canvas_unavailable": 503,
+            "malformed_canvas_response": 502,
+            "response_too_large": 502,
+            "transport_failure": 503,
+            "origin_mismatch": 403,
+            "cross_origin_redirect": 403,
+            "cross_origin_pagination": 403,
+            "pagination_loop": 502,
+            "pagination_limit_exceeded": 502,
+            "unsupported_canvas_endpoint": 400,
+            "canvas_api_error": 502,
+        }.get(error.code, 500)
+        self.send_json({"ok": False, "error": error.code}, status)
+
+    def handle_canvas_identity(self) -> None:
+        body = self.parse_body_json()
+        if body:
+            raise ValueError("Canvas identity validation does not accept request parameters")
+        try:
+            identity = with_canvas_connector(lambda connector: connector.identity())
+            self.send_json({"ok": True, "identity": public_canvas_identity(identity)})
+        except CanvasConnectorError as exc:
+            self.send_canvas_error(exc)
+
+    def handle_canvas_courses(self) -> None:
+        body = self.parse_body_json()
+        enrollment_state = str(body.get("enrollment_state") or "active")
+        if enrollment_state not in {"active", "completed", "invited_or_pending"}:
+            raise ValueError("Unsupported Canvas enrollment_state")
+        try:
+            courses = with_canvas_connector(lambda connector: connector.courses(enrollment_state=enrollment_state))
+            self.send_json({"ok": True, "courses": [public_canvas_course(course) for course in courses]})
+        except CanvasConnectorError as exc:
+            self.send_canvas_error(exc)
 
     def handle_study_library_config(self) -> None:
         body = self.parse_body_json()

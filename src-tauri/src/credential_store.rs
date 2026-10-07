@@ -276,7 +276,7 @@ pub(crate) struct MemoryCredentialStore {
 
 #[cfg(test)]
 impl MemoryCredentialStore {
-    fn new(namespace: &'static str) -> Self {
+    pub(crate) fn new(namespace: &'static str) -> Self {
         Self {
             namespace,
             values: Mutex::new(HashMap::new()),
@@ -284,7 +284,7 @@ impl MemoryCredentialStore {
         }
     }
 
-    fn fail_next_store_for(&self, slot: CredentialSlot) {
+    pub(crate) fn fail_next_store_for(&self, slot: CredentialSlot) {
         self.failing_slots.lock().expect("test lock").insert(slot);
     }
 }
