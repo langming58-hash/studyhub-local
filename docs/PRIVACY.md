@@ -139,13 +139,26 @@ record, credential-session authority, local filesystem paths, or Canvas content
 in SQLite. User selection is separate from remote-authoritative metadata and is
 not cleared by a metadata refresh or one missing discovery result.
 
-The Canvas file sync-plan foundation persists only a last-applied baseline of
-bounded, non-secret file metadata for selected CourseOfferings. Current preview
-manifests are not persisted. Canvas signed download URLs, preview URLs,
-thumbnail URLs, verifiers, access tokens, local paths, and downloaded bytes are
-excluded from the database, public plan, fingerprints, diagnostics, logs, and
-MCP. A file missing from one discovery response remains an advisory ambiguity;
-it does not trigger deletion of local or remote-authoritative state.
+The Canvas file sync foundation persists a last-applied baseline of bounded,
+non-secret file metadata for selected CourseOfferings. Current preview
+manifests are not persisted. Signed download URLs, preview URLs, thumbnail
+URLs, verifiers, and access tokens remain excluded from SQLite, public
+responses, fingerprints, diagnostics, logs, and MCP.
+
+After explicit apply, validated Canvas bytes may be retained under the
+profile-isolated StudyHub data root for offline use. Their Source remains
+`REMOTE_AUTHORITATIVE`, records the opaque remote file identity and a non-secret
+authority identifier, and keeps `remote_url` empty. Its local locator is private
+runtime state and is never returned through public APIs or MCP. A file missing
+from one discovery response remains advisory and does not delete retained
+bytes, provenance, versions, baselines, or user selection.
+
+Existing local preview/read and read-only MCP content resolution may read an
+already acquired Canvas copy by safe file ID. The resolver accepts only the
+exact persisted path of an explicit `canvas_remote` row inside the dedicated
+profile-owned Canvas remote-content root. It does not grant general access to
+the data directory, cache directory, Canvas credentials, signed URLs, or sync
+controls.
 
 ## Public Data Boundary
 

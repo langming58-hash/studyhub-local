@@ -1,11 +1,12 @@
 # Canvas Import
 
-Status: **AUTHENTICATED CONNECTOR / COURSE SELECTION / FILE SYNC-PLAN PREVIEW
-IMPLEMENTED; PRODUCTION AUTH ENROLLMENT AND CONTENT ACQUISITION NOT IMPLEMENTED**.
+Status: **AUTHENTICATED CONNECTOR / COURSE SELECTION / FILE SYNC PREVIEW AND
+EXPLICIT APPLY IMPLEMENTED; PRODUCTION AUTH ENROLLMENT NOT IMPLEMENTED**.
 
-StudyHub Local does not currently include a public universal Canvas downloader
-or automatic Canvas synchronization. The local folder and scanner work without
-an LMS connection.
+StudyHub Local implements a narrow explicit downloader for supported Canvas
+File objects selected from a fresh SyncPlan. It is not a universal downloader
+and does not perform automatic or background synchronization. The local folder
+and scanner work without an LMS connection.
 
 ## Authority And Safety
 
@@ -60,10 +61,10 @@ The generic local ingestion boundary prerequisite is implemented for current
 filesystem scanner/import inputs. Canvas authenticated identity validation,
 current-user course discovery, persistent CourseOffering remote identity,
 user-owned CourseOffering selection, read-only selected-offering file metadata
-discovery, and deterministic file SyncPlan preview are implemented. Canvas
-content acquisition, SyncPlan apply, Canvas-specific content provenance
-mapping, local Course/CourseOffering mapping, and Canvas content ingestion
-remain not implemented.
+discovery, deterministic file SyncPlan preview, explicit stale-checked apply,
+bounded file acquisition, remote-authoritative provenance, and ingestion are
+implemented. The local Course row created for Canvas is a compatibility
+projection bound to CourseOffering, not a semantic Course merge.
 
 ## Implemented Discovery Boundary
 
@@ -73,6 +74,8 @@ Implemented Canvas calls are limited to:
 - `GET /api/v1/courses` for current-user course discovery.
 - `GET /api/v1/courses/:course_id/files` for selected CourseOffering file
   metadata discovery.
+- `GET /api/v1/courses/:course_id/files/:file_id` for authoritative metadata
+  revalidation immediately before and after acquisition.
 
 StudyHub requests `Accept: application/json+canvas-string-ids` and treats
 Canvas remote IDs as opaque strings. The connector uses `Authorization: Bearer`
@@ -102,6 +105,10 @@ Current file-planning API:
 - `POST /api/canvas/sync-preview`: accepts only optional StudyHub
   CourseOffering stable IDs, verifies each offering is selected for the bound
   Canvas authority, discovers file metadata, and returns a deterministic plan.
+- `POST /api/canvas/sync-apply`: accepts only the expected plan revision,
+  explicit StudyHub-generated remote-file stable IDs, and optional
+  CourseOffering stable IDs needed to preserve preview scope. It recomputes the
+  plan, rejects stale or unknown items, and applies only eligible actions.
 
 The normalized manifest retains opaque string file/course IDs, bounded names,
 content type, byte size, Canvas timestamps, and lock/visibility state. Canvas
@@ -112,10 +119,9 @@ Canvas pagination semantics: case-insensitive `Link` headers, opaque
 limits. Canvas 401, 403, 429, and server failures remain sanitized categories.
 
 The additive `canvas_file_sync_baselines` table represents metadata from the
-last successfully applied future content sync. It is not a record of the most
-recent preview. Preview never writes this table. Its internal write helper is
-not an HTTP endpoint, uses a nested savepoint, and leaves commit or rollback to
-the caller. No current user workflow marks a baseline as applied.
+last successfully applied content sync. It is not a record of the most recent
+preview. Preview never writes this table. Apply advances it only after the
+corresponding ingestion or safe metadata-only update succeeds.
 
 Plan classifications are:
 
@@ -132,6 +138,46 @@ CourseOffering, and opaque remote file ID. Deterministic baseline, manifest,
 and plan revisions use canonical sorting and safe normalized metadata only;
 they exclude credentials, generated timestamps, random values, database row
 IDs, and temporary URLs.
+
+## Implemented Acquisition Boundary
+
+The authoritative File `url` is held only in memory. Canvas API requests use
+the origin-bound bearer credential; download requests and every redirect use a
+separate no-credential client. Download URLs must be HTTPS, contain no user
+information, remain within a bounded length, and must not use localhost,
+loopback, private, link-local, unspecified, multicast, or reserved IP literals.
+Redirects and byte counts are bounded. The current standard-library boundary
+does not pin DNS resolution to a validated public address, so complete DNS
+rebinding resistance for hostname targets remains a known limitation.
+
+Bytes stream through a restrictive profile-scoped staging file while StudyHub
+computes SHA-256. The 256 MiB ceiling applies both to declared size and actual
+streamed bytes. Metadata is re-read after download; changed size or revision
+signals discard the acquisition. Successfully validated bytes move to an
+immutable content-addressed path under `data/remote-content/canvas` before one
+database transaction runs the existing ingestion core and baseline update.
+Normal file lookup and preview accept that path only for an explicit
+`canvas_remote` row whose persisted path matches exactly and remains inside the
+Canvas remote-content root. Other data and cache paths remain denied.
+
+The current threaded backend serializes the complete mutating apply sequence,
+including final commit or rollback, with one Canvas-apply-only process lock.
+This prevents two requests in the same backend process from confusing retained
+file ownership. It is not a distributed or cross-process lock; process crashes
+may still leave safe unreferenced retained files.
+
+Canvas provenance uses `provider_kind=canvas` and
+`authority=REMOTE_AUTHORITATIVE`. The stable Source and Material identities are
+anchored to authority, CourseOffering, and opaque remote file ID rather than
+filename, URL, timestamp, or byte hash. Different bytes create another Blob
+and MaterialVersion for the same Material; identical bytes do not duplicate a
+version. The retained local copy does not become user-owned merely because it
+is available offline.
+
+Compatibility Course fields refresh from Canvas only while
+`metadata_locked=0`. A normal local Course edit locks and preserves the user's
+name, code, and term presentation; CourseOffering continues to retain fresh
+remote-authoritative Canvas metadata and is never changed by that local edit.
 
 ## Sync Is Not Ingestion
 
@@ -162,20 +208,13 @@ partial sync recovers. Safe idempotent additions and refreshes may execute
 automatically according to the user's sync policy, while remaining observable,
 auditable, and recoverable.
 
-## Implementation Gate
+## Remaining Scope
 
-Before Canvas content acquisition or sync apply:
+Production OAuth, account management, background sync, retry jobs, Modules,
+Pages, Assignments, remote deletion semantics, semantic local Course mapping,
+conflict-resolution UI, apply undo, and retained-byte garbage collection are
+not implemented. A controlled database failure removes newly created retained
+files when safe; a process crash can leave an unreferenced retained orphan,
+which is preferable to deleting historical or user-owned bytes.
 
-1. audit official API capabilities and current authentication requirements
-2. define account selection UX beyond the single default connection
-3. define Source, Blob, Material, MaterialVersion, and CourseOffering mapping
-4. define stale-plan, apply, recovery, and conflict semantics
-5. select or reject a background-job foundation through a separate decision
-6. add synthetic connector, pagination, retry, provenance, and migration tests
-7. verify no real Canvas data, credentials, or academic content enters public
-   fixtures, logs, screenshots, or Git history
-
-Canvas file/material download, Source/Blob/Material creation, SyncPlan apply,
-assignments/modules/pages sync, local Course/Term mapping, remote deletion
-semantics, background sync, and conflict handling are not implemented by the
-file-manifest planning foundation.
+Official authority: [Instructure Canvas Files API](https://developerdocs.instructure.com/services/canvas/resources/files).

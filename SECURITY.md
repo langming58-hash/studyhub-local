@@ -16,7 +16,7 @@ OpenAI/vector indexing is opt-in. When enabled, selected indexed file content an
 
 ## File Access
 
-The scanner, previews, upload flow, open-original action, Ask GPT, and MCP tools should only access the configured `STUDY_LIBRARY_PATH`. Path traversal and arbitrary filesystem reads are not allowed. Upload targets are built from validated server-side components and copied by temporary file plus atomic rename.
+The scanner, upload flow, and normal local-material reads are constrained to the configured `STUDY_LIBRARY_PATH`; exact external references remain explicit exceptions. Canvas-retained reads add one narrow exception: an explicit `canvas_remote` row must exactly match its persisted path inside the profile-owned Canvas remote-content root. No arbitrary data/cache path is trusted. Path traversal and arbitrary filesystem reads are not allowed. Upload targets are built from validated server-side components and copied by temporary file plus atomic rename.
 
 Study-library files are treated as untrusted content. Active browser formats such as HTML, XHTML, XML, and SVG are not rendered as same-origin active documents in preview; they are shown as escaped plaintext with MIME sniffing disabled.
 
@@ -40,12 +40,17 @@ paths, temporary files, logs, diagnostics, SQLite, WebView JavaScript, or MCP.
 The implemented protocol supports only a narrow internal `canvas_default`
 connection-record operation. If a valid origin-bound connection record exists,
 the Python backend can use it for read-only Canvas identity validation and
-course discovery. The browser may submit only remote course IDs for local
-course-selection preview/apply; StudyHub re-reads Canvas metadata through the
-connector before persisting CourseOffering records. OAuth, Canvas passwords,
-Developer Key provisioning, token refresh, production end-user connection UX,
-account management, Canvas content sync, file/material download, and Canvas
-writes remain not implemented.
+course discovery and explicit selected-file acquisition. The browser may submit
+only selected CourseOffering intent, expected plan revisions, and
+StudyHub-generated remote-file stable IDs. StudyHub re-reads authoritative
+metadata before persistence. Canvas API bearer credentials are never attached
+to ephemeral file URLs or redirects. Downloads are HTTPS-only, reject unsafe
+literal network targets, enforce redirect and 256 MiB streaming limits, and
+remain inside profile-owned storage. Hostname DNS address pinning is not yet
+implemented and is documented as a residual SSRF limitation. OAuth, Canvas
+passwords, Developer Key provisioning, token refresh, production end-user
+connection UX, account management, background sync, remote deletion, and
+Canvas writes remain not implemented.
 
 ## Academic Materials
 
