@@ -178,9 +178,9 @@ def main() -> int:
 
     mutating_blocked = all(
         raises_code("unsupported_canvas_endpoint", lambda path=path: server.CanvasConnector(record())._build_url(path, {}))
-        for path in ["/api/v1/courses/1/files", "/api/v1/users/self/files", "/api/v1/courses/1/assignments"]
+        for path in ["/api/v1/files/1", "/api/v1/users/self/files", "/api/v1/courses/1/assignments"]
     )
-    check("content_download_endpoints_not_constructed", mutating_blocked, failures)
+    check("content_download_and_unrelated_endpoints_not_constructed", mutating_blocked, failures)
     check("canvas_mutating_methods_not_supported", "method=\"GET\"" in Path(ROOT / "server.py").read_text(encoding="utf-8") and "method=\"POST\"" not in Path(ROOT / "server.py").read_text(encoding="utf-8").split("class CanvasConnector", 1)[1].split("def header_value", 1)[0], failures)
 
     public_course = server.public_canvas_course(courses[0])

@@ -1,7 +1,7 @@
 # Canvas Import
 
-Status: **AUTHENTICATED CONNECTOR / COURSE SELECTION FOUNDATION IMPLEMENTED;
-PRODUCTION AUTH ENROLLMENT NOT IMPLEMENTED; SYNC NOT IMPLEMENTED**.
+Status: **AUTHENTICATED CONNECTOR / COURSE SELECTION / FILE SYNC-PLAN PREVIEW
+IMPLEMENTED; PRODUCTION AUTH ENROLLMENT AND CONTENT ACQUISITION NOT IMPLEMENTED**.
 
 StudyHub Local does not currently include a public universal Canvas downloader
 or automatic Canvas synchronization. The local folder and scanner work without
@@ -58,12 +58,12 @@ normalization, conflict behavior, and ingestion.
 
 The generic local ingestion boundary prerequisite is implemented for current
 filesystem scanner/import inputs. Canvas authenticated identity validation,
-current-user course discovery, persistent CourseOffering remote identity, and
-user-owned CourseOffering selection are implemented as local read-only
-selection foundations. Sync planning, remote change handling beyond safe
-metadata refresh, Canvas-specific content provenance mapping, local
-Course/CourseOffering mapping, and Canvas content ingestion remain not
-implemented.
+current-user course discovery, persistent CourseOffering remote identity,
+user-owned CourseOffering selection, read-only selected-offering file metadata
+discovery, and deterministic file SyncPlan preview are implemented. Canvas
+content acquisition, SyncPlan apply, Canvas-specific content provenance
+mapping, local Course/CourseOffering mapping, and Canvas content ingestion
+remain not implemented.
 
 ## Implemented Discovery Boundary
 
@@ -71,6 +71,8 @@ Implemented Canvas calls are limited to:
 
 - `GET /api/v1/users/self` for current-user validation.
 - `GET /api/v1/courses` for current-user course discovery.
+- `GET /api/v1/courses/:course_id/files` for selected CourseOffering file
+  metadata discovery.
 
 StudyHub requests `Accept: application/json+canvas-string-ids` and treats
 Canvas remote IDs as opaque strings. The connector uses `Authorization: Bearer`
@@ -94,6 +96,42 @@ Current selection APIs:
 - `GET /api/canvas/selected-courses`: lists locally remembered selected
   offerings with last-known metadata. This is offline remembered state, not a
   fresh Canvas sync.
+
+Current file-planning API:
+
+- `POST /api/canvas/sync-preview`: accepts only optional StudyHub
+  CourseOffering stable IDs, verifies each offering is selected for the bound
+  Canvas authority, discovers file metadata, and returns a deterministic plan.
+
+The normalized manifest retains opaque string file/course IDs, bounded names,
+content type, byte size, Canvas timestamps, and lock/visibility state. Canvas
+`url`, `preview_url`, and `thumbnail_url` values are ephemeral and are not
+persisted, logged, fingerprinted, or returned. The connector follows official
+Canvas pagination semantics: case-insensitive `Link` headers, opaque
+`rel="next"` URLs, same-origin enforcement, loop detection, and page/item/body
+limits. Canvas 401, 403, 429, and server failures remain sanitized categories.
+
+The additive `canvas_file_sync_baselines` table represents metadata from the
+last successfully applied future content sync. It is not a record of the most
+recent preview. Preview never writes this table. Its internal write helper is
+not an HTTP endpoint, uses a nested savepoint, and leaves commit or rollback to
+the caller. No current user workflow marks a baseline as applied.
+
+Plan classifications are:
+
+- `ADD`: present remotely with no last-applied baseline.
+- `POTENTIAL_CONTENT_CHANGE`: stable remote identity with changed size or
+  remote update/modified timestamp signals. This is not a content hash claim.
+- `METADATA_CHANGE`: safe metadata changed without a content-change signal.
+- `UNCHANGED`: normalized current metadata matches the baseline.
+- `MISSING_FROM_REMOTE_DISCOVERY`: advisory ambiguity only; it never deletes a
+  baseline or local academic data and does not claim permanent remote deletion.
+
+Stable remote file identity is scoped by provider, Canvas authority,
+CourseOffering, and opaque remote file ID. Deterministic baseline, manifest,
+and plan revisions use canonical sorting and safe normalized metadata only;
+they exclude credentials, generated timestamps, random values, database row
+IDs, and temporary URLs.
 
 ## Sync Is Not Ingestion
 
@@ -126,17 +164,18 @@ auditable, and recoverable.
 
 ## Implementation Gate
 
-Before any Canvas sync implementation:
+Before Canvas content acquisition or sync apply:
 
 1. audit official API capabilities and current authentication requirements
 2. define account selection UX beyond the single default connection
 3. define Source, Blob, Material, MaterialVersion, and CourseOffering mapping
-4. define SyncPlan and conflict semantics
+4. define stale-plan, apply, recovery, and conflict semantics
 5. select or reject a background-job foundation through a separate decision
 6. add synthetic connector, pagination, retry, provenance, and migration tests
 7. verify no real Canvas data, credentials, or academic content enters public
    fixtures, logs, screenshots, or Git history
 
-Canvas file/material download, assignments/modules/pages sync, local
-Course/Term mapping, remote deletion semantics, background sync, and conflict
-handling are not implemented by the course-selection foundation.
+Canvas file/material download, Source/Blob/Material creation, SyncPlan apply,
+assignments/modules/pages sync, local Course/Term mapping, remote deletion
+semantics, background sync, and conflict handling are not implemented by the
+file-manifest planning foundation.

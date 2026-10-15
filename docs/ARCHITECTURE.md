@@ -88,9 +88,18 @@ last-known course metadata, and separate user-owned selected/deselected state.
 Selection preview/apply is local-only and does not mutate Canvas, download
 content, create local Course/Term rows, or ingest materials.
 
-Not implemented yet: Canvas content synchronization, Canvas file/material
-download, local Course/CourseOffering mapping, remote Term mapping, SyncPlan
-persistence, remote deletion semantics, SourceAnchor, Evidence,
+For selected Canvas CourseOfferings, the connector can now list course-file
+metadata through the read-only Canvas Files API and normalize it into a remote
+manifest. A deterministic, non-mutating SyncPlan preview compares that manifest
+with a persisted last-applied metadata baseline and classifies files as `ADD`,
+`POTENTIAL_CONTENT_CHANGE`, `METADATA_CHANGE`, `UNCHANGED`, or advisory
+`MISSING_FROM_REMOTE_DISCOVERY`. Preview does not update the baseline. Temporary
+download, preview, and thumbnail URLs are discarded before normalization and
+never enter SQLite, plan output, stable identity, or revision fingerprints.
+
+Not implemented yet: Canvas content acquisition or synchronization apply,
+Canvas file/material download, local Course/CourseOffering mapping, remote Term
+mapping, remote deletion semantics, SourceAnchor, Evidence,
 DerivedArtifact/ProcessingRecipe, Entity Resolution, the Assessments target
 model, background jobs, and target-domain UI reads.
 
@@ -128,8 +137,9 @@ See [Preview Matrix](design/PREVIEW_MATRIX.md) for current format behavior.
   desktop shell now provides a Unix/macOS private inherited stream transport to
   the exact spawned Python backend child for one narrow internal
   `canvas_default` credential operation. The current Canvas connector can use
-  that boundary for read-only identity validation and course discovery only when
-  an approved mechanism has stored a valid connection record.
+  that boundary for read-only identity validation, course discovery, and
+  selected-offering file metadata discovery when an approved mechanism has
+  stored a valid connection record.
 - OpenAI is optional, server-side, and scoped to indexed source material.
 - Practice questions come from indexed teacher-provided material only. The app
   must not invent practice questions.

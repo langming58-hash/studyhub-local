@@ -53,8 +53,8 @@ enhancement and is not a V1 completion blocker.
 - improve extraction and graceful capability discovery for PDFs, Office files,
   OCR, and workbook-aware reading
 - extend the implemented Canvas connector/discovery/course-selection foundation
-  into compliant Production authentication, explicit local course mapping, and
-  sync planning
+  and file sync-plan preview into compliant Production authentication, content
+  acquisition/apply, and explicit local course mapping
 - refine search ranking, filtering, and source navigation
 - complete human keyboard and VoiceOver validation
 - provide privacy-safe backup/export for user-owned metadata and study history
@@ -109,8 +109,8 @@ The canonical registry and licensing rules are in the constitution.
 - persistent background-job foundation and recovery semantics
 - migration of current OpenAI environment/settings credentials into native
   CredentialStore, if separately approved
-- Canvas OAuth, account management, local CourseOffering mapping, and sync
-  planning
+- Canvas OAuth, account management, local CourseOffering mapping, and sync-plan
+  apply/recovery semantics
 - Windows equivalent for the live private backend credential transport
 - OCR and media-transcription providers and packaging strategy
 - universal/Intel macOS and Windows distribution sequence
