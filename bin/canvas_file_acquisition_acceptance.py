@@ -280,6 +280,41 @@ def check_apply_and_versions(server: Any, conn: sqlite3.Connection, offering: sq
     check("canvas_source_has_safe_remote_identity", source["remote_id"] == FILE_ID and source["connector_id"] == offering["authority_id"] and not source["remote_url"], failures)
     check("retained_path_is_profile_scoped_and_content_addressed", server.is_inside(retained_a, server.canvas_remote_content_root()) and retained_a.name == f"{hashlib.sha256(BYTES_A).hexdigest()}.txt", failures)
     check("remote_course_metadata_is_absent_from_retained_path", offering["remote_name"] not in str(retained_a) and offering["remote_course_code"] not in str(retained_a), failures)
+    file_row = conn.execute("SELECT * FROM files WHERE stable_id=?", (remote_stable_id,)).fetchone()
+    check("canvas_file_uses_normal_get_file_path", server.get_file(conn, int(file_row["id"]))["stable_id"] == remote_stable_id, failures)
+    check("exact_canvas_retained_path_is_allowed", server.material_path_allowed(file_row, retained_a), failures)
+    data_sibling = server.DATA_DIR / "unrelated.txt"
+    data_sibling.write_bytes(b"unrelated synthetic data")
+    cache_file = server.CACHE_DIR / "unrelated.txt"
+    cache_file.write_bytes(b"unrelated synthetic cache")
+    check("arbitrary_data_dir_path_is_rejected", not server.material_path_allowed(file_row, data_sibling), failures)
+    check("arbitrary_cache_path_is_rejected", not server.material_path_allowed(file_row, cache_file), failures)
+    outside = server.DATA_DIR / "outside-remote-content.txt"
+    outside.write_bytes(BYTES_A)
+    conn.execute("UPDATE files SET original_path=?, absolute_path=? WHERE id=?", (str(outside), str(outside), file_row["id"]))
+    check("persisted_canvas_path_outside_retained_root_is_rejected", raises_code("file outside StudyHub material allowlist", lambda: server.get_file(conn, int(file_row["id"]))), failures)
+    fake_canvas_row = {"import_mode": "canvas_remote", "original_path": str(outside)}
+    check("fake_canvas_row_outside_retained_root_is_rejected", not server.material_path_allowed(fake_canvas_row, outside), failures)
+    conn.execute("UPDATE files SET original_path=?, absolute_path=? WHERE id=?", (str(retained_a), str(retained_a), file_row["id"]))
+    conn.commit()
+    httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.StudyHubHandler)
+    preview_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    preview_thread.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{httpd.server_address[1]}/preview/{file_row['id']}", timeout=5) as response:
+            preview_body = response.read()
+            preview_status = response.status
+        check("canvas_retained_text_uses_normal_preview_path", preview_status == 200 and BYTES_A.strip() in preview_body, failures)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        preview_thread.join(timeout=5)
+    mcp_file_id = f"file_{str(file_row['stable_id'] or file_row['sha256'])[:24]}"
+    mcp_payload = server.mcp_read_file({"file_id": mcp_file_id, "limit": 2000})
+    check("readonly_mcp_can_read_explicitly_acquired_canvas_material", BYTES_A.decode().strip() in mcp_payload["content"] and DOWNLOAD_URL not in json.dumps(mcp_payload), failures)
+    server.DEFAULT_STUDY_ROOT.mkdir(parents=True, exist_ok=True)
+    server.scan_library(server.DEFAULT_STUDY_ROOT)
+    check("library_scan_preserves_canvas_retained_material", server.get_file(conn, int(file_row["id"]))["active"] == 1, failures)
     check("first_version_links_source_and_blob", version_a["source_id"] == source["id"] and version_a["blob_id"] == blob_a["id"] and blob_a["sha256"] == hashlib.sha256(BYTES_A).hexdigest(), failures)
     check("baseline_advances_after_ingestion", conn.execute("SELECT COUNT(*) FROM canvas_file_sync_baselines").fetchone()[0] == 1, failures)
     check("apply_response_hides_url_and_path", DOWNLOAD_URL not in json.dumps(result) and str(server.DATA_DIR) not in json.dumps(result), failures)
@@ -306,12 +341,36 @@ def check_apply_and_versions(server: Any, conn: sqlite3.Connection, offering: sq
     renamed_course = conn.execute("SELECT * FROM courses WHERE id=?", (rebound["legacy_course_id"],)).fetchone()
     check("binding_reused_and_identity_survives_remote_rename", rebound["id"] == binding["id"] and renamed_course["stable_id"] == bound_course["stable_id"] and renamed_course["display_name"] == "Renamed Synthetic Remote Course", failures)
 
+    custom_term = server.ensure_term(conn, "Synthetic Custom Term", stable_id="term_synthetic_custom")
+    conn.commit()
+    server.manage_course(
+        conn,
+        {
+            "action": "update",
+            "id": renamed_course["id"],
+            "display_name": "My Canvas Course Label",
+            "course_code": "MY-CODE",
+            "term_id": custom_term["id"],
+        },
+    )
+    conn.execute(
+        "UPDATE course_offerings SET remote_name=?, remote_course_code=?, updated_at=? WHERE id=?",
+        ("Second Remote Name", "REMOTE-NEW", server.now_iso(), offering["id"]),
+    )
+    conn.commit()
     same_bytes_remote = remote_file(server, size=len(BYTES_B), updated="2026-01-03T00:00:00Z")
     same_connector = ScenarioConnector(server, [same_bytes_remote], [same_bytes_remote, same_bytes_remote])
     same_plan = plan_for(server, conn, same_connector)
     server.apply_canvas_file_sync(conn, same_connector, same_plan["plan_revision"], [remote_stable_id], open_url=DownloadOpen([BytesResponse(BYTES_B)]))
     conn.commit()
     check("same_bytes_do_not_duplicate_blob_or_version", conn.execute("SELECT COUNT(*) FROM blobs").fetchone()[0] == 2 and conn.execute("SELECT COUNT(*) FROM material_versions").fetchone()[0] == 2, failures)
+    overridden = conn.execute("SELECT * FROM courses WHERE id=?", (renamed_course["id"],)).fetchone()
+    fresh_offering = conn.execute("SELECT * FROM course_offerings WHERE id=?", (offering["id"],)).fetchone()
+    check("canvas_course_user_override_is_locked", overridden["metadata_locked"] == 1, failures)
+    check("canvas_course_user_name_code_and_term_are_preserved", overridden["display_name"] == "My Canvas Course Label" and overridden["course_code"] == "MY-CODE" and overridden["term_id"] == custom_term["id"], failures)
+    check("course_offering_keeps_fresh_remote_metadata", fresh_offering["remote_name"] == "Second Remote Name" and fresh_offering["remote_course_code"] == "REMOTE-NEW", failures)
+    check("locked_canvas_binding_is_reused_without_duplicate_course", conn.execute("SELECT COUNT(*) FROM course_offering_local_bindings WHERE course_offering_id=?", (offering["id"],)).fetchone()[0] == 1 and overridden["source_kind"] == "canvas_remote", failures)
+    check("canvas_ingestion_succeeds_after_local_course_override", conn.execute("SELECT active FROM files WHERE stable_id=?", (remote_stable_id,)).fetchone()[0] == 1, failures)
     server.reconcile_domain_projection(conn)
     reconciled_source = conn.execute("SELECT * FROM sources WHERE stable_id=?", (source["stable_id"],)).fetchone()
     check("domain_reconciliation_preserves_canvas_provenance", reconciled_source["provider_kind"] == "canvas" and reconciled_source["authority"] == "REMOTE_AUTHORITATIVE", failures)
@@ -498,6 +557,83 @@ def check_multi_file_atomicity(server: Any, conn: sqlite3.Connection, failures: 
     check("late_remote_race_cleans_all_new_retained_files", not first_path.exists() and not second_path.exists(), failures)
 
 
+def check_concurrent_production_apply(server: Any, failures: list[str]) -> None:
+    setup = server.connect_db()
+    server.init_db(setup)
+    offering = seed_offering(server, setup)
+    current = remote_file(server, size=len(BYTES_A))
+    plan = plan_for(server, setup, ScenarioConnector(server, [current]))
+    stable_id = stable_id_from_plan(plan)
+    setup.close()
+
+    first_inside = threading.Event()
+    second_attempting = threading.Event()
+
+    class BlockingConnector(ScenarioConnector):
+        def list_course_files(self, remote_course_id: str):
+            first_inside.set()
+            if not second_attempting.wait(timeout=5):
+                raise RuntimeError("second_apply_did_not_overlap")
+            return super().list_course_files(remote_course_id)
+
+    outcomes: list[str] = []
+    outcome_lock = threading.Lock()
+
+    def first_worker() -> None:
+        try:
+            server.run_canvas_sync_apply(
+                BlockingConnector(server, [current]),
+                plan["plan_revision"],
+                [stable_id],
+                requested_offering_ids=[offering["stable_id"]],
+                open_url=DownloadOpen([BytesResponse(BYTES_A)]),
+            )
+            outcome = "success"
+        except Exception as exc:  # noqa: BLE001 - acceptance records sanitized code
+            outcome = str(exc)
+        with outcome_lock:
+            outcomes.append(outcome)
+
+    def second_worker() -> None:
+        if not first_inside.wait(timeout=5):
+            with outcome_lock:
+                outcomes.append("first_apply_did_not_enter")
+            return
+        second_attempting.set()
+        try:
+            server.run_canvas_sync_apply(
+                ScenarioConnector(server, [current]),
+                plan["plan_revision"],
+                [stable_id],
+                requested_offering_ids=[offering["stable_id"]],
+                open_url=DownloadOpen([]),
+            )
+            outcome = "success"
+        except Exception as exc:  # noqa: BLE001 - acceptance records sanitized code
+            outcome = str(exc)
+        with outcome_lock:
+            outcomes.append(outcome)
+
+    first_thread = threading.Thread(target=first_worker)
+    second_thread = threading.Thread(target=second_worker)
+    first_thread.start()
+    second_thread.start()
+    first_thread.join(timeout=10)
+    second_thread.join(timeout=10)
+    check("concurrent_apply_threads_complete", not first_thread.is_alive() and not second_thread.is_alive(), failures)
+    check("production_apply_lock_serializes_same_old_plan", sorted(outcomes) == ["stale_canvas_sync_plan", "success"], failures)
+
+    verify = server.connect_db()
+    source = verify.execute("SELECT * FROM sources WHERE provider_kind='canvas'").fetchone()
+    material = verify.execute("SELECT * FROM materials WHERE stable_id=?", (stable_id,)).fetchone()
+    versions = verify.execute("SELECT COUNT(*) FROM material_versions WHERE material_id=?", (material["id"],)).fetchone()[0]
+    baseline = verify.execute("SELECT COUNT(*) FROM canvas_file_sync_baselines WHERE course_offering_id=?", (offering["id"],)).fetchone()[0]
+    retained = Path(source["local_locator"])
+    check("concurrent_apply_retains_committed_bytes", retained.exists() and retained.read_bytes() == BYTES_A, failures)
+    check("concurrent_apply_commits_one_consistent_domain_state", versions == 1 and baseline == 1 and material["current_version_id"] is not None, failures)
+    verify.close()
+
+
 def check_migration(server: Any, failures: list[str]) -> None:
     conn = server.connect_db()
     server.init_db(conn)
@@ -609,6 +745,13 @@ def check_local_provenance_regression(server: Any, conn: sqlite3.Connection, tmp
     )
     source = conn.execute("SELECT * FROM sources").fetchone()
     check("local_scanner_source_remains_user_owned", source["provider_kind"] == "local" and source["authority"] == "USER_OWNED", failures)
+    local_row = conn.execute("SELECT * FROM files WHERE original_path=?", (str(path.resolve()),)).fetchone()
+    check("study_root_material_path_behavior_is_unchanged", server.material_path_allowed(local_row, path), failures)
+    external = server.DATA_DIR.parent / "external-reference.txt"
+    external.write_bytes(b"Synthetic external reference.\n")
+    external_row = {"import_mode": "reference", "original_path": str(external)}
+    check("external_reference_exact_path_remains_allowed", server.material_path_allowed(external_row, external), failures)
+    check("external_reference_sibling_remains_rejected", not server.material_path_allowed(external_row, external.with_name("other.txt")), failures)
     conn.rollback()
 
 
@@ -641,6 +784,9 @@ def main() -> int:
         seed_offering(multi_server, multi_conn)
         check_multi_file_atomicity(multi_server, multi_conn, failures)
         multi_conn.close()
+
+        concurrent_server = load_server(tmp / "concurrent")
+        check_concurrent_production_apply(concurrent_server, failures)
 
         local_server = load_server(tmp / "local-provenance")
         local_conn = local_server.connect_db()

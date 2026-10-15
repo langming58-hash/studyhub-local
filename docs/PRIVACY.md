@@ -153,6 +153,13 @@ runtime state and is never returned through public APIs or MCP. A file missing
 from one discovery response remains advisory and does not delete retained
 bytes, provenance, versions, baselines, or user selection.
 
+Existing local preview/read and read-only MCP content resolution may read an
+already acquired Canvas copy by safe file ID. The resolver accepts only the
+exact persisted path of an explicit `canvas_remote` row inside the dedicated
+profile-owned Canvas remote-content root. It does not grant general access to
+the data directory, cache directory, Canvas credentials, signed URLs, or sync
+controls.
+
 ## Public Data Boundary
 
 Public examples, fixtures, tests, screenshots, documentation, and demo assets

@@ -107,6 +107,14 @@ then uses the existing ingestion core. Canvas Sources are
 a deterministic Canvas-managed Course and `Canvas Files` learning unit without
 claiming that target-domain Course and CourseOffering are the same entity.
 Baseline state advances only after successful ingestion.
+The normal file lookup, preview, and read-only MCP resolver accept a retained
+Canvas path only when the row is explicitly `canvas_remote`, the requested path
+exactly matches its persisted locator, and that locator remains inside the
+profile-owned Canvas remote-content root. Explicit sync apply is serialized
+through one backend-process lock covering fresh planning through caller commit;
+this is not a cross-process locking guarantee. User-edited compatibility Course
+presentation fields remain protected by the existing `metadata_locked` overlay
+while CourseOffering metadata continues to refresh independently.
 
 Not implemented yet: production Canvas OAuth, remote Term mapping, remote
 deletion semantics, automatic/background sync, SourceAnchor, Evidence,

@@ -16,7 +16,7 @@ OpenAI/vector indexing is opt-in. When enabled, selected indexed file content an
 
 ## File Access
 
-The scanner, previews, upload flow, open-original action, Ask GPT, and MCP tools should only access the configured `STUDY_LIBRARY_PATH`. Path traversal and arbitrary filesystem reads are not allowed. Upload targets are built from validated server-side components and copied by temporary file plus atomic rename.
+The scanner, upload flow, and normal local-material reads are constrained to the configured `STUDY_LIBRARY_PATH`; exact external references remain explicit exceptions. Canvas-retained reads add one narrow exception: an explicit `canvas_remote` row must exactly match its persisted path inside the profile-owned Canvas remote-content root. No arbitrary data/cache path is trusted. Path traversal and arbitrary filesystem reads are not allowed. Upload targets are built from validated server-side components and copied by temporary file plus atomic rename.
 
 Study-library files are treated as untrusted content. Active browser formats such as HTML, XHTML, XML, and SVG are not rendered as same-origin active documents in preview; they are shown as escaped plaintext with MIME sniffing disabled.
 

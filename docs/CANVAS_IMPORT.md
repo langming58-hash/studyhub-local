@@ -156,6 +156,15 @@ streamed bytes. Metadata is re-read after download; changed size or revision
 signals discard the acquisition. Successfully validated bytes move to an
 immutable content-addressed path under `data/remote-content/canvas` before one
 database transaction runs the existing ingestion core and baseline update.
+Normal file lookup and preview accept that path only for an explicit
+`canvas_remote` row whose persisted path matches exactly and remains inside the
+Canvas remote-content root. Other data and cache paths remain denied.
+
+The current threaded backend serializes the complete mutating apply sequence,
+including final commit or rollback, with one Canvas-apply-only process lock.
+This prevents two requests in the same backend process from confusing retained
+file ownership. It is not a distributed or cross-process lock; process crashes
+may still leave safe unreferenced retained files.
 
 Canvas provenance uses `provider_kind=canvas` and
 `authority=REMOTE_AUTHORITATIVE`. The stable Source and Material identities are
@@ -164,6 +173,11 @@ filename, URL, timestamp, or byte hash. Different bytes create another Blob
 and MaterialVersion for the same Material; identical bytes do not duplicate a
 version. The retained local copy does not become user-owned merely because it
 is available offline.
+
+Compatibility Course fields refresh from Canvas only while
+`metadata_locked=0`. A normal local Course edit locks and preserves the user's
+name, code, and term presentation; CourseOffering continues to retain fresh
+remote-authoritative Canvas metadata and is never changed by that local edit.
 
 ## Sync Is Not Ingestion
 

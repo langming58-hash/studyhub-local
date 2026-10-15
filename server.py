@@ -360,6 +360,7 @@ CANVAS_MAX_DOWNLOAD_URL_LENGTH = 8192
 CANVAS_MAX_DOWNLOAD_REDIRECTS = 5
 CANVAS_SYNC_PLAN_VERSION = "canvas-sync-plan-v1"
 CANVAS_REMOTE_REVISION_VERSION = "canvas-remote-revision-v1"
+_CANVAS_SYNC_APPLY_LOCK = threading.Lock()
 
 
 class CanvasConnectionError(RuntimeError):
@@ -1315,13 +1316,15 @@ def section_for_material_type(material_type: str) -> str:
 
 def material_path_allowed(row: sqlite3.Row | dict[str, Any], path: Path) -> bool:
     resolved = path.expanduser().resolve()
-    if is_inside(resolved, DEFAULT_STUDY_ROOT):
-        return True
     keys = row.keys()
     import_mode = str(row["import_mode"] or "") if "import_mode" in keys else ""
+    stored = Path(str(row["original_path"])).expanduser().resolve()
+    if import_mode == "canvas_remote":
+        return resolved == stored and is_inside(resolved, canvas_remote_content_root())
+    if is_inside(resolved, DEFAULT_STUDY_ROOT):
+        return True
     if import_mode != "reference":
         return False
-    stored = Path(str(row["original_path"])).expanduser().resolve()
     return resolved == stored
 
 
@@ -3171,7 +3174,14 @@ def ensure_canvas_course_binding(conn: sqlite3.Connection, offering: sqlite3.Row
         if course is None:
             raise CanvasConnectorError("canvas_course_binding_invalid")
         conn.execute(
-            "UPDATE courses SET code=?, course_code=?, name=?, display_name=?, active=1, updated_at=? WHERE id=?",
+            """
+            UPDATE courses SET
+              code=CASE WHEN metadata_locked=1 THEN code ELSE ? END,
+              course_code=CASE WHEN metadata_locked=1 THEN course_code ELSE ? END,
+              name=CASE WHEN metadata_locked=1 THEN name ELSE ? END,
+              display_name=CASE WHEN metadata_locked=1 THEN display_name ELSE ? END,
+              source_kind='canvas_remote', active=1, updated_at=? WHERE id=?
+            """,
             (
                 str(offering["remote_course_code"] or ""),
                 str(offering["remote_course_code"] or ""),
@@ -3447,6 +3457,37 @@ def apply_canvas_file_sync(
     except Exception:
         cleanup_new_canvas_retained_files(acquired)
         raise
+
+
+def run_canvas_sync_apply(
+    connector: CanvasConnector,
+    expected_plan_revision: str,
+    requested_remote_file_stable_ids: list[str],
+    *,
+    requested_offering_ids: list[str] | None = None,
+    open_url: Callable[[str, int], Any] = default_canvas_download_open,
+) -> dict[str, Any]:
+    """Serialize one complete local Canvas apply through its caller-owned commit."""
+
+    with _CANVAS_SYNC_APPLY_LOCK:
+        conn = connect_db()
+        init_db(conn)
+        try:
+            result = apply_canvas_file_sync(
+                conn,
+                connector,
+                expected_plan_revision,
+                requested_remote_file_stable_ids,
+                requested_offering_ids=requested_offering_ids,
+                open_url=open_url,
+            )
+            conn.commit()
+            return result
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -4827,6 +4868,8 @@ def scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
     for row in conn.execute("SELECT id, original_path, import_mode, removed_at FROM files").fetchall():
         if row["removed_at"]:
             continue
+        if row["import_mode"] == "canvas_remote":
+            continue
         original = Path(row["original_path"]).expanduser().resolve()
         if row["import_mode"] == "reference":
             missing = not original.exists()
@@ -6127,7 +6170,7 @@ def mcp_read_file(args: dict[str, Any]) -> dict[str, Any]:
         "file": mcp_file_projection(row),
         "content": "\n\n".join(content_parts),
         "chunks": chunk_payload,
-        "note": "Original file remains authoritative in the configured STUDY_LIBRARY_PATH.",
+        "note": "The original or retained provider file remains authoritative according to its source provenance.",
     }
 
 
@@ -7104,23 +7147,12 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         offering_ids = normalize_requested_offering_ids(body.get("offering_ids", []))
         try:
             def apply_sync(connector: CanvasConnector) -> dict[str, Any]:
-                conn = connect_db()
-                init_db(conn)
-                try:
-                    result = apply_canvas_file_sync(
-                        conn,
-                        connector,
-                        expected_revision,
-                        requested_ids,
-                        requested_offering_ids=offering_ids,
-                    )
-                    conn.commit()
-                    return result
-                except Exception:
-                    conn.rollback()
-                    raise
-                finally:
-                    conn.close()
+                return run_canvas_sync_apply(
+                    connector,
+                    expected_revision,
+                    requested_ids,
+                    requested_offering_ids=offering_ids,
+                )
 
             self.send_json({"ok": True} | with_canvas_connector(apply_sync))
         except CanvasConnectorError as exc:
