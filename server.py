@@ -661,6 +661,22 @@ def public_canvas_course(course: CanvasCourse) -> dict[str, Any]:
     }
 
 
+def canvas_authority_id(normalized_origin: str) -> str:
+    origin = normalize_canvas_origin(normalized_origin)
+    return hashlib.sha256(f"canvas\0{origin}".encode("utf-8")).hexdigest()
+
+
+def canvas_course_offering_stable_id(authority_id: str, remote_course_id: str) -> str:
+    return deterministic_stable_id(
+        "canvas_course_offering",
+        f"v1\0canvas\0{authority_id}\0{remote_course_id}",
+    )
+
+
+def canvas_course_map(courses: list[CanvasCourse]) -> dict[str, CanvasCourse]:
+    return {str(course.remote_course_id): course for course in courses}
+
+
 def initialize_credential_client() -> CredentialClient | None:
     global _CREDENTIAL_CLIENT
     if _CREDENTIAL_CLIENT is None:
@@ -1897,8 +1913,48 @@ def phase1_domain_foundation_migration(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def phase2_canvas_course_selection_migration(conn: sqlite3.Connection) -> None:
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS course_offerings (
+          id INTEGER PRIMARY KEY,
+          stable_id TEXT NOT NULL UNIQUE,
+          provider TEXT NOT NULL,
+          authority_id TEXT NOT NULL,
+          remote_course_id TEXT NOT NULL,
+          remote_term_id TEXT,
+          remote_term_name TEXT,
+          remote_name TEXT NOT NULL,
+          remote_course_code TEXT,
+          workflow_state TEXT,
+          start_at TEXT,
+          end_at TEXT,
+          first_seen_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(provider, authority_id, remote_course_id)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS course_offering_selections (
+          id INTEGER PRIMARY KEY,
+          offering_id INTEGER NOT NULL UNIQUE REFERENCES course_offerings(id) ON DELETE CASCADE,
+          selected INTEGER NOT NULL DEFAULT 0,
+          selected_at TEXT,
+          updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_course_offerings_provider_authority ON course_offerings(provider, authority_id)",
+        "CREATE INDEX IF NOT EXISTS idx_course_offering_selections_selected ON course_offering_selections(selected, updated_at)",
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+
 SCHEMA_MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "phase1_domain_foundation", phase1_domain_foundation_migration),
+    (2, "phase2_canvas_course_selection", phase2_canvas_course_selection_migration),
 )
 
 
@@ -2116,6 +2172,278 @@ def reconcile_domain_projection(conn: sqlite3.Connection) -> None:
         upsert_domain_projection_for_file(conn, row)
     conn.execute("DELETE FROM material_versions WHERE legacy_file_id NOT IN (SELECT id FROM files)")
     conn.execute("DELETE FROM materials WHERE legacy_file_id NOT IN (SELECT id FROM files)")
+
+
+def upsert_canvas_course_offering(
+    conn: sqlite3.Connection,
+    authority_id: str,
+    course: CanvasCourse,
+) -> sqlite3.Row:
+    now = now_iso()
+    stable_id = canvas_course_offering_stable_id(authority_id, str(course.remote_course_id))
+    conn.execute(
+        """
+        INSERT INTO course_offerings(
+          stable_id, provider, authority_id, remote_course_id, remote_term_id,
+          remote_term_name, remote_name, remote_course_code, workflow_state,
+          start_at, end_at, first_seen_at, last_seen_at, created_at, updated_at
+        )
+        VALUES (?, 'canvas', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(provider, authority_id, remote_course_id) DO UPDATE SET
+          remote_term_id=excluded.remote_term_id,
+          remote_term_name=excluded.remote_term_name,
+          remote_name=excluded.remote_name,
+          remote_course_code=excluded.remote_course_code,
+          workflow_state=excluded.workflow_state,
+          start_at=excluded.start_at,
+          end_at=excluded.end_at,
+          last_seen_at=excluded.last_seen_at,
+          updated_at=excluded.updated_at
+        """,
+        (
+            stable_id,
+            authority_id,
+            str(course.remote_course_id),
+            course.term_id,
+            course.term_name,
+            course.name,
+            course.course_code,
+            course.workflow_state,
+            course.start_at,
+            course.end_at,
+            now,
+            now,
+            now,
+            now,
+        ),
+    )
+    row = conn.execute(
+        "SELECT * FROM course_offerings WHERE provider='canvas' AND authority_id=? AND remote_course_id=?",
+        (authority_id, str(course.remote_course_id)),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("course_offering_upsert_failed")
+    return row
+
+
+def public_course_offering(row: sqlite3.Row | dict[str, Any], selected: bool | None = None) -> dict[str, Any]:
+    data = dict(row)
+    payload = {
+        "id": data["stable_id"],
+        "stable_id": data["stable_id"],
+        "provider": data["provider"],
+        "remote_course_id": data["remote_course_id"],
+        "remote_name": data["remote_name"],
+        "remote_course_code": data["remote_course_code"] or "",
+        "workflow_state": data["workflow_state"] or "",
+        "start_at": data["start_at"],
+        "end_at": data["end_at"],
+        "term": {"id": data["remote_term_id"], "name": data["remote_term_name"]}
+        if data["remote_term_id"] or data["remote_term_name"]
+        else None,
+        "first_seen_at": data["first_seen_at"],
+        "last_seen_at": data["last_seen_at"],
+        "updated_at": data["updated_at"],
+    }
+    if selected is not None:
+        payload["selected"] = selected
+    elif "selected" in data:
+        payload["selected"] = bool(data["selected"])
+    return payload
+
+
+def canvas_selection_revision(conn: sqlite3.Connection, authority_id: str) -> str:
+    rows = conn.execute(
+        """
+        SELECT co.stable_id, co.remote_course_id, COALESCE(sel.selected, 0) AS selected,
+          COALESCE(sel.updated_at, '') AS selection_updated_at
+        FROM course_offerings co
+        LEFT JOIN course_offering_selections sel ON sel.offering_id=co.id
+        WHERE co.provider='canvas' AND co.authority_id=?
+        ORDER BY co.remote_course_id
+        """,
+        (authority_id,),
+    ).fetchall()
+    payload = [
+        {
+            "id": row["stable_id"],
+            "remote_course_id": row["remote_course_id"],
+            "selected": int(row["selected"]),
+            "updated_at": row["selection_updated_at"],
+        }
+        for row in rows
+    ]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def normalize_requested_remote_ids(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        raise ValueError("remote_course_ids must be a list")
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            raise ValueError("remote_course_ids must contain only strings")
+        remote_id = value.strip()
+        if not remote_id or len(remote_id) > 160 or any(ord(char) < 32 for char in remote_id):
+            raise ValueError("Invalid remote course id")
+        if remote_id not in seen:
+            out.append(remote_id)
+            seen.add(remote_id)
+    return out
+
+
+def current_selected_canvas_remote_ids(conn: sqlite3.Connection, authority_id: str) -> set[str]:
+    rows = conn.execute(
+        """
+        SELECT co.remote_course_id
+        FROM course_offerings co
+        JOIN course_offering_selections sel ON sel.offering_id=co.id
+        WHERE co.provider='canvas' AND co.authority_id=? AND sel.selected=1
+        """,
+        (authority_id,),
+    ).fetchall()
+    return {str(row["remote_course_id"]) for row in rows}
+
+
+def canvas_course_selection_plan(
+    conn: sqlite3.Connection,
+    authority_id: str,
+    discovered_courses: list[CanvasCourse],
+    requested_remote_ids: list[str],
+) -> dict[str, Any]:
+    discovered = canvas_course_map(discovered_courses)
+    requested = set(requested_remote_ids)
+    discovered_ids = set(discovered.keys())
+    selected = current_selected_canvas_remote_ids(conn, authority_id)
+    unknown = sorted(requested - discovered_ids)
+    select_ids = sorted((requested & discovered_ids) - selected)
+    unchanged_ids = sorted(requested & selected)
+    deselect_ids = sorted((selected & discovered_ids) - requested)
+    metadata_refresh: list[dict[str, Any]] = []
+    for remote_id, course in discovered.items():
+        row = conn.execute(
+            "SELECT * FROM course_offerings WHERE provider='canvas' AND authority_id=? AND remote_course_id=?",
+            (authority_id, remote_id),
+        ).fetchone()
+        if row and (
+            row["remote_name"] != course.name
+            or (row["remote_course_code"] or "") != course.course_code
+            or (row["workflow_state"] or "") != course.workflow_state
+            or row["remote_term_id"] != course.term_id
+            or row["remote_term_name"] != course.term_name
+            or row["start_at"] != course.start_at
+            or row["end_at"] != course.end_at
+        ):
+            metadata_refresh.append({"remote_course_id": remote_id, "offering": public_canvas_course(course)})
+    revision = canvas_selection_revision(conn, authority_id)
+    return {
+        "selection_revision": revision,
+        "select": [{"remote_course_id": remote_id, "offering": public_canvas_course(discovered[remote_id])} for remote_id in select_ids],
+        "deselect": [{"remote_course_id": remote_id} for remote_id in deselect_ids],
+        "unchanged": [{"remote_course_id": remote_id, "offering": public_canvas_course(discovered[remote_id])} for remote_id in unchanged_ids],
+        "metadata_refresh": metadata_refresh,
+        "unknown_remote_course_ids": unknown,
+        "remembered_missing_from_discovery": sorted(selected - discovered_ids),
+    }
+
+
+def apply_canvas_course_selection(
+    conn: sqlite3.Connection,
+    authority_id: str,
+    discovered_courses: list[CanvasCourse],
+    requested_remote_ids: list[str],
+    expected_revision: str,
+    *,
+    fail_after_offerings: bool = False,
+    fail_after_savepoint_release: bool = False,
+) -> dict[str, Any]:
+    if not conn.in_transaction:
+        conn.execute("BEGIN")
+    before = canvas_selection_revision(conn, authority_id)
+    if not expected_revision or expected_revision != before:
+        raise ValueError("stale_canvas_course_selection_preview")
+    plan = canvas_course_selection_plan(conn, authority_id, discovered_courses, requested_remote_ids)
+    unknown = plan["unknown_remote_course_ids"]
+    if unknown:
+        raise ValueError("unknown_canvas_course_id")
+    discovered = canvas_course_map(discovered_courses)
+    requested = set(requested_remote_ids)
+    discovered_ids = set(discovered.keys())
+    selected_before = current_selected_canvas_remote_ids(conn, authority_id)
+    select_ids = (requested & discovered_ids) - selected_before
+    unchanged_ids = requested & selected_before
+    deselect_ids = (selected_before & discovered_ids) - requested
+    savepoint = "canvas_course_selection_apply"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        offerings: dict[str, sqlite3.Row] = {}
+        for course in discovered_courses:
+            offerings[str(course.remote_course_id)] = upsert_canvas_course_offering(conn, authority_id, course)
+        if fail_after_offerings:
+            raise RuntimeError("synthetic_apply_failure")
+        now = now_iso()
+        for remote_id in sorted(select_ids | unchanged_ids):
+            row = offerings[remote_id]
+            conn.execute(
+                """
+                INSERT INTO course_offering_selections(offering_id, selected, selected_at, updated_at)
+                VALUES (?, 1, ?, ?)
+                ON CONFLICT(offering_id) DO UPDATE SET
+                  selected=1,
+                  selected_at=COALESCE(course_offering_selections.selected_at, excluded.selected_at),
+                  updated_at=excluded.updated_at
+                """,
+                (row["id"], now, now),
+            )
+        for remote_id in sorted(deselect_ids):
+            row = offerings[remote_id]
+            conn.execute(
+                """
+                INSERT INTO course_offering_selections(offering_id, selected, selected_at, updated_at)
+                VALUES (?, 0, NULL, ?)
+                ON CONFLICT(offering_id) DO UPDATE SET selected=0, updated_at=excluded.updated_at
+                """,
+                (row["id"], now),
+            )
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+    except Exception:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        raise
+    if fail_after_savepoint_release:
+        raise RuntimeError("synthetic_post_savepoint_failure")
+    after_revision = canvas_selection_revision(conn, authority_id)
+    rows = remembered_canvas_course_selections(conn, authority_id=authority_id)
+    return {
+        "selection_revision": after_revision,
+        "selected": rows,
+        "plan": plan,
+    }
+
+
+def remembered_canvas_course_selections(conn: sqlite3.Connection, authority_id: str | None = None) -> list[dict[str, Any]]:
+    params: list[Any] = []
+    where = "WHERE co.provider='canvas'"
+    if authority_id:
+        where += " AND co.authority_id=?"
+        params.append(authority_id)
+    rows = conn.execute(
+        f"""
+        SELECT co.*, COALESCE(sel.selected, 0) AS selected, sel.selected_at AS selected_at,
+          sel.updated_at AS selection_updated_at
+        FROM course_offerings co
+        JOIN course_offering_selections sel ON sel.offering_id=co.id
+        {where} AND sel.selected=1
+        ORDER BY co.remote_course_code, co.remote_name, co.remote_course_id
+        """,
+        params,
+    ).fetchall()
+    return [
+        public_course_offering(row, selected=bool(row["selected"]))
+        | {"selected_at": row["selected_at"], "selection_updated_at": row["selection_updated_at"], "fresh": False}
+        for row in rows
+    ]
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -5575,6 +5903,10 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.handle_canvas_identity()
             elif parsed.path == "/api/canvas/courses":
                 self.handle_canvas_courses()
+            elif parsed.path == "/api/canvas/course-selection/preview":
+                self.handle_canvas_course_selection_preview()
+            elif parsed.path == "/api/canvas/course-selection/apply":
+                self.handle_canvas_course_selection_apply()
             elif parsed.path in {
                 "/api/terms/manage",
                 "/api/courses/manage",
@@ -5636,6 +5968,54 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         try:
             courses = with_canvas_connector(lambda connector: connector.courses(enrollment_state=enrollment_state))
             self.send_json({"ok": True, "courses": [public_canvas_course(course) for course in courses]})
+        except CanvasConnectorError as exc:
+            self.send_canvas_error(exc)
+
+    def handle_canvas_course_selection_preview(self) -> None:
+        body = self.parse_body_json()
+        requested_ids = normalize_requested_remote_ids(body.get("remote_course_ids", []))
+        enrollment_state = str(body.get("enrollment_state") or "active")
+        if enrollment_state not in {"active", "completed", "invited_or_pending"}:
+            raise ValueError("Unsupported Canvas enrollment_state")
+        try:
+            def build(connector: CanvasConnector) -> dict[str, Any]:
+                conn = connect_db()
+                init_db(conn)
+                try:
+                    authority_id = canvas_authority_id(connector.record.origin)
+                    courses = connector.courses(enrollment_state=enrollment_state)
+                    return canvas_course_selection_plan(conn, authority_id, courses, requested_ids)
+                finally:
+                    conn.close()
+
+            self.send_json({"ok": True, "plan": with_canvas_connector(build)})
+        except CanvasConnectorError as exc:
+            self.send_canvas_error(exc)
+
+    def handle_canvas_course_selection_apply(self) -> None:
+        body = self.parse_body_json()
+        requested_ids = normalize_requested_remote_ids(body.get("remote_course_ids", []))
+        expected_revision = str(body.get("selection_revision") or "")
+        enrollment_state = str(body.get("enrollment_state") or "active")
+        if enrollment_state not in {"active", "completed", "invited_or_pending"}:
+            raise ValueError("Unsupported Canvas enrollment_state")
+        try:
+            def apply_selection(connector: CanvasConnector) -> dict[str, Any]:
+                conn = connect_db()
+                init_db(conn)
+                try:
+                    authority_id = canvas_authority_id(connector.record.origin)
+                    courses = connector.courses(enrollment_state=enrollment_state)
+                    result = apply_canvas_course_selection(conn, authority_id, courses, requested_ids, expected_revision)
+                    conn.commit()
+                    return result
+                except Exception:
+                    conn.rollback()
+                    raise
+                finally:
+                    conn.close()
+
+            self.send_json({"ok": True} | with_canvas_connector(apply_selection))
         except CanvasConnectorError as exc:
             self.send_canvas_error(exc)
 
@@ -5868,6 +6248,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.send_json(self.handle_questions(conn, qs))
             elif path == "/api/ai-status":
                 self.send_json(self.handle_ai_status(conn))
+            elif path == "/api/canvas/selected-courses":
+                self.send_json({"ok": True, "selected": remembered_canvas_course_selections(conn)})
             elif path == "/api/wrong-questions":
                 rows = conn.execute("SELECT * FROM wrong_questions ORDER BY created_at DESC LIMIT 100").fetchall()
                 self.send_json(rows_to_dicts(rows))
