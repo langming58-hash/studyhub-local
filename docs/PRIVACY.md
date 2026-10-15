@@ -139,6 +139,14 @@ record, credential-session authority, local filesystem paths, or Canvas content
 in SQLite. User selection is separate from remote-authoritative metadata and is
 not cleared by a metadata refresh or one missing discovery result.
 
+The Canvas file sync-plan foundation persists only a last-applied baseline of
+bounded, non-secret file metadata for selected CourseOfferings. Current preview
+manifests are not persisted. Canvas signed download URLs, preview URLs,
+thumbnail URLs, verifiers, access tokens, local paths, and downloaded bytes are
+excluded from the database, public plan, fingerprints, diagnostics, logs, and
+MCP. A file missing from one discovery response remains an advisory ambiguity;
+it does not trigger deletion of local or remote-authoritative state.
+
 ## Public Data Boundary
 
 Public examples, fixtures, tests, screenshots, documentation, and demo assets

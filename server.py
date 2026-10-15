@@ -349,6 +349,13 @@ CANVAS_MAX_PAGES = 10
 CANVAS_MAX_ITEMS = 500
 CANVAS_TIMEOUT_SECONDS = 10
 CANVAS_ALLOWED_GET_PATHS = {"/api/v1/users/self", "/api/v1/courses"}
+CANVAS_MAX_REMOTE_ID_LENGTH = 160
+CANVAS_MAX_FILE_NAME_LENGTH = 512
+CANVAS_MAX_CONTENT_TYPE_LENGTH = 255
+CANVAS_MAX_TIMESTAMP_LENGTH = 128
+CANVAS_MAX_FILE_SIZE = (1 << 63) - 1
+CANVAS_SYNC_PLAN_VERSION = "canvas-sync-plan-v1"
+CANVAS_REMOTE_REVISION_VERSION = "canvas-remote-revision-v1"
 
 
 class CanvasConnectionError(RuntimeError):
@@ -386,6 +393,22 @@ class CanvasCourse:
     end_at: str | None
     term_id: str | None
     term_name: str | None
+
+
+@dataclass(frozen=True)
+class CanvasRemoteFile:
+    remote_file_id: str
+    remote_course_id: str
+    display_name: str
+    filename: str
+    content_type: str
+    byte_size: int | None
+    remote_created_at: str | None
+    remote_updated_at: str | None
+    remote_modified_at: str | None
+    locked: bool
+    hidden: bool
+    hidden_for_user: bool
 
 
 class CanvasConnectorError(RuntimeError):
@@ -518,6 +541,13 @@ class CanvasConnector:
             )
         return courses
 
+    def list_course_files(self, remote_course_id: str) -> list[CanvasRemoteFile]:
+        course_id = normalize_canvas_opaque_id(remote_course_id, "remote course id")
+        encoded_course_id = urllib.parse.quote(course_id, safe="")
+        path = f"/api/v1/courses/{encoded_course_id}/files"
+        payloads = self._get_paginated_json(path, params={"per_page": "50"})
+        return [normalize_canvas_file_object(item, course_id) for item in payloads]
+
     def _get_json(self, path: str, params: dict[str, str] | None = None) -> Any:
         url = self._build_url(path, params or {})
         response = self._request_url(url)
@@ -547,7 +577,7 @@ class CanvasConnector:
         raise CanvasConnectorError("pagination_limit_exceeded")
 
     def _build_url(self, path: str, params: dict[str, str]) -> str:
-        if path not in CANVAS_ALLOWED_GET_PATHS:
+        if path not in CANVAS_ALLOWED_GET_PATHS and not re.fullmatch(r"/api/v1/courses/[^/]+/files", path):
             raise CanvasConnectorError("unsupported_canvas_endpoint")
         query = urllib.parse.urlencode(params)
         return f"{self.record.origin}{path}" + (f"?{query}" if query else "")
@@ -614,6 +644,74 @@ def next_canvas_link(headers: dict[str, str], relation: str) -> str | None:
         if match and match.group(2).lower() == relation.lower():
             return match.group(1)
     return None
+
+
+def normalize_canvas_opaque_id(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise CanvasConnectorError("malformed_canvas_response")
+    normalized = value.strip()
+    if (
+        not normalized
+        or len(normalized) > CANVAS_MAX_REMOTE_ID_LENGTH
+        or any(ord(char) < 32 or ord(char) == 127 for char in normalized)
+    ):
+        raise CanvasConnectorError("malformed_canvas_response")
+    return normalized
+
+
+def normalize_canvas_text(value: Any, *, maximum: int, required: bool = False) -> str:
+    if value is None and not required:
+        return ""
+    if not isinstance(value, str):
+        raise CanvasConnectorError("malformed_canvas_response")
+    if len(value) > maximum or any(ord(char) < 32 and char not in "\t\n\r" for char in value):
+        raise CanvasConnectorError("malformed_canvas_response")
+    if required and not value.strip():
+        raise CanvasConnectorError("malformed_canvas_response")
+    return value
+
+
+def normalize_canvas_timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = normalize_canvas_text(value, maximum=CANVAS_MAX_TIMESTAMP_LENGTH)
+    return text or None
+
+
+def normalize_canvas_boolean(item: dict[str, Any], key: str) -> bool:
+    value = item.get(key, False)
+    if not isinstance(value, bool):
+        raise CanvasConnectorError("malformed_canvas_response")
+    return value
+
+
+def normalize_canvas_file_object(item: Any, remote_course_id: str) -> CanvasRemoteFile:
+    if not isinstance(item, dict):
+        raise CanvasConnectorError("malformed_canvas_response")
+    remote_file_id = normalize_canvas_opaque_id(item.get("id"), "remote file id")
+    display_name = normalize_canvas_text(item.get("display_name", ""), maximum=CANVAS_MAX_FILE_NAME_LENGTH)
+    filename = normalize_canvas_text(item.get("filename", ""), maximum=CANVAS_MAX_FILE_NAME_LENGTH, required=True)
+    content_type = normalize_canvas_text(
+        item.get("content-type", item.get("content_type", "")),
+        maximum=CANVAS_MAX_CONTENT_TYPE_LENGTH,
+    )
+    size = item.get("size")
+    if size is not None and (isinstance(size, bool) or not isinstance(size, int) or size < 0 or size > CANVAS_MAX_FILE_SIZE):
+        raise CanvasConnectorError("malformed_canvas_response")
+    return CanvasRemoteFile(
+        remote_file_id=remote_file_id,
+        remote_course_id=normalize_canvas_opaque_id(remote_course_id, "remote course id"),
+        display_name=display_name,
+        filename=filename,
+        content_type=content_type,
+        byte_size=size,
+        remote_created_at=normalize_canvas_timestamp(item.get("created_at")),
+        remote_updated_at=normalize_canvas_timestamp(item.get("updated_at")),
+        remote_modified_at=normalize_canvas_timestamp(item.get("modified_at")),
+        locked=normalize_canvas_boolean(item, "locked"),
+        hidden=normalize_canvas_boolean(item, "hidden"),
+        hidden_for_user=normalize_canvas_boolean(item, "hidden_for_user"),
+    )
 
 
 def canvas_connection_record_from_private_transport() -> CanvasConnectionRecord:
@@ -1952,9 +2050,44 @@ def phase2_canvas_course_selection_migration(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def phase2_canvas_file_sync_baseline_migration(conn: sqlite3.Connection) -> None:
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS canvas_file_sync_baselines (
+          id INTEGER PRIMARY KEY,
+          stable_id TEXT NOT NULL UNIQUE,
+          course_offering_id INTEGER NOT NULL REFERENCES course_offerings(id) ON DELETE CASCADE,
+          provider TEXT NOT NULL,
+          authority_id TEXT NOT NULL,
+          remote_course_id TEXT NOT NULL,
+          remote_file_id TEXT NOT NULL,
+          display_name TEXT NOT NULL DEFAULT '',
+          filename TEXT NOT NULL,
+          content_type TEXT NOT NULL DEFAULT '',
+          byte_size INTEGER,
+          remote_created_at TEXT,
+          remote_updated_at TEXT,
+          remote_modified_at TEXT,
+          locked INTEGER NOT NULL DEFAULT 0,
+          hidden INTEGER NOT NULL DEFAULT 0,
+          hidden_for_user INTEGER NOT NULL DEFAULT 0,
+          baseline_fingerprint TEXT NOT NULL,
+          applied_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(provider, authority_id, course_offering_id, remote_file_id)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_canvas_file_baselines_offering ON canvas_file_sync_baselines(course_offering_id, remote_file_id)",
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+
 SCHEMA_MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "phase1_domain_foundation", phase1_domain_foundation_migration),
     (2, "phase2_canvas_course_selection", phase2_canvas_course_selection_migration),
+    (3, "phase2_canvas_file_sync_baseline", phase2_canvas_file_sync_baseline_migration),
 )
 
 
@@ -2444,6 +2577,306 @@ def remembered_canvas_course_selections(conn: sqlite3.Connection, authority_id: 
         | {"selected_at": row["selected_at"], "selection_updated_at": row["selection_updated_at"], "fresh": False}
         for row in rows
     ]
+
+
+def canvas_remote_file_stable_id(authority_id: str, offering_stable_id: str, remote_file_id: str) -> str:
+    return deterministic_stable_id(
+        "canvas_remote_file",
+        f"v1\0canvas\0{authority_id}\0{offering_stable_id}\0{remote_file_id}",
+    )
+
+
+def canvas_remote_file_payload(remote_file: CanvasRemoteFile) -> dict[str, Any]:
+    unavailable = remote_file.locked or remote_file.hidden or remote_file.hidden_for_user
+    return {
+        "remote_file_id": remote_file.remote_file_id,
+        "remote_course_id": remote_file.remote_course_id,
+        "display_name": remote_file.display_name,
+        "filename": remote_file.filename,
+        "content_type": remote_file.content_type,
+        "byte_size": remote_file.byte_size,
+        "remote_created_at": remote_file.remote_created_at,
+        "remote_updated_at": remote_file.remote_updated_at,
+        "remote_modified_at": remote_file.remote_modified_at,
+        "locked": remote_file.locked,
+        "hidden": remote_file.hidden,
+        "hidden_for_user": remote_file.hidden_for_user,
+        "currently_unavailable": unavailable,
+    }
+
+
+def canvas_remote_revision_fingerprint(remote_file: CanvasRemoteFile) -> str:
+    canonical = {
+        "version": CANVAS_REMOTE_REVISION_VERSION,
+        "file": canvas_remote_file_payload(remote_file),
+    }
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def canvas_baseline_file(row: sqlite3.Row | dict[str, Any]) -> CanvasRemoteFile:
+    return CanvasRemoteFile(
+        remote_file_id=str(row["remote_file_id"]),
+        remote_course_id=str(row["remote_course_id"]),
+        display_name=str(row["display_name"] or ""),
+        filename=str(row["filename"]),
+        content_type=str(row["content_type"] or ""),
+        byte_size=row["byte_size"],
+        remote_created_at=row["remote_created_at"],
+        remote_updated_at=row["remote_updated_at"],
+        remote_modified_at=row["remote_modified_at"],
+        locked=bool(row["locked"]),
+        hidden=bool(row["hidden"]),
+        hidden_for_user=bool(row["hidden_for_user"]),
+    )
+
+
+def normalize_requested_offering_ids(values: Any) -> list[str]:
+    if values is None:
+        return []
+    if not isinstance(values, list):
+        raise ValueError("offering_ids must be a list")
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            raise ValueError("offering_ids must contain only strings")
+        stable_id = value.strip()
+        if not stable_id or len(stable_id) > 160 or any(ord(char) < 32 or ord(char) == 127 for char in stable_id):
+            raise ValueError("Invalid CourseOffering id")
+        if stable_id not in seen:
+            out.append(stable_id)
+            seen.add(stable_id)
+    return out
+
+
+def selected_canvas_offerings(
+    conn: sqlite3.Connection,
+    authority_id: str,
+    requested_offering_ids: list[str],
+) -> list[sqlite3.Row]:
+    requested = set(requested_offering_ids)
+    if requested:
+        placeholders = ",".join("?" for _ in requested)
+        known = conn.execute(
+            f"SELECT stable_id, provider, authority_id FROM course_offerings WHERE stable_id IN ({placeholders})",
+            sorted(requested),
+        ).fetchall()
+        known_ids = {str(row["stable_id"]) for row in known}
+        if known_ids != requested:
+            raise ValueError("unknown_canvas_course_offering")
+        if any(row["provider"] != "canvas" for row in known):
+            raise ValueError("unsupported_course_offering_provider")
+        if any(row["authority_id"] != authority_id for row in known):
+            raise ValueError("canvas_course_offering_authority_mismatch")
+    params: list[Any] = [authority_id]
+    where = "co.provider='canvas' AND co.authority_id=? AND sel.selected=1"
+    if requested:
+        placeholders = ",".join("?" for _ in requested)
+        where += f" AND co.stable_id IN ({placeholders})"
+        params.extend(sorted(requested))
+    rows = conn.execute(
+        f"""
+        SELECT co.* FROM course_offerings co
+        JOIN course_offering_selections sel ON sel.offering_id=co.id
+        WHERE {where}
+        ORDER BY co.stable_id
+        """,
+        params,
+    ).fetchall()
+    if requested and {str(row["stable_id"]) for row in rows} != requested:
+        raise ValueError("canvas_course_offering_not_selected")
+    return rows
+
+
+def canvas_baseline_revision(conn: sqlite3.Connection, offering_ids: list[int]) -> str:
+    rows: list[sqlite3.Row] = []
+    if offering_ids:
+        placeholders = ",".join("?" for _ in offering_ids)
+        rows = conn.execute(
+            f"""
+            SELECT b.stable_id, b.provider, b.authority_id,
+              co.stable_id AS course_offering_stable_id, b.remote_course_id,
+              b.remote_file_id, b.baseline_fingerprint
+            FROM canvas_file_sync_baselines b
+            JOIN course_offerings co ON co.id=b.course_offering_id
+            WHERE b.course_offering_id IN ({placeholders})
+            ORDER BY b.stable_id
+            """,
+            offering_ids,
+        ).fetchall()
+    payload = [dict(row) for row in rows]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def canvas_manifest_revision(manifests: list[tuple[str, CanvasRemoteFile]]) -> str:
+    payload = [
+        {
+            "offering_id": offering_id,
+            "remote_file_id": remote_file.remote_file_id,
+            "fingerprint": canvas_remote_revision_fingerprint(remote_file),
+        }
+        for offering_id, remote_file in sorted(manifests, key=lambda item: (item[0], item[1].remote_file_id))
+    ]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def classify_canvas_file_change(current: CanvasRemoteFile, baseline: CanvasRemoteFile) -> tuple[str, list[str]]:
+    current_payload = canvas_remote_file_payload(current)
+    baseline_payload = canvas_remote_file_payload(baseline)
+    changed = sorted(key for key in current_payload if current_payload[key] != baseline_payload[key])
+    content_signals = {"byte_size", "remote_updated_at", "remote_modified_at"}
+    if content_signals.intersection(changed):
+        return "POTENTIAL_CONTENT_CHANGE", changed
+    if changed:
+        return "METADATA_CHANGE", changed
+    return "UNCHANGED", []
+
+
+def canvas_file_sync_plan(
+    conn: sqlite3.Connection,
+    connector: CanvasConnector,
+    requested_offering_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    authority_id = canvas_authority_id(connector.record.origin)
+    offering_rows = selected_canvas_offerings(conn, authority_id, requested_offering_ids or [])
+    offering_internal_ids = [int(row["id"]) for row in offering_rows]
+    baseline_revision = canvas_baseline_revision(conn, offering_internal_ids)
+    manifests: list[tuple[str, CanvasRemoteFile]] = []
+    offering_sections: list[dict[str, Any]] = []
+    summary = {kind: 0 for kind in ("ADD", "POTENTIAL_CONTENT_CHANGE", "METADATA_CHANGE", "UNCHANGED", "MISSING_FROM_REMOTE_DISCOVERY")}
+    for offering in offering_rows:
+        files = connector.list_course_files(str(offering["remote_course_id"]))
+        manifests.extend((str(offering["stable_id"]), remote_file) for remote_file in files)
+        baseline_rows = conn.execute(
+            "SELECT * FROM canvas_file_sync_baselines WHERE course_offering_id=? ORDER BY remote_file_id",
+            (offering["id"],),
+        ).fetchall()
+        baselines = {str(row["remote_file_id"]): row for row in baseline_rows}
+        current = {remote_file.remote_file_id: remote_file for remote_file in files}
+        actions: list[dict[str, Any]] = []
+        for remote_file_id in sorted(current):
+            remote_file = current[remote_file_id]
+            baseline_row = baselines.get(remote_file_id)
+            if baseline_row is None:
+                kind, changed_fields = "ADD", []
+            else:
+                kind, changed_fields = classify_canvas_file_change(remote_file, canvas_baseline_file(baseline_row))
+            metadata = canvas_remote_file_payload(remote_file)
+            actions.append(
+                {
+                    "kind": kind,
+                    "remote_file_stable_id": canvas_remote_file_stable_id(authority_id, str(offering["stable_id"]), remote_file_id),
+                    "remote_file_id": remote_file_id,
+                    "metadata": metadata,
+                    "changed_fields": changed_fields,
+                    "reason_codes": [kind.lower()],
+                    "acquisition_eligible": not metadata["currently_unavailable"],
+                }
+            )
+            summary[kind] += 1
+        for remote_file_id in sorted(set(baselines) - set(current)):
+            baseline_file = canvas_baseline_file(baselines[remote_file_id])
+            actions.append(
+                {
+                    "kind": "MISSING_FROM_REMOTE_DISCOVERY",
+                    "remote_file_stable_id": str(baselines[remote_file_id]["stable_id"]),
+                    "remote_file_id": remote_file_id,
+                    "metadata": canvas_remote_file_payload(baseline_file),
+                    "changed_fields": [],
+                    "reason_codes": ["remote_discovery_missing_advisory"],
+                    "acquisition_eligible": False,
+                }
+            )
+            summary["MISSING_FROM_REMOTE_DISCOVERY"] += 1
+        offering_sections.append(
+            {
+                "course_offering_id": offering["stable_id"],
+                "remote_course_id": offering["remote_course_id"],
+                "course_label": offering["remote_course_code"] or offering["remote_name"],
+                "actions": actions,
+            }
+        )
+    manifest_revision = canvas_manifest_revision(manifests)
+    plan_seed = {
+        "version": CANVAS_SYNC_PLAN_VERSION,
+        "authority_id": authority_id,
+        "offering_ids": sorted(str(row["stable_id"]) for row in offering_rows),
+        "local_baseline_revision": baseline_revision,
+        "remote_manifest_revision": manifest_revision,
+    }
+    plan_revision = hashlib.sha256(json.dumps(plan_seed, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return {
+        "version": CANVAS_SYNC_PLAN_VERSION,
+        "authority_id": authority_id,
+        "generated_at": now_iso(),
+        "local_baseline_revision": baseline_revision,
+        "remote_manifest_revision": manifest_revision,
+        "plan_revision": plan_revision,
+        "offerings": offering_sections,
+        "summary": summary,
+    }
+
+
+def upsert_canvas_file_sync_baselines(
+    conn: sqlite3.Connection,
+    offering: sqlite3.Row | dict[str, Any],
+    remote_files: list[CanvasRemoteFile],
+    *,
+    applied_at: str | None = None,
+    fail_after: int | None = None,
+) -> None:
+    if offering["provider"] != "canvas":
+        raise ValueError("unsupported_course_offering_provider")
+    if not conn.in_transaction:
+        conn.execute("BEGIN")
+    savepoint = "canvas_file_baseline_upsert"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        now = now_iso()
+        applied = applied_at or now
+        for index, remote_file in enumerate(remote_files):
+            if remote_file.remote_course_id != offering["remote_course_id"]:
+                raise ValueError("canvas_file_course_mismatch")
+            stable_id = canvas_remote_file_stable_id(
+                str(offering["authority_id"]),
+                str(offering["stable_id"]),
+                remote_file.remote_file_id,
+            )
+            payload = canvas_remote_file_payload(remote_file)
+            conn.execute(
+                """
+                INSERT INTO canvas_file_sync_baselines(
+                  stable_id, course_offering_id, provider, authority_id, remote_course_id,
+                  remote_file_id, display_name, filename, content_type, byte_size,
+                  remote_created_at, remote_updated_at, remote_modified_at, locked, hidden,
+                  hidden_for_user, baseline_fingerprint, applied_at, created_at, updated_at
+                ) VALUES (?, ?, 'canvas', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider, authority_id, course_offering_id, remote_file_id) DO UPDATE SET
+                  display_name=excluded.display_name, filename=excluded.filename,
+                  content_type=excluded.content_type, byte_size=excluded.byte_size,
+                  remote_created_at=excluded.remote_created_at,
+                  remote_updated_at=excluded.remote_updated_at,
+                  remote_modified_at=excluded.remote_modified_at, locked=excluded.locked,
+                  hidden=excluded.hidden, hidden_for_user=excluded.hidden_for_user,
+                  baseline_fingerprint=excluded.baseline_fingerprint,
+                  applied_at=excluded.applied_at, updated_at=excluded.updated_at
+                """,
+                (
+                    stable_id, offering["id"], offering["authority_id"], remote_file.remote_course_id,
+                    remote_file.remote_file_id, payload["display_name"], payload["filename"],
+                    payload["content_type"], payload["byte_size"], payload["remote_created_at"],
+                    payload["remote_updated_at"], payload["remote_modified_at"], int(payload["locked"]),
+                    int(payload["hidden"]), int(payload["hidden_for_user"]),
+                    canvas_remote_revision_fingerprint(remote_file), applied, now, now,
+                ),
+            )
+            if fail_after is not None and index + 1 >= fail_after:
+                raise RuntimeError("synthetic_baseline_failure")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+    except Exception:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        raise
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -5907,6 +6340,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.handle_canvas_course_selection_preview()
             elif parsed.path == "/api/canvas/course-selection/apply":
                 self.handle_canvas_course_selection_apply()
+            elif parsed.path == "/api/canvas/sync-preview":
+                self.handle_canvas_sync_preview()
             elif parsed.path in {
                 "/api/terms/manage",
                 "/api/courses/manage",
@@ -6016,6 +6451,25 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                     conn.close()
 
             self.send_json({"ok": True} | with_canvas_connector(apply_selection))
+        except CanvasConnectorError as exc:
+            self.send_canvas_error(exc)
+
+    def handle_canvas_sync_preview(self) -> None:
+        body = self.parse_body_json()
+        if set(body) - {"offering_ids"}:
+            raise ValueError("Canvas sync preview accepts only offering_ids")
+        offering_ids = normalize_requested_offering_ids(body.get("offering_ids", []))
+        try:
+            def build(connector: CanvasConnector) -> dict[str, Any]:
+                conn = connect_db()
+                try:
+                    run_schema_migrations(conn)
+                    conn.commit()
+                    return canvas_file_sync_plan(conn, connector, offering_ids)
+                finally:
+                    conn.close()
+
+            self.send_json({"ok": True, "plan": with_canvas_connector(build)})
         except CanvasConnectorError as exc:
             self.send_canvas_error(exc)
 
