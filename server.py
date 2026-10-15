@@ -546,7 +546,15 @@ class CanvasConnector:
         encoded_course_id = urllib.parse.quote(course_id, safe="")
         path = f"/api/v1/courses/{encoded_course_id}/files"
         payloads = self._get_paginated_json(path, params={"per_page": "50"})
-        return [normalize_canvas_file_object(item, course_id) for item in payloads]
+        files: list[CanvasRemoteFile] = []
+        seen_remote_file_ids: set[str] = set()
+        for item in payloads:
+            remote_file = normalize_canvas_file_object(item, course_id)
+            if remote_file.remote_file_id in seen_remote_file_ids:
+                raise CanvasConnectorError("duplicate_canvas_file_id")
+            seen_remote_file_ids.add(remote_file.remote_file_id)
+            files.append(remote_file)
+        return files
 
     def _get_json(self, path: str, params: dict[str, str] | None = None) -> Any:
         url = self._build_url(path, params or {})
@@ -2746,6 +2754,8 @@ def canvas_file_sync_plan(
     summary = {kind: 0 for kind in ("ADD", "POTENTIAL_CONTENT_CHANGE", "METADATA_CHANGE", "UNCHANGED", "MISSING_FROM_REMOTE_DISCOVERY")}
     for offering in offering_rows:
         files = connector.list_course_files(str(offering["remote_course_id"]))
+        if len(files) != len({remote_file.remote_file_id for remote_file in files}):
+            raise CanvasConnectorError("duplicate_canvas_file_id")
         manifests.extend((str(offering["stable_id"]), remote_file) for remote_file in files)
         baseline_rows = conn.execute(
             "SELECT * FROM canvas_file_sync_baselines WHERE course_offering_id=? ORDER BY remote_file_id",
@@ -6373,6 +6383,7 @@ class StudyHubHandler(BaseHTTPRequestHandler):
             "rate_limited": 429,
             "canvas_unavailable": 503,
             "malformed_canvas_response": 502,
+            "duplicate_canvas_file_id": 502,
             "response_too_large": 502,
             "transport_failure": 503,
             "origin_mismatch": 403,

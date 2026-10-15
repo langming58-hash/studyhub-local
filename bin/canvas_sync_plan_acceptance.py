@@ -24,6 +24,7 @@ TOKEN = "syn-token"
 BIG_COURSE_ID = "9007199254740995"
 BIG_FILE_ID = "9007199254741999"
 URL_CANARY = "https://storage.example.invalid/object?verifier=secret-canary"
+RAW_METADATA_CANARY = "private-upstream-metadata-canary.pdf"
 STATE_ENV = (
     "DATABASE_PATH",
     "OPENAI_API_KEY",
@@ -85,7 +86,13 @@ def raises_code(expected: str, action) -> bool:
     try:
         action()
     except Exception as exc:  # noqa: BLE001 - acceptance verifies sanitized public codes
-        return str(exc) == expected and TOKEN not in str(exc) and URL_CANARY not in str(exc)
+        rendered = f"{exc!s}\n{exc!r}"
+        return (
+            str(exc) == expected
+            and TOKEN not in rendered
+            and URL_CANARY not in rendered
+            and RAW_METADATA_CANARY not in rendered
+        )
     return False
 
 
@@ -177,9 +184,89 @@ def snapshot_tables(conn: sqlite3.Connection, tables: tuple[str, ...]) -> dict[s
     return {table: [dict(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY id")] for table in tables}
 
 
+def seed_pr23_existing_data(conn: sqlite3.Connection) -> None:
+    now = "2026-01-01T00:00:00+00:00"
+    digest = hashlib.sha256(b"synthetic pre-pr24 material").hexdigest()
+    conn.execute(
+        "INSERT INTO terms(id, stable_id, name, archived, sort_order, created_at, updated_at) VALUES (10, 'term_pre24', 'Synthetic Pre24 Term', 0, 0, ?, ?)",
+        (now, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO courses(id, code, name, folder_name, path, created_at, updated_at, stable_id,
+          display_name, course_code, term_id, source_folder, source_kind, active)
+        VALUES (20, 'TEST9100', 'Synthetic Pre24 Course', 'TEST9100 - Pre24', '/synthetic/pre24',
+          ?, ?, 'course_pre24', 'Synthetic Pre24 Course', 'TEST9100', 10, '/synthetic/pre24', 'folder', 1)
+        """,
+        (now, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO weeks(id, course_id, week_label, week_number, path, has_materials, file_count,
+          stable_id, kind, origin, created_at, updated_at)
+        VALUES (30, 20, 'Week 01', 1, '/synthetic/pre24/Week 01', 1, 1,
+          'week_pre24', 'week', 'scan', ?, ?)
+        """,
+        (now, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO files(id, course_id, week_id, course_code, week_label, section, category,
+          exercise_type, filename, original_path, rel_path, source, source_label, hash, size,
+          modified_at, indexed_at, extension, mime_type, stable_id, course_name, absolute_path,
+          source_type, file_extension, file_size, sha256, display_name, material_type,
+          import_mode, active, material_created_at, material_updated_at)
+        VALUES (40, 20, 30, 'TEST9100', 'Week 01', '01 Course Materials', 'Lecture', '',
+          'pre24.txt', '/synthetic/pre24/pre24.txt', 'TEST9100/Week 01/pre24.txt',
+          'official', 'Synthetic material', ?, 27, ?, ?, '.txt', 'text/plain',
+          'material_pre24', 'Synthetic Pre24 Course', '/synthetic/pre24/pre24.txt',
+          'Local Reference', '.txt', 27, ?, 'pre24.txt', 'lecture', 'reference', 1, ?, ?)
+        """,
+        (digest, now, now, digest, now, now),
+    )
+    conn.execute(
+        "INSERT INTO file_versions(id, file_id, stable_id, sha256, file_size, modified_at, indexed_at, active) VALUES (50, 40, 'file_version_pre24', ?, 27, ?, ?, 1)",
+        (digest, now, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO sources(id, stable_id, provider_kind, authority, source_label, source_type,
+          import_mode, local_locator, created_at, updated_at)
+        VALUES (60, 'source_pre24', 'local', 'USER_OWNED', 'Synthetic material',
+          'Local Reference', 'reference', '/synthetic/pre24/pre24.txt', ?, ?)
+        """,
+        (now, now),
+    )
+    conn.execute(
+        "INSERT INTO blobs(id, stable_id, sha256, byte_size, mime_type, extension, local_locator, created_at, updated_at) VALUES (70, 'blob_pre24', ?, 27, 'text/plain', '.txt', '', ?, ?)",
+        (digest, now, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO materials(id, stable_id, legacy_file_id, course_id, week_id, course_code,
+          course_name, week_label, week_number, material_type, display_name, active,
+          current_version_id, created_at, updated_at)
+        VALUES (80, 'material_pre24', 40, 20, 30, 'TEST9100', 'Synthetic Pre24 Course',
+          'Week 01', 1, 'lecture', 'pre24.txt', 1, 90, ?, ?)
+        """,
+        (now, now),
+    )
+    conn.execute(
+        """
+        INSERT INTO material_versions(id, stable_id, material_id, source_id, blob_id,
+          legacy_file_id, legacy_file_version_id, sha256, byte_size, modified_at,
+          indexed_at, active, created_at, updated_at)
+        VALUES (90, 'material_version_pre24', 80, 60, 70, 40, 50, ?, 27, ?, ?, 1, ?, ?)
+        """,
+        (digest, now, now, now, now),
+    )
+    conn.commit()
+
+
 def check_migration(server: Any, tmp: Path, failures: list[str]) -> None:
     conn = server.connect_db()
     server.init_db(conn)
+    seed_pr23_existing_data(conn)
     offering = seed_selected_offering(server, conn)
     conn.execute("DROP TABLE canvas_file_sync_baselines")
     conn.execute("DELETE FROM schema_migrations WHERE version=3")
@@ -193,8 +280,10 @@ def check_migration(server: Any, tmp: Path, failures: list[str]) -> None:
     after = snapshot_tables(conn, tuple(before))
     fk_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
     server.run_schema_migrations(conn)
+    after_rerun = snapshot_tables(conn, tuple(before))
     check("pr23_to_pr24_migration_preserves_existing_rows", before == after, failures)
     check("sync_baseline_migration_runs_once", migration_count == 1 and conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=3").fetchone()[0] == 1, failures)
+    check("sync_baseline_migration_rerun_preserves_existing_rows", before == after_rerun, failures)
     check("sync_baseline_migration_fk_integrity", not fk_errors, failures)
     check("sync_baseline_table_and_index_created", bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='canvas_file_sync_baselines'").fetchone()) and bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_canvas_file_baselines_offering'").fetchone()), failures)
     check("seeded_course_offering_survives_migration", conn.execute("SELECT stable_id FROM course_offerings WHERE id=?", (offering["id"],)).fetchone()[0] == offering["stable_id"], failures)
@@ -222,6 +311,26 @@ def check_connector(server: Any, failures: list[str]) -> None:
         ],
     )
     check("file_pagination_follows_case_insensitive_rel_next", [item.remote_file_id for item in paged.list_course_files(BIG_COURSE_ID)] == ["one", "two"] and paged_http.requests[1][0] == next_url, failures)
+
+    duplicate_identical, _ = connector_with(
+        server,
+        [response(server, 200, [file_payload("duplicate"), file_payload("duplicate")])],
+    )
+    check("same_page_identical_file_id_rejected", raises_code("duplicate_canvas_file_id", lambda: duplicate_identical.list_course_files(BIG_COURSE_ID)), failures)
+    conflicting_first = file_payload("conflict", filename=RAW_METADATA_CANARY, size=1200)
+    conflicting_second = file_payload("conflict", filename="different.pdf", size=2400)
+    duplicate_conflicting, _ = connector_with(server, [response(server, 200, [conflicting_first, conflicting_second])])
+    check("same_page_conflicting_file_id_rejected", raises_code("duplicate_canvas_file_id", lambda: duplicate_conflicting.list_course_files(BIG_COURSE_ID)), failures)
+    duplicate_reversed, _ = connector_with(server, [response(server, 200, [conflicting_second, conflicting_first])])
+    check("reversed_conflicting_file_id_rejected", raises_code("duplicate_canvas_file_id", lambda: duplicate_reversed.list_course_files(BIG_COURSE_ID)), failures)
+    duplicate_cross_page, _ = connector_with(
+        server,
+        [
+            response(server, 200, [file_payload("cross-page")], {"Link": f'<{next_url}>; rel="next"'}),
+            response(server, 200, [file_payload("cross-page", filename=RAW_METADATA_CANARY)]),
+        ],
+    )
+    check("cross_page_file_id_rejected", raises_code("duplicate_canvas_file_id", lambda: duplicate_cross_page.list_course_files(BIG_COURSE_ID)), failures)
     cross, _ = connector_with(server, [response(server, 200, [], {"Link": '<https://evil.example.invalid/api/v1/files>; rel="next"'})])
     check("cross_origin_file_pagination_rejected", raises_code("cross_origin_pagination", lambda: cross.list_course_files(BIG_COURSE_ID)), failures)
     first_url = f"{ORIGIN}/api/v1/courses/{BIG_COURSE_ID}/files?per_page=50"
@@ -291,10 +400,17 @@ def check_plans(server: Any, conn: sqlite3.Connection, offering: Any, failures: 
     check("missing_is_advisory", action(missing, "MISSING_FROM_REMOTE_DISCOVERY")["reason_codes"] == ["remote_discovery_missing_advisory"], failures)
     check("missing_does_not_delete_baseline_or_local_rows", conn.execute("SELECT COUNT(*) FROM canvas_file_sync_baselines").fetchone()[0] == 1 and all(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0 for table in ("sources", "blobs", "materials", "material_versions", "files", "file_versions")), failures)
 
-    ordered_a = plan_for([file_payload("a"), file_payload("b")])
-    ordered_b = plan_for([file_payload("b"), file_payload("a")])
+    unique_items = [file_payload("a"), file_payload("b"), file_payload("c")]
+    ordered_a = plan_for(unique_items)
+    ordered_b = plan_for(list(reversed(unique_items)))
+    ordered_c = plan_for([unique_items[1], unique_items[2], unique_items[0]])
     same_again = plan_for([file_payload()])
-    check("manifest_revision_ignores_response_order", ordered_a["remote_manifest_revision"] == ordered_b["remote_manifest_revision"], failures)
+    check(
+        "manifest_and_plan_revisions_ignore_three_item_response_order",
+        len({ordered_a["remote_manifest_revision"], ordered_b["remote_manifest_revision"], ordered_c["remote_manifest_revision"]}) == 1
+        and len({ordered_a["plan_revision"], ordered_b["plan_revision"], ordered_c["plan_revision"]}) == 1,
+        failures,
+    )
     check("identical_state_has_deterministic_plan_revision", unchanged["plan_revision"] == same_again["plan_revision"], failures)
     check("remote_change_changes_plan_revision", unchanged["plan_revision"] != size_change["plan_revision"], failures)
     old_revision = unchanged["plan_revision"]
@@ -316,6 +432,18 @@ def check_plans(server: Any, conn: sqlite3.Connection, offering: Any, failures: 
     failed = raises_code("synthetic_baseline_failure", lambda: server.upsert_canvas_file_sync_baselines(conn, offering, [base, second], fail_after=1))
     check("baseline_helper_failure_is_atomic_and_rollbackable", failed and conn.in_transaction and conn.execute("SELECT COUNT(*) FROM canvas_file_sync_baselines").fetchone()[0] == existing_count, failures)
     conn.rollback()
+
+    duplicate_connector, _ = connector_with(
+        server,
+        [response(server, 200, [file_payload("ambiguous"), file_payload("ambiguous", filename=RAW_METADATA_CANARY)])],
+    )
+    duplicate_before = snapshot_tables(conn, table_names)
+    duplicate_failed = raises_code(
+        "duplicate_canvas_file_id",
+        lambda: server.canvas_file_sync_plan(conn, duplicate_connector, [offering["stable_id"]]),
+    )
+    duplicate_after = snapshot_tables(conn, table_names)
+    check("duplicate_manifest_failure_is_zero_mutation", duplicate_failed and duplicate_before == duplicate_after, failures)
 
     other_authority = server.canvas_authority_id(OTHER_ORIGIN)
     other = seed_selected_offering(server, conn, authority_id=other_authority, remote_id=BIG_COURSE_ID)
@@ -384,6 +512,19 @@ def check_api(server: Any, offering: Any, failures: list[str]) -> None:
     try:
         status, payload = post({"offering_ids": [offering["stable_id"]]})
         check("sync_preview_api_returns_plan", status == 200 and payload.get("ok") is True and sum(payload["plan"]["summary"].values()) == 1, failures)
+        duplicate_connector, _ = connector_with(
+            server,
+            [response(server, 200, [file_payload("api-duplicate"), file_payload("api-duplicate", filename=RAW_METADATA_CANARY)])],
+        )
+        server.with_canvas_connector = lambda callback: callback(duplicate_connector)
+        duplicate_status, duplicate_payload = post({"offering_ids": [offering["stable_id"]]})
+        check(
+            "duplicate_manifest_api_error_is_sanitized",
+            duplicate_status == 502
+            and duplicate_payload == {"ok": False, "error": "duplicate_canvas_file_id"}
+            and RAW_METADATA_CANARY not in json.dumps(duplicate_payload),
+            failures,
+        )
         injected_status, _ = post({"offering_ids": [offering["stable_id"]], "remote_course_id": "attacker", "files": [file_payload("attacker")]})
         check("browser_cannot_override_course_or_inject_file_metadata", injected_status == 400, failures)
         request = urllib.request.Request(url, method="GET")
