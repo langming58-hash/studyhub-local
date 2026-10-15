@@ -97,9 +97,19 @@ with a persisted last-applied metadata baseline and classifies files as `ADD`,
 download, preview, and thumbnail URLs are discarded before normalization and
 never enter SQLite, plan output, stable identity, or revision fingerprints.
 
-Not implemented yet: Canvas content acquisition or synchronization apply,
-Canvas file/material download, local Course/CourseOffering mapping, remote Term
-mapping, remote deletion semantics, SourceAnchor, Evidence,
+Explicit Canvas file apply is now implemented for selected CourseOfferings.
+Apply recomputes the plan, rejects stale revisions, re-reads each selected File
+through the course-scoped API, streams supported bytes into profile-isolated
+retained storage without forwarding the Canvas bearer to download origins, and
+then uses the existing ingestion core. Canvas Sources are
+`REMOTE_AUTHORITATIVE`; local scanner Sources remain `USER_OWNED`. A focused
+`course_offering_local_bindings` projection supplies the current legacy UI with
+a deterministic Canvas-managed Course and `Canvas Files` learning unit without
+claiming that target-domain Course and CourseOffering are the same entity.
+Baseline state advances only after successful ingestion.
+
+Not implemented yet: production Canvas OAuth, remote Term mapping, remote
+deletion semantics, automatic/background sync, SourceAnchor, Evidence,
 DerivedArtifact/ProcessingRecipe, Entity Resolution, the Assessments target
 model, background jobs, and target-domain UI reads.
 
@@ -138,8 +148,10 @@ See [Preview Matrix](design/PREVIEW_MATRIX.md) for current format behavior.
   the exact spawned Python backend child for one narrow internal
   `canvas_default` credential operation. The current Canvas connector can use
   that boundary for read-only identity validation, course discovery, and
-  selected-offering file metadata discovery when an approved mechanism has
-  stored a valid connection record.
+  selected-offering file discovery and explicit file acquisition when an
+  approved mechanism has stored a valid connection record. Bearer credentials
+  remain confined to same-origin Canvas API requests and are not attached to
+  ephemeral file-download URLs or redirects.
 - OpenAI is optional, server-side, and scoped to indexed source material.
 - Practice questions come from indexed teacher-provided material only. The app
   must not invent practice questions.

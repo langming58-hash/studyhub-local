@@ -563,7 +563,12 @@ def main() -> int:
         check("token_absent_from_sqlite_and_logs", TOKEN.encode() not in db_bytes and TOKEN not in log_text, failures)
         check("no_canvas_mutating_http_method_added", 'method="POST"' not in connector_source, failures)
         check("no_content_download_or_ingestion_path_added", all(term not in connector_source for term in ("preview_url", "thumbnail_url", "import_course_folder", "register_material", "create_blob")), failures)
-        check("no_public_baseline_write_endpoint", "/api/canvas/sync-apply" not in source and "upsert_canvas_file_sync_baselines" not in source.split("def do_POST", 1)[1], failures)
+        check(
+            "baseline_write_is_limited_to_explicit_sync_apply",
+            'parsed.path == "/api/canvas/sync-apply"' in source.split("def do_POST", 1)[1]
+            and "/api/canvas/sync-apply" not in source.split("def do_GET", 1)[1].split("def do_HEAD", 1)[0],
+            failures,
+        )
         check("mcp_exposes_no_canvas_sync_or_secret", all("canvas" not in name.lower() and "credential" not in name.lower() for name in server.MCP_TOOLS), failures)
         check("production_manual_token_enrollment_still_blocked", "canvas_manual_token_development_only" in (ROOT / "src-tauri/src/lib.rs").read_text(encoding="utf-8"), failures)
         conn.close()

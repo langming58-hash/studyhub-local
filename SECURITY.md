@@ -40,12 +40,17 @@ paths, temporary files, logs, diagnostics, SQLite, WebView JavaScript, or MCP.
 The implemented protocol supports only a narrow internal `canvas_default`
 connection-record operation. If a valid origin-bound connection record exists,
 the Python backend can use it for read-only Canvas identity validation and
-course discovery. The browser may submit only remote course IDs for local
-course-selection preview/apply; StudyHub re-reads Canvas metadata through the
-connector before persisting CourseOffering records. OAuth, Canvas passwords,
-Developer Key provisioning, token refresh, production end-user connection UX,
-account management, Canvas content sync, file/material download, and Canvas
-writes remain not implemented.
+course discovery and explicit selected-file acquisition. The browser may submit
+only selected CourseOffering intent, expected plan revisions, and
+StudyHub-generated remote-file stable IDs. StudyHub re-reads authoritative
+metadata before persistence. Canvas API bearer credentials are never attached
+to ephemeral file URLs or redirects. Downloads are HTTPS-only, reject unsafe
+literal network targets, enforce redirect and 256 MiB streaming limits, and
+remain inside profile-owned storage. Hostname DNS address pinning is not yet
+implemented and is documented as a residual SSRF limitation. OAuth, Canvas
+passwords, Developer Key provisioning, token refresh, production end-user
+connection UX, account management, background sync, remote deletion, and
+Canvas writes remain not implemented.
 
 ## Academic Materials
 
