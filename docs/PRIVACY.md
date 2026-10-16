@@ -170,6 +170,17 @@ provider refresh. The offline What's New API exposes only safe stable IDs,
 labels, timestamps, seen status, and a navigation-safe local file ID when one
 exists.
 
+The implemented `studyhub-backup-v1` exporter applies ownership at the field
+and artifact layer rather than dumping SQLite tables. It includes allowlisted
+user-owned metadata and study history only. It excludes original and retained
+academic bytes, remote-authoritative provider facts, derived text/indexes,
+runtime databases, credentials, provider IDs, signed URLs, logs, and absolute
+paths. Export never calls Canvas, OpenAI, or CredentialStore and never reads
+another runtime profile. Recognizable secrets and local paths embedded in
+portable user text are redacted as defense in depth. See
+[Backup Export Format](BACKUP_FORMAT.md) for the exact v1 contract and known
+omissions. Restore is not implemented.
+
 ## Public Data Boundary
 
 Public examples, fixtures, tests, screenshots, documentation, and demo assets

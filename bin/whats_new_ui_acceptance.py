@@ -116,7 +116,7 @@ def main() -> int:
         and '"total_count"' in server,
         "count_query_is_not_page_limited": "def academic_change_counts(" in server
         and "COUNT(*) AS total_count" in server
-        and "LIMIT" not in segment(server, "def academic_change_counts(", "def normalize_academic_change_event_ids"),
+        and "LIMIT" not in segment(server, "def academic_change_counts(", "def canonical_backup_json"),
         "no_sync_or_notification_controls_added": all(
             token not in dedicated
             for token in ("sync button", "background sync", "Notification", "OAuth")
