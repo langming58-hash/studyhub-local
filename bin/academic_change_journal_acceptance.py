@@ -203,13 +203,14 @@ def check_event_lifecycle(server: Any, failures: list[str]) -> None:
         "baselines": table_rows(conn, "canvas_file_sync_baselines"),
     }
     listed = server.list_academic_changes(conn, unseen_only=True)
+    counts = server.academic_change_counts(conn)
     after_read = {
         "events": table_rows(conn, "academic_change_events"),
         "state": table_rows(conn, "academic_change_event_state"),
         "materials": table_rows(conn, "materials"),
         "baselines": table_rows(conn, "canvas_file_sync_baselines"),
     }
-    check("whats_new_read_is_non_mutating", before_read == after_read, failures)
+    check("whats_new_read_is_non_mutating", before_read == after_read and counts == {"unseen_count": 1, "total_count": 1}, failures)
     check("whats_new_has_safe_local_navigation", len(listed) == 1 and isinstance(listed[0]["file_id"], int) and "path" not in listed[0], failures)
 
     first_event_id = str(added[0]["stable_id"])
@@ -287,6 +288,7 @@ def check_transition_cycles(server: Any, failures: list[str]) -> None:
         "SELECT seen_at FROM academic_change_event_state WHERE event_id=?",
         (rows[1]["id"],),
     ).fetchone()[0]
+    counts_before_later_transitions = server.academic_change_counts(conn)
     for body, updated in history[2:]:
         apply_one(server, conn, offering, remote_file(server, "content-cycle", body, updated=updated), body)
         conn.commit()
@@ -298,6 +300,8 @@ def check_transition_cycles(server: Any, failures: list[str]) -> None:
     check("content_cycle_can_reuse_material_versions_without_collapsing_events", rows[1]["resulting_material_version_stable_id"] == rows[3]["resulting_material_version_stable_id"] and rows[1]["stable_id"] != rows[3]["stable_id"], failures)
     unseen_ids = {item["event_id"] for item in server.list_academic_changes(conn, unseen_only=True)}
     check("acknowledgement_cycle_keeps_first_seen_and_later_unseen", conn.execute("SELECT seen_at FROM academic_change_event_state WHERE event_id=?", (rows[1]["id"],)).fetchone()[0] == first_b_seen_at and rows[3]["stable_id"] in unseen_ids and rows[1]["stable_id"] not in unseen_ids, failures)
+    counts_after_later_transitions = server.academic_change_counts(conn)
+    check("later_transitions_increment_exact_unseen_count", counts_after_later_transitions["unseen_count"] == counts_before_later_transitions["unseen_count"] + 2, failures)
     conn.close()
 
 
@@ -462,6 +466,61 @@ def check_multi_file_atomicity(server: Any, failing_server: Any, failures: list[
     failing.close()
 
 
+def check_count_scoping(server: Any, failures: list[str]) -> None:
+    conn = server.connect_db()
+    server.init_db(conn)
+    first_offering = seed_offering(server, conn)
+    first_item = remote_file(server, "count-primary", BYTES_A)
+    apply_one(server, conn, first_offering, first_item, BYTES_A)
+    authority_id = str(first_offering["authority_id"])
+    second_course = server.CanvasCourse(
+        "9007199254748999",
+        "Synthetic Secondary Course",
+        "SYN9201",
+        "available",
+        None,
+        None,
+        None,
+        None,
+    )
+    server.upsert_canvas_course_offering(conn, authority_id, second_course)
+    second_offering = conn.execute(
+        "SELECT * FROM course_offerings WHERE authority_id=? AND remote_course_id=?",
+        (authority_id, second_course.remote_course_id),
+    ).fetchone()
+    remote_item_id = server.canvas_remote_file_stable_id(
+        authority_id,
+        str(second_offering["stable_id"]),
+        "count-secondary",
+    )
+    server.record_academic_change_event(
+        conn,
+        event_kind="CANVAS_FILE_ADDED",
+        offering=second_offering,
+        remote_item_stable_id=remote_item_id,
+        predecessor_event_stable_id=None,
+        material_stable_id=remote_item_id,
+        material_label="synthetic-secondary.txt",
+        changed_fields=[],
+        resulting_revision_id="synthetic-secondary-revision",
+        resulting_material_version_stable_id="synthetic-secondary-revision",
+        resulting_sha256=None,
+        applied_at="2026-04-01T00:00:00Z",
+    )
+    conn.commit()
+    all_counts = server.academic_change_counts(conn)
+    first_counts = server.academic_change_counts(
+        conn,
+        course_offering_stable_id=str(first_offering["stable_id"]),
+    )
+    second_counts = server.academic_change_counts(
+        conn,
+        course_offering_stable_id=str(second_offering["stable_id"]),
+    )
+    check("whats_new_counts_are_exact_and_course_scoped", all_counts == {"unseen_count": 2, "total_count": 2} and first_counts == {"unseen_count": 1, "total_count": 1} and second_counts == {"unseen_count": 1, "total_count": 1}, failures)
+    conn.close()
+
+
 def check_offline_http_api(server: Any, failures: list[str]) -> None:
     conn = server.connect_db()
     server.init_db(conn)
@@ -475,9 +534,10 @@ def check_offline_http_api(server: Any, failures: list[str]) -> None:
     thread.start()
     port = httpd.server_address[1]
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/whats-new?unseen_only=1&limit=10", timeout=5) as response:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/whats-new?unseen_only=1&limit=1", timeout=5) as response:
             payload = json.loads(response.read())
         check("offline_whats_new_api_lists_without_connector", response.status == 200 and isinstance(payload["events"], list), failures)
+        check("whats_new_counts_ignore_page_limit", len(payload["events"]) == 1 and payload["total_count"] == 4 and payload["unseen_count"] == 3, failures)
         request = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/whats-new/seen",
             data=json.dumps({"event_ids": [target]}).encode(),
@@ -491,6 +551,9 @@ def check_offline_http_api(server: Any, failures: list[str]) -> None:
         with urllib.request.urlopen(request, timeout=5) as response:
             marked = json.loads(response.read())
         check("offline_mark_seen_api_uses_explicit_ids", response.status == 200 and marked == {"ok": True, "marked": 1}, failures)
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/whats-new?unseen_only=0&limit=1", timeout=5) as response:
+            after_seen = json.loads(response.read())
+        check("seen_event_reduces_unseen_count", after_seen["total_count"] == 4 and after_seen["unseen_count"] == 2, failures)
 
         bad = urllib.request.Request(
             f"http://127.0.0.1:{port}/api/whats-new/seen",
@@ -542,6 +605,9 @@ def run() -> int:
         multi_success_server = load_server(root / "multi-success")
         multi_failure_server = load_server(root / "multi-failure")
         check_multi_file_atomicity(multi_success_server, multi_failure_server, failures)
+
+        count_scope_server = load_server(root / "count-scope")
+        check_count_scoping(count_scope_server, failures)
 
     if failures:
         print("Academic change journal acceptance: FAIL")

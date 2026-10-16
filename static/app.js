@@ -20,6 +20,12 @@ const state = {
   studyMode: "practice",
   searchFiltersOpen: false,
   sidebarCollapsed: localStorage.getItem("studyhub.sidebarCollapsed") === "true",
+  whatsNew: {
+    events: [],
+    unseenCount: 0,
+    totalCount: 0,
+    filter: "unread",
+  },
   ask: {
     context: {},
     scope: "course",
@@ -95,6 +101,7 @@ function routeFromLocation() {
   if (parts[0] === "week" && parts[1] && parts[2]) return { view: "week", courseId: Number(parts[1]), week: parts[2] };
   if (parts[0] === "file" && parts[1]) return { view: "file", fileId: Number(parts[1]), page: Number(parts[2] || 0) };
   if (parts[0] === "study") return { view: "study", mode: parts[1] || "practice" };
+  if (parts[0] === "whats-new") return { view: "whats-new" };
   if (["home", "courses", "search", "ai", "settings"].includes(parts[0])) return { view: parts[0] };
   return { view: "home" };
 }
@@ -694,8 +701,11 @@ async function resumePendingFirstRunAction() {
 
 async function renderHome() {
   setTitle(t("nav.home"));
-  const recent = await api("/api/recent");
-  const wrong = await api("/api/wrong-questions");
+  const [recent, wrong, changes] = await Promise.all([
+    api("/api/recent"),
+    api("/api/wrong-questions"),
+    fetchWhatsNew(true, 5),
+  ]);
   const lastFileId = Number(localStorage.getItem("studyhub.lastFileId") || 0);
   const continueFile = recent.find((file) => Number(file.id) === lastFileId) || recent[0];
   const activeCourses = state.courses.filter((course) => Number(course.file_count || 0) > 0);
@@ -716,6 +726,7 @@ async function renderHome() {
         }
       </div>
     </section>
+    ${renderHomeWhatsNew(changes)}
     <section class="section-block quiet-section">
       <div class="section-head">
         <div>
@@ -747,6 +758,123 @@ async function renderHome() {
     </section>
   `;
   bindLibrarySetupForm();
+}
+
+function whatsNewKindLabel(kind) {
+  const labels = {
+    CANVAS_FILE_ADDED: "whatsNew.newMaterial",
+    CANVAS_FILE_CONTENT_UPDATED: "whatsNew.materialUpdated",
+    CANVAS_FILE_METADATA_UPDATED: "whatsNew.detailsChanged",
+  };
+  return t(labels[kind] || "whatsNew.detailsChanged");
+}
+
+function whatsNewChangedFieldLabels(fields = []) {
+  const labels = {
+    filename: "whatsNew.fileName",
+    display_name: "whatsNew.displayName",
+    content_type: "whatsNew.fileType",
+    byte_size: "whatsNew.fileSize",
+    remote_created_at: "whatsNew.updatedTime",
+    remote_updated_at: "whatsNew.updatedTime",
+    remote_modified_at: "whatsNew.updatedTime",
+    locked: "whatsNew.availability",
+    hidden: "whatsNew.availability",
+    hidden_for_user: "whatsNew.availability",
+  };
+  return [...new Set(fields.map((field) => labels[field]).filter(Boolean))].map((key) => t(key));
+}
+
+async function fetchWhatsNew(unseenOnly, limit) {
+  const data = await api(`/api/whats-new?unseen_only=${unseenOnly ? "1" : "0"}&limit=${limit}`);
+  state.whatsNew.events = Array.isArray(data.events) ? data.events : [];
+  state.whatsNew.unseenCount = Number(data.unseen_count || 0);
+  state.whatsNew.totalCount = Number(data.total_count || 0);
+  return data;
+}
+
+function whatsNewEventRow(item, { compact = false } = {}) {
+  const changed = whatsNewChangedFieldLabels(item.changed_fields || []);
+  const showChanged = item.event_kind === "CANVAS_FILE_METADATA_UPDATED" && changed.length;
+  const unavailable = item.file_id === null || item.file_id === undefined;
+  return `
+    <article class="whats-new-row${item.seen ? " is-seen" : " is-unread"}" data-whats-new-event="${escapeHtml(item.event_id)}">
+      <div class="whats-new-status" aria-label="${escapeHtml(t(item.seen ? "whatsNew.read" : "whatsNew.unreadState"))}">
+        <span class="unread-dot" aria-hidden="true"></span>
+        <span class="sr-only">${escapeHtml(t(item.seen ? "whatsNew.read" : "whatsNew.unreadState"))}</span>
+      </div>
+      <div class="whats-new-copy">
+        <div class="whats-new-heading">
+          <strong>${escapeHtml(whatsNewKindLabel(item.event_kind))}</strong>
+          <time datetime="${escapeHtml(item.applied_at)}">${escapeHtml(i18n.formatDate(item.applied_at))}</time>
+        </div>
+        <p class="whats-new-material">${escapeHtml(item.material_label || t("whatsNew.untitledMaterial"))}</p>
+        <p class="muted">${escapeHtml(item.course_label || t("whatsNew.unknownCourse"))}${showChanged ? ` · ${escapeHtml(changed.join(", "))}` : ""}</p>
+      </div>
+      <div class="whats-new-actions">
+        ${unavailable ? `<span class="muted unavailable-label">${escapeHtml(t("whatsNew.materialUnavailable"))}</span>` : `<button class="button secondary compact" data-whats-new-open="${Number(item.file_id)}">${escapeHtml(t("whatsNew.openMaterial"))}</button>`}
+        ${!item.seen ? `<button class="button ghost compact" data-whats-new-read="${escapeHtml(item.event_id)}">${escapeHtml(t("whatsNew.markRead"))}</button>` : ""}
+      </div>
+    </article>
+  `;
+}
+
+function renderHomeWhatsNew(data) {
+  const events = Array.isArray(data.events) ? data.events : [];
+  const unseenCount = Number(data.unseen_count || 0);
+  const totalCount = Number(data.total_count || 0);
+  let body = events.map((item) => whatsNewEventRow(item, { compact: true })).join("");
+  if (!totalCount) body = `<p class="whats-new-empty">${escapeHtml(t("whatsNew.noUpdates"))}</p>`;
+  else if (!unseenCount) body = `<p class="whats-new-empty">${escapeHtml(t("whatsNew.caughtUp"))}</p>`;
+  return `
+    <section class="section-block quiet-section whats-new-home" aria-labelledby="whatsNewHomeTitle">
+      <div class="section-head">
+        <div class="section-title-inline">
+          <h2 id="whatsNewHomeTitle">${escapeHtml(t("whatsNew.title"))}</h2>
+          ${unseenCount ? `<span class="count-badge" aria-label="${escapeHtml(t("whatsNew.unreadCount", { count: unseenCount }))}">${unseenCount}</span>` : ""}
+        </div>
+        <button class="button secondary" data-view="whats-new">${escapeHtml(t(totalCount && !unseenCount ? "whatsNew.viewHistory" : "whatsNew.viewAll"))}</button>
+      </div>
+      <div class="whats-new-list compact-list">${body}</div>
+    </section>
+  `;
+}
+
+async function renderWhatsNew(filter = state.whatsNew.filter) {
+  state.whatsNew.filter = filter === "all" ? "all" : "unread";
+  setTitle(t("whatsNew.title"), t("whatsNew.eyebrow"));
+  const data = await fetchWhatsNew(state.whatsNew.filter === "unread", 100);
+  const events = state.whatsNew.events;
+  const relevantCount = state.whatsNew.filter === "unread" ? state.whatsNew.unseenCount : state.whatsNew.totalCount;
+  const shownUnseenIds = events.filter((item) => !item.seen).map((item) => item.event_id);
+  let body = events.map((item) => whatsNewEventRow(item)).join("");
+  if (!state.whatsNew.totalCount) body = `<div class="notice">${escapeHtml(t("whatsNew.noUpdates"))}</div>`;
+  else if (state.whatsNew.filter === "unread" && !events.length) body = `<div class="notice">${escapeHtml(t("whatsNew.caughtUp"))}</div>`;
+  view.innerHTML = `
+    <section class="whats-new-page" aria-label="${escapeHtml(t("whatsNew.title"))}">
+      <div class="workspace-head">
+        <p class="muted whats-new-intro">${escapeHtml(t("whatsNew.subtitle"))}</p>
+        ${shownUnseenIds.length ? `<button class="button secondary" data-whats-new-read-shown>${escapeHtml(t("whatsNew.markShownRead"))}</button>` : ""}
+      </div>
+      <div class="whats-new-toolbar">
+        <div class="segmented-tabs whats-new-filter" role="group" aria-label="${escapeHtml(t("whatsNew.filter"))}">
+          <button class="${state.whatsNew.filter === "unread" ? "active" : ""}" data-whats-new-filter="unread" aria-pressed="${state.whatsNew.filter === "unread"}">${escapeHtml(t("whatsNew.unread"))} (${state.whatsNew.unseenCount})</button>
+          <button class="${state.whatsNew.filter === "all" ? "active" : ""}" data-whats-new-filter="all" aria-pressed="${state.whatsNew.filter === "all"}">${escapeHtml(t("whatsNew.all"))} (${state.whatsNew.totalCount})</button>
+        </div>
+        <p class="muted">${escapeHtml(t("whatsNew.showingLatest", { count: Math.min(events.length, relevantCount) }))}</p>
+      </div>
+      <div class="whats-new-list">${body}</div>
+    </section>
+  `;
+}
+
+async function markWhatsNewSeen(eventIds) {
+  if (!eventIds.length) return;
+  const scrollTop = window.scrollY;
+  await postJson("/api/whats-new/seen", { event_ids: eventIds });
+  if (state.view === "whats-new") await renderWhatsNew();
+  else if (state.view === "home") await renderHome();
+  requestAnimationFrame(() => window.scrollTo({ top: scrollTop }));
 }
 
 function bindLibrarySetupForm() {
@@ -1701,8 +1829,9 @@ async function route(viewName = state.view, options = {}) {
   state.view = viewName;
   if (viewName === "study" && options.mode) state.studyMode = options.mode;
   if (options.history !== false) recordRoute({ view: viewName, mode: viewName === "study" ? state.studyMode : undefined }, options.replace);
-  document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === viewName));
+  document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === (viewName === "whats-new" ? "home" : viewName)));
   if (viewName === "home") return renderHome();
+  if (viewName === "whats-new") return renderWhatsNew();
   if (viewName === "courses") return renderCourses();
   if (viewName === "search") return renderSearch();
   if (viewName === "ai") return renderAskGpt();
@@ -2371,6 +2500,23 @@ document.addEventListener("click", async (event) => {
   }
   if (target.dataset.publicLink) {
     await openPublicLink(target.dataset.publicLink);
+    return;
+  }
+  if (target.dataset.whatsNewFilter) {
+    await renderWhatsNew(target.dataset.whatsNewFilter);
+    return;
+  }
+  if (target.dataset.whatsNewRead) {
+    await markWhatsNewSeen([target.dataset.whatsNewRead]);
+    return;
+  }
+  if (target.hasAttribute("data-whats-new-read-shown")) {
+    const shownUnseenIds = state.whatsNew.events.filter((item) => !item.seen).map((item) => item.event_id);
+    await markWhatsNewSeen(shownUnseenIds);
+    return;
+  }
+  if (target.dataset.whatsNewOpen) {
+    await route("file", { fileId: Number(target.dataset.whatsNewOpen) });
     return;
   }
   if (target.dataset.view) return route(target.dataset.view);
