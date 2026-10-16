@@ -126,6 +126,10 @@ def check_upgrade_migration(server: Any, failures: list[str]) -> None:
     check("legacy_sync_events_survive_migration", before["sync_events"] == after["sync_events"], failures)
     check("journal_migration_recorded_once", conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=5").fetchone()[0] == 1, failures)
     check("journal_migration_tables_created", all(conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()[0] == 1 for name in ("academic_change_events", "academic_change_event_state")), failures)
+    event_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(academic_change_events)")}
+    check("journal_migration_has_predecessor_field", "predecessor_event_stable_id" in event_columns, failures)
+    event_indexes = {str(row["name"]) for row in conn.execute("PRAGMA index_list(academic_change_events)")}
+    check("journal_migration_has_remote_chain_index", "idx_academic_change_events_remote_chain" in event_indexes, failures)
     check("journal_migration_foreign_keys_valid", not conn.execute("PRAGMA foreign_key_check").fetchall(), failures)
     conn.close()
 
@@ -242,23 +246,6 @@ def check_event_lifecycle(server: Any, failures: list[str]) -> None:
     missing_plan = server.canvas_file_sync_plan(conn, ScenarioConnector(server, []))
     check("missing_is_advisory_without_event", missing_plan["summary"]["MISSING_FROM_REMOTE_DISCOVERY"] == 1 and conn.execute("SELECT COUNT(*) FROM academic_change_events").fetchone()[0] == event_count, failures)
 
-    added_row = conn.execute("SELECT * FROM academic_change_events WHERE stable_id=?", (first_event_id,)).fetchone()
-    server.record_academic_change_event(
-        conn,
-        event_kind=str(added_row["event_kind"]),
-        offering=offering,
-        remote_item_stable_id=str(added_row["remote_item_stable_id"]),
-        material_stable_id=str(added_row["material_stable_id"]),
-        material_label=str(added_row["material_label"]),
-        changed_fields=json.loads(added_row["changed_fields_json"]),
-        resulting_revision_id=str(added_row["resulting_material_version_stable_id"]),
-        resulting_material_version_stable_id=str(added_row["resulting_material_version_stable_id"]),
-        resulting_sha256=str(added_row["resulting_sha256"]),
-        applied_at=str(added_row["applied_at"]),
-    )
-    conn.commit()
-    check("retry_does_not_duplicate_event_or_reset_ack", conn.execute("SELECT COUNT(*) FROM academic_change_events").fetchone()[0] == event_count and conn.execute("SELECT seen_at FROM academic_change_event_state WHERE event_id=?", (added_row["id"],)).fetchone()[0] == first_seen_at, failures)
-
     state_count = conn.execute("SELECT COUNT(*) FROM academic_change_event_state").fetchone()[0]
     malformed_safe = False
     numeric_safe = False
@@ -276,6 +263,130 @@ def check_event_lifecycle(server: Any, failures: list[str]) -> None:
     except ValueError:
         unknown_safe = True
     check("malformed_numeric_unknown_ids_fail_without_mutation", malformed_safe and numeric_safe and unknown_safe and conn.execute("SELECT COUNT(*) FROM academic_change_event_state").fetchone()[0] == state_count, failures)
+    conn.close()
+
+
+def check_transition_cycles(server: Any, failures: list[str]) -> None:
+    conn = server.connect_db()
+    server.init_db(conn)
+    offering = seed_offering(server, conn)
+    history = (
+        (BYTES_A, "2026-02-01T00:00:00Z"),
+        (BYTES_B, "2026-02-02T00:00:00Z"),
+        (BYTES_A, "2026-02-03T00:00:00Z"),
+        (BYTES_B, "2026-02-04T00:00:00Z"),
+    )
+    for body, updated in history[:2]:
+        apply_one(server, conn, offering, remote_file(server, "content-cycle", body, updated=updated), body)
+        conn.commit()
+    rows = conn.execute("SELECT * FROM academic_change_events ORDER BY id").fetchall()
+    first_b_id = str(rows[1]["stable_id"])
+    server.mark_academic_changes_seen(conn, [first_b_id])
+    conn.commit()
+    first_b_seen_at = conn.execute(
+        "SELECT seen_at FROM academic_change_event_state WHERE event_id=?",
+        (rows[1]["id"],),
+    ).fetchone()[0]
+    for body, updated in history[2:]:
+        apply_one(server, conn, offering, remote_file(server, "content-cycle", body, updated=updated), body)
+        conn.commit()
+    rows = conn.execute("SELECT * FROM academic_change_events ORDER BY id").fetchall()
+    ids = [str(row["stable_id"]) for row in rows]
+    check("content_cycle_records_four_distinct_transitions", len(rows) == 4 and len(set(ids)) == 4, failures)
+    check("content_cycle_classifies_reused_versions_as_updates", [row["event_kind"] for row in rows] == ["CANVAS_FILE_ADDED"] + ["CANVAS_FILE_CONTENT_UPDATED"] * 3, failures)
+    check("content_cycle_predecessor_chain_is_complete", rows[0]["predecessor_event_stable_id"] is None and all(rows[index]["predecessor_event_stable_id"] == rows[index - 1]["stable_id"] for index in range(1, 4)), failures)
+    check("content_cycle_can_reuse_material_versions_without_collapsing_events", rows[1]["resulting_material_version_stable_id"] == rows[3]["resulting_material_version_stable_id"] and rows[1]["stable_id"] != rows[3]["stable_id"], failures)
+    unseen_ids = {item["event_id"] for item in server.list_academic_changes(conn, unseen_only=True)}
+    check("acknowledgement_cycle_keeps_first_seen_and_later_unseen", conn.execute("SELECT seen_at FROM academic_change_event_state WHERE event_id=?", (rows[1]["id"],)).fetchone()[0] == first_b_seen_at and rows[3]["stable_id"] in unseen_ids and rows[1]["stable_id"] not in unseen_ids, failures)
+    conn.close()
+
+
+def check_metadata_cycle(server: Any, failures: list[str]) -> None:
+    conn = server.connect_db()
+    server.init_db(conn)
+    offering = seed_offering(server, conn)
+    filenames = ("filename-a.txt", "filename-b.txt", "filename-a.txt", "filename-b.txt")
+    for index, filename in enumerate(filenames[:2]):
+        apply_one(server, conn, offering, remote_file(server, "metadata-cycle", BYTES_A, filename=filename), BYTES_A if index == 0 else None)
+        conn.commit()
+    first_b = conn.execute("SELECT * FROM academic_change_events ORDER BY id DESC LIMIT 1").fetchone()
+    server.mark_academic_changes_seen(conn, [str(first_b["stable_id"])])
+    conn.commit()
+    first_b_seen_at = conn.execute(
+        "SELECT seen_at FROM academic_change_event_state WHERE event_id=?",
+        (first_b["id"],),
+    ).fetchone()[0]
+    for filename in filenames[2:]:
+        apply_one(server, conn, offering, remote_file(server, "metadata-cycle", BYTES_A, filename=filename), None)
+        conn.commit()
+    rows = conn.execute("SELECT * FROM academic_change_events ORDER BY id").fetchall()
+    metadata_rows = rows[1:]
+    check("metadata_cycle_records_each_committed_transition", len(rows) == 4 and all(row["event_kind"] == "CANVAS_FILE_METADATA_UPDATED" for row in metadata_rows), failures)
+    check("metadata_cycle_repeated_state_has_distinct_identity", len({row["stable_id"] for row in rows}) == 4 and metadata_rows[0]["resulting_material_version_stable_id"] == metadata_rows[2]["resulting_material_version_stable_id"], failures)
+    check("metadata_cycle_predecessor_chain_is_complete", rows[0]["predecessor_event_stable_id"] is None and all(rows[index]["predecessor_event_stable_id"] == rows[index - 1]["stable_id"] for index in range(1, 4)), failures)
+    unseen_ids = {item["event_id"] for item in server.list_academic_changes(conn, unseen_only=True)}
+    check("metadata_cycle_seen_state_does_not_transfer", conn.execute("SELECT seen_at FROM academic_change_event_state WHERE event_id=?", (first_b["id"],)).fetchone()[0] == first_b_seen_at and rows[3]["stable_id"] in unseen_ids and first_b["stable_id"] not in unseen_ids, failures)
+    count_before = len(rows)
+    unchanged = apply_one(server, conn, offering, remote_file(server, "metadata-cycle", BYTES_A, filename="filename-b.txt"), None)
+    conn.commit()
+    check("metadata_cycle_unchanged_does_not_advance_chain", first_action(unchanged["plan"])["kind"] == "UNCHANGED" and conn.execute("SELECT COUNT(*) FROM academic_change_events").fetchone()[0] == count_before, failures)
+    conn.close()
+
+
+def check_real_retry_idempotence(server: Any, failures: list[str]) -> None:
+    conn = server.connect_db()
+    server.init_db(conn)
+    offering = seed_offering(server, conn)
+    initial = remote_file(server, "retry-file", BYTES_A, updated="2026-03-01T00:00:00Z")
+    apply_one(server, conn, offering, initial, BYTES_A)
+    conn.commit()
+    predecessor_id = str(conn.execute("SELECT stable_id FROM academic_change_events").fetchone()[0])
+    changed = remote_file(server, "retry-file", BYTES_B, updated="2026-03-02T00:00:00Z")
+    generated_ids: list[str] = []
+    original_record = server.record_academic_change_event
+
+    def capture_record(*args: Any, **kwargs: Any) -> str:
+        event_id = original_record(*args, **kwargs)
+        generated_ids.append(event_id)
+        return event_id
+
+    server.record_academic_change_event = capture_record
+    failed = False
+    try:
+        apply_one(server, conn, offering, changed, BYTES_B, fail_after_event=1)
+    except RuntimeError as exc:
+        failed = str(exc) == "synthetic_academic_event_failure"
+    finally:
+        conn.rollback()
+    check("real_retry_forces_failure_after_event_insert", failed and len(generated_ids) == 1, failures)
+    check("real_retry_rollback_removes_transition", conn.execute("SELECT COUNT(*) FROM academic_change_events").fetchone()[0] == 1, failures)
+    apply_one(server, conn, offering, changed, BYTES_B)
+    conn.commit()
+    server.record_academic_change_event = original_record
+    rows = conn.execute("SELECT * FROM academic_change_events ORDER BY id").fetchall()
+    check("real_retry_recreates_identical_event_id_once", len(generated_ids) == 2 and generated_ids[0] == generated_ids[1] and len(rows) == 2, failures)
+    check("real_retry_uses_same_committed_predecessor", rows[1]["predecessor_event_stable_id"] == predecessor_id, failures)
+
+    conflict_rejected = False
+    try:
+        original_record(
+            conn,
+            event_kind=str(rows[1]["event_kind"]),
+            offering=offering,
+            remote_item_stable_id=str(rows[1]["remote_item_stable_id"]),
+            predecessor_event_stable_id=str(rows[1]["predecessor_event_stable_id"]),
+            material_stable_id=str(rows[1]["material_stable_id"]),
+            material_label="different-synthetic-label.txt",
+            changed_fields=json.loads(rows[1]["changed_fields_json"]),
+            resulting_revision_id=str(rows[1]["resulting_material_version_stable_id"]),
+            resulting_material_version_stable_id=str(rows[1]["resulting_material_version_stable_id"]),
+            resulting_sha256=str(rows[1]["resulting_sha256"]),
+            applied_at="2026-03-03T00:00:00Z",
+        )
+    except RuntimeError as exc:
+        conflict_rejected = str(exc) == "academic_change_event_identity_conflict"
+    check("same_id_different_fact_is_rejected", conflict_rejected and conn.execute("SELECT COUNT(*) FROM academic_change_events").fetchone()[0] == 2, failures)
+    conn.rollback()
     conn.close()
 
 
@@ -300,6 +411,28 @@ def check_multi_file_atomicity(server: Any, failing_server: Any, failures: list[
     )
     conn.commit()
     check("successful_multi_file_apply_creates_two_events", conn.execute("SELECT COUNT(*) FROM academic_change_events").fetchone()[0] == 2, failures)
+    initial_rows = conn.execute("SELECT * FROM academic_change_events ORDER BY remote_item_stable_id").fetchall()
+    updated_files = [
+        remote_file(server, "multi-a", BYTES_A, filename="multi-a-renamed.txt"),
+        remote_file(server, "multi-b", BYTES_B, filename="multi-b-renamed.txt"),
+    ]
+    connector = ScenarioConnector(server, updated_files)
+    plan = server.canvas_file_sync_plan(conn, connector)
+    stable_ids = [str(action["remote_file_stable_id"]) for action in plan["offerings"][0]["actions"]]
+    server.apply_canvas_file_sync(
+        conn,
+        connector,
+        plan["plan_revision"],
+        stable_ids,
+        requested_offering_ids=[str(offering["stable_id"])],
+        open_url=DownloadOpen([]),
+    )
+    conn.commit()
+    all_rows = conn.execute("SELECT * FROM academic_change_events ORDER BY remote_item_stable_id, id").fetchall()
+    chains: dict[str, list[sqlite3.Row]] = {}
+    for row in all_rows:
+        chains.setdefault(str(row["remote_item_stable_id"]), []).append(row)
+    check("multi_file_predecessor_chains_are_independent", len(chains) == 2 and all(len(chain) == 2 and chain[0]["predecessor_event_stable_id"] is None and chain[1]["predecessor_event_stable_id"] == chain[0]["stable_id"] for chain in chains.values()) and {str(row["stable_id"]) for row in initial_rows} == {str(chain[0]["stable_id"]) for chain in chains.values()}, failures)
     conn.close()
 
     failing = failing_server.connect_db()
@@ -396,6 +529,15 @@ def run() -> int:
         lifecycle_server = load_server(root / "lifecycle")
         check_event_lifecycle(lifecycle_server, failures)
         check_offline_http_api(lifecycle_server, failures)
+
+        cycle_server = load_server(root / "content-cycle")
+        check_transition_cycles(cycle_server, failures)
+
+        metadata_cycle_server = load_server(root / "metadata-cycle")
+        check_metadata_cycle(metadata_cycle_server, failures)
+
+        retry_server = load_server(root / "real-retry")
+        check_real_retry_idempotence(retry_server, failures)
 
         multi_success_server = load_server(root / "multi-success")
         multi_failure_server = load_server(root / "multi-failure")

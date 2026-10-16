@@ -189,10 +189,13 @@ metadata-only baseline advancement records `CANVAS_FILE_METADATA_UPDATED`.
 `UNCHANGED`, advisory `MISSING_FROM_REMOTE_DISCOVERY`, failed acquisition,
 stale plans, and rolled-back applies create no event.
 
-Event stable IDs derive from safe committed identities, never timestamps,
-random values, SQLite row IDs, credentials, URLs, or paths. Events are
-append-only snapshots with bounded labels and allowlisted changed-field names.
-Exact retries use the same identity and cannot duplicate history. The existing
+Event stable IDs derive from the same-item predecessor event and safe committed
+result identity, never timestamps, random values, SQLite row IDs, credentials,
+URLs, or paths. Events are append-only snapshots with bounded labels and
+allowlisted changed-field names. Exact retries use the same identity and cannot
+duplicate history, while a later return to an older content or metadata state
+remains a new transition. MaterialVersion identity describes content state;
+AcademicChangeEvent identity describes history. The existing
 Canvas process lock remains the only apply lock and covers event insertion
 through final commit or rollback.
 

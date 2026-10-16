@@ -2281,6 +2281,7 @@ def phase2_academic_change_journal_migration(conn: sqlite3.Connection) -> None:
           course_offering_stable_id TEXT NOT NULL,
           material_stable_id TEXT NOT NULL,
           remote_item_stable_id TEXT NOT NULL,
+          predecessor_event_stable_id TEXT,
           resulting_material_version_stable_id TEXT,
           resulting_sha256 TEXT,
           course_label TEXT NOT NULL DEFAULT '',
@@ -2299,6 +2300,7 @@ def phase2_academic_change_journal_migration(conn: sqlite3.Connection) -> None:
         """,
         "CREATE INDEX IF NOT EXISTS idx_academic_change_events_offering_time ON academic_change_events(course_offering_id, applied_at DESC, id DESC)",
         "CREATE INDEX IF NOT EXISTS idx_academic_change_events_material ON academic_change_events(material_stable_id, applied_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_academic_change_events_remote_chain ON academic_change_events(authority_id, course_offering_stable_id, remote_item_stable_id, id DESC)",
         "CREATE INDEX IF NOT EXISTS idx_academic_change_event_state_seen ON academic_change_event_state(seen_at, event_id)",
     )
     for statement in statements:
@@ -3349,6 +3351,7 @@ def academic_change_event_stable_id(
     authority_id: str,
     offering_stable_id: str,
     remote_item_stable_id: str,
+    predecessor_event_stable_id: str | None,
     resulting_revision_id: str,
 ) -> str:
     if event_kind not in ACADEMIC_CHANGE_EVENT_KINDS:
@@ -3363,10 +3366,32 @@ def academic_change_event_stable_id(
                 authority_id,
                 offering_stable_id,
                 remote_item_stable_id,
+                predecessor_event_stable_id or "none",
                 resulting_revision_id,
             )
         ),
     )
+
+
+def latest_academic_change_event_id(
+    conn: sqlite3.Connection,
+    *,
+    authority_id: str,
+    offering_stable_id: str,
+    remote_item_stable_id: str,
+) -> str | None:
+    row = conn.execute(
+        """
+        SELECT stable_id
+        FROM academic_change_events
+        WHERE provider='canvas' AND authority_id=?
+          AND course_offering_stable_id=? AND remote_item_stable_id=?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (authority_id, offering_stable_id, remote_item_stable_id),
+    ).fetchone()
+    return str(row["stable_id"]) if row is not None else None
 
 
 def current_material_version_identity(
@@ -3393,6 +3418,7 @@ def record_academic_change_event(
     event_kind: str,
     offering: sqlite3.Row | dict[str, Any],
     remote_item_stable_id: str,
+    predecessor_event_stable_id: str | None,
     material_stable_id: str,
     material_label: str,
     changed_fields: list[str],
@@ -3423,6 +3449,7 @@ def record_academic_change_event(
         authority_id,
         offering_stable_id,
         remote_item_stable_id,
+        predecessor_event_stable_id,
         resulting_revision_id,
     )
     course_label = clean_metadata_text(
@@ -3437,14 +3464,53 @@ def record_academic_change_event(
         required=False,
         limit=512,
     )
+    normalized_fields_json = json.dumps(normalized_fields, separators=(",", ":"))
+    expected_fact = (
+        event_kind,
+        "canvas",
+        authority_id,
+        int(offering["id"]),
+        offering_stable_id,
+        material_stable_id,
+        remote_item_stable_id,
+        predecessor_event_stable_id,
+        resulting_material_version_stable_id,
+        resulting_sha256,
+        course_label,
+        safe_material_label,
+        normalized_fields_json,
+    )
+    existing = conn.execute(
+        """
+        SELECT event_kind, provider, authority_id, course_offering_id,
+          course_offering_stable_id, material_stable_id, remote_item_stable_id,
+          predecessor_event_stable_id, resulting_material_version_stable_id,
+          resulting_sha256, course_label, material_label, changed_fields_json
+        FROM academic_change_events
+        WHERE stable_id=?
+        """,
+        (stable_id,),
+    ).fetchone()
+    if existing is not None:
+        if tuple(existing) != expected_fact:
+            raise RuntimeError("academic_change_event_identity_conflict")
+        return stable_id
+    if latest_academic_change_event_id(
+        conn,
+        authority_id=authority_id,
+        offering_stable_id=offering_stable_id,
+        remote_item_stable_id=remote_item_stable_id,
+    ) != predecessor_event_stable_id:
+        raise RuntimeError("academic_change_event_predecessor_conflict")
     conn.execute(
         """
         INSERT INTO academic_change_events(
           stable_id, event_kind, provider, authority_id, course_offering_id,
           course_offering_stable_id, material_stable_id, remote_item_stable_id,
-          resulting_material_version_stable_id, resulting_sha256, course_label,
+          predecessor_event_stable_id, resulting_material_version_stable_id,
+          resulting_sha256, course_label,
           material_label, changed_fields_json, applied_at, created_at
-        ) VALUES (?, ?, 'canvas', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, 'canvas', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(stable_id) DO NOTHING
         """,
         (
@@ -3455,15 +3521,29 @@ def record_academic_change_event(
             offering_stable_id,
             material_stable_id,
             remote_item_stable_id,
+            predecessor_event_stable_id,
             resulting_material_version_stable_id,
             resulting_sha256,
             course_label,
             safe_material_label,
-            json.dumps(normalized_fields, separators=(",", ":")),
+            normalized_fields_json,
             applied_at,
             applied_at,
         ),
     )
+    inserted = conn.execute(
+        """
+        SELECT event_kind, provider, authority_id, course_offering_id,
+          course_offering_stable_id, material_stable_id, remote_item_stable_id,
+          predecessor_event_stable_id, resulting_material_version_stable_id,
+          resulting_sha256, course_label, material_label, changed_fields_json
+        FROM academic_change_events
+        WHERE stable_id=?
+        """,
+        (stable_id,),
+    ).fetchone()
+    if inserted is None or tuple(inserted) != expected_fact:
+        raise RuntimeError("academic_change_event_identity_conflict")
     return stable_id
 
 
@@ -3706,11 +3786,18 @@ def apply_canvas_file_sync(
                     if event_kind != "CANVAS_FILE_METADATA_UPDATED"
                     else canvas_remote_revision_fingerprint(item.remote_file)
                 )
+                predecessor_event_stable_id = latest_academic_change_event_id(
+                    conn,
+                    authority_id=str(offering["authority_id"]),
+                    offering_stable_id=str(offering["stable_id"]),
+                    remote_item_stable_id=item.remote_file_stable_id,
+                )
                 record_academic_change_event(
                     conn,
                     event_kind=event_kind,
                     offering=offering,
                     remote_item_stable_id=item.remote_file_stable_id,
+                    predecessor_event_stable_id=predecessor_event_stable_id,
                     material_stable_id=result.material_stable_id,
                     material_label=item.remote_file.display_name or item.remote_file.filename,
                     changed_fields=list(action.get("changed_fields") or []),
@@ -3735,11 +3822,18 @@ def apply_canvas_file_sync(
             for offering, remote_file, stable_id in metadata_only:
                 _section, action = actions[stable_id]
                 version_stable_id, version_sha256 = current_material_version_identity(conn, stable_id)
+                predecessor_event_stable_id = latest_academic_change_event_id(
+                    conn,
+                    authority_id=str(offering["authority_id"]),
+                    offering_stable_id=str(offering["stable_id"]),
+                    remote_item_stable_id=stable_id,
+                )
                 record_academic_change_event(
                     conn,
                     event_kind="CANVAS_FILE_METADATA_UPDATED",
                     offering=offering,
                     remote_item_stable_id=stable_id,
+                    predecessor_event_stable_id=predecessor_event_stable_id,
                     material_stable_id=stable_id,
                     material_label=remote_file.display_name or remote_file.filename,
                     changed_fields=list(action.get("changed_fields") or []),

@@ -122,7 +122,11 @@ transaction as ingestion, MaterialVersion advancement, and baseline
 advancement. Event kind reflects the actual committed result: first
 acquisition, a new byte version, or metadata-only advancement. Unchanged and
 advisory missing items create no academic event. Deterministic event identity
-makes exact retries idempotent. Separate `academic_change_event_state` rows
+chains each remote item's predecessor event to the resulting revision, so exact
+retries are idempotent while repeated state cycles remain distinct historical
+transitions. A MaterialVersion identifies a content state; an
+AcademicChangeEvent identifies a committed transition. Separate
+`academic_change_event_state` rows
 hold explicit user-owned seen state; reads never create or update that state.
 The offline `/api/whats-new` read surface returns bounded safe labels, stable
 references, and a local file ID where available. `/api/whats-new/seen` accepts
