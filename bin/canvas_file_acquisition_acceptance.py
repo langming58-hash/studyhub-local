@@ -628,9 +628,11 @@ def check_concurrent_production_apply(server: Any, failures: list[str]) -> None:
     material = verify.execute("SELECT * FROM materials WHERE stable_id=?", (stable_id,)).fetchone()
     versions = verify.execute("SELECT COUNT(*) FROM material_versions WHERE material_id=?", (material["id"],)).fetchone()[0]
     baseline = verify.execute("SELECT COUNT(*) FROM canvas_file_sync_baselines WHERE course_offering_id=?", (offering["id"],)).fetchone()[0]
+    academic_events = verify.execute("SELECT COUNT(*) FROM academic_change_events").fetchone()[0]
     retained = Path(source["local_locator"])
     check("concurrent_apply_retains_committed_bytes", retained.exists() and retained.read_bytes() == BYTES_A, failures)
     check("concurrent_apply_commits_one_consistent_domain_state", versions == 1 and baseline == 1 and material["current_version_id"] is not None, failures)
+    check("concurrent_old_plan_apply_creates_one_academic_event", academic_events == 1, failures)
     verify.close()
 
 

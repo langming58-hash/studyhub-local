@@ -179,6 +179,30 @@ Compatibility Course fields refresh from Canvas only while
 name, code, and term presentation; CourseOffering continues to retain fresh
 remote-authoritative Canvas metadata and is never changed by that local edit.
 
+## Implemented Academic Change Journal
+
+Each successfully committed Canvas file transition writes one structured
+academic fact in the same transaction as ingestion, version advancement, and
+baseline advancement. First acquisition records `CANVAS_FILE_ADDED`; a newly
+committed MaterialVersion records `CANVAS_FILE_CONTENT_UPDATED`; same-byte or
+metadata-only baseline advancement records `CANVAS_FILE_METADATA_UPDATED`.
+`UNCHANGED`, advisory `MISSING_FROM_REMOTE_DISCOVERY`, failed acquisition,
+stale plans, and rolled-back applies create no event.
+
+Event stable IDs derive from safe committed identities, never timestamps,
+random values, SQLite row IDs, credentials, URLs, or paths. Events are
+append-only snapshots with bounded labels and allowlisted changed-field names.
+Exact retries use the same identity and cannot duplicate history. The existing
+Canvas process lock remains the only apply lock and covers event insertion
+through final commit or rollback.
+
+The offline `/api/whats-new` endpoint reads this journal without Canvas access
+or mutation. Seen state is separate user-owned data and changes only through
+explicit bounded event IDs at `/api/whats-new/seen`; a remote refresh cannot
+clear it. The legacy `sync_events` table remains unchanged as operational scan
+logging. Local scanner changes are not converted into academic journal events
+in this phase.
+
 ## Sync Is Not Ingestion
 
 Sync discovers remote state and produces an observable plan. Ingestion turns
@@ -212,6 +236,7 @@ auditable, and recoverable.
 
 Production OAuth, account management, background sync, retry jobs, Modules,
 Pages, Assignments, remote deletion semantics, semantic local Course mapping,
+polished What's New UI, notifications, Today/deadlines, SourceAnchor/Evidence,
 conflict-resolution UI, apply undo, and retained-byte garbage collection are
 not implemented. A controlled database failure removes newly created retained
 files when safe; a process crash can leave an unreferenced retained orphan,

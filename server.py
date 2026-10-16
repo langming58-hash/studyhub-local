@@ -360,6 +360,15 @@ CANVAS_MAX_DOWNLOAD_URL_LENGTH = 8192
 CANVAS_MAX_DOWNLOAD_REDIRECTS = 5
 CANVAS_SYNC_PLAN_VERSION = "canvas-sync-plan-v1"
 CANVAS_REMOTE_REVISION_VERSION = "canvas-remote-revision-v1"
+ACADEMIC_CHANGE_EVENT_VERSION = "academic-change-event-v1"
+ACADEMIC_CHANGE_EVENT_KINDS = {
+    "CANVAS_FILE_ADDED",
+    "CANVAS_FILE_CONTENT_UPDATED",
+    "CANVAS_FILE_METADATA_UPDATED",
+}
+WHATS_NEW_DEFAULT_LIMIT = 50
+WHATS_NEW_MAX_LIMIT = 100
+WHATS_NEW_MAX_MARK_SEEN = 100
 _CANVAS_SYNC_APPLY_LOCK = threading.Lock()
 
 
@@ -2259,11 +2268,49 @@ def phase2_canvas_file_acquisition_migration(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def phase2_academic_change_journal_migration(conn: sqlite3.Connection) -> None:
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS academic_change_events (
+          id INTEGER PRIMARY KEY,
+          stable_id TEXT NOT NULL UNIQUE,
+          event_kind TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          authority_id TEXT NOT NULL,
+          course_offering_id INTEGER NOT NULL REFERENCES course_offerings(id),
+          course_offering_stable_id TEXT NOT NULL,
+          material_stable_id TEXT NOT NULL,
+          remote_item_stable_id TEXT NOT NULL,
+          resulting_material_version_stable_id TEXT,
+          resulting_sha256 TEXT,
+          course_label TEXT NOT NULL DEFAULT '',
+          material_label TEXT NOT NULL DEFAULT '',
+          changed_fields_json TEXT NOT NULL DEFAULT '[]',
+          applied_at TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS academic_change_event_state (
+          event_id INTEGER PRIMARY KEY REFERENCES academic_change_events(id) ON DELETE CASCADE,
+          seen_at TEXT,
+          updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_academic_change_events_offering_time ON academic_change_events(course_offering_id, applied_at DESC, id DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_academic_change_events_material ON academic_change_events(material_stable_id, applied_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_academic_change_event_state_seen ON academic_change_event_state(seen_at, event_id)",
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+
 SCHEMA_MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "phase1_domain_foundation", phase1_domain_foundation_migration),
     (2, "phase2_canvas_course_selection", phase2_canvas_course_selection_migration),
     (3, "phase2_canvas_file_sync_baseline", phase2_canvas_file_sync_baseline_migration),
     (4, "phase2_canvas_file_acquisition", phase2_canvas_file_acquisition_migration),
+    (5, "phase2_academic_change_journal", phase2_academic_change_journal_migration),
 )
 
 
@@ -3297,6 +3344,223 @@ def cleanup_new_canvas_retained_files(acquired: list[CanvasAcquiredFile]) -> Non
             item.retained_path.unlink(missing_ok=True)
 
 
+def academic_change_event_stable_id(
+    event_kind: str,
+    authority_id: str,
+    offering_stable_id: str,
+    remote_item_stable_id: str,
+    resulting_revision_id: str,
+) -> str:
+    if event_kind not in ACADEMIC_CHANGE_EVENT_KINDS:
+        raise ValueError("Unsupported academic change event kind")
+    return deterministic_stable_id(
+        "change",
+        "\0".join(
+            (
+                ACADEMIC_CHANGE_EVENT_VERSION,
+                event_kind,
+                "canvas",
+                authority_id,
+                offering_stable_id,
+                remote_item_stable_id,
+                resulting_revision_id,
+            )
+        ),
+    )
+
+
+def current_material_version_identity(
+    conn: sqlite3.Connection,
+    material_stable_id: str,
+) -> tuple[str, str]:
+    row = conn.execute(
+        """
+        SELECT mv.stable_id, mv.sha256
+        FROM materials m
+        JOIN material_versions mv ON mv.id=m.current_version_id
+        WHERE m.stable_id=?
+        """,
+        (material_stable_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("canvas_material_version_missing")
+    return str(row["stable_id"]), str(row["sha256"])
+
+
+def record_academic_change_event(
+    conn: sqlite3.Connection,
+    *,
+    event_kind: str,
+    offering: sqlite3.Row | dict[str, Any],
+    remote_item_stable_id: str,
+    material_stable_id: str,
+    material_label: str,
+    changed_fields: list[str],
+    resulting_revision_id: str,
+    resulting_material_version_stable_id: str | None,
+    resulting_sha256: str | None,
+    applied_at: str,
+) -> str:
+    if event_kind not in ACADEMIC_CHANGE_EVENT_KINDS:
+        raise ValueError("Unsupported academic change event kind")
+    allowed_changed_fields = {
+        "display_name",
+        "filename",
+        "content_type",
+        "byte_size",
+        "remote_created_at",
+        "remote_updated_at",
+        "remote_modified_at",
+        "locked",
+        "hidden",
+        "hidden_for_user",
+    }
+    normalized_fields = sorted({str(field) for field in changed_fields if str(field) in allowed_changed_fields})
+    offering_stable_id = str(offering["stable_id"])
+    authority_id = str(offering["authority_id"])
+    stable_id = academic_change_event_stable_id(
+        event_kind,
+        authority_id,
+        offering_stable_id,
+        remote_item_stable_id,
+        resulting_revision_id,
+    )
+    course_label = clean_metadata_text(
+        offering["remote_course_code"] or offering["remote_name"],
+        "Course label",
+        required=False,
+        limit=200,
+    )
+    safe_material_label = clean_metadata_text(
+        material_label,
+        "Material label",
+        required=False,
+        limit=512,
+    )
+    conn.execute(
+        """
+        INSERT INTO academic_change_events(
+          stable_id, event_kind, provider, authority_id, course_offering_id,
+          course_offering_stable_id, material_stable_id, remote_item_stable_id,
+          resulting_material_version_stable_id, resulting_sha256, course_label,
+          material_label, changed_fields_json, applied_at, created_at
+        ) VALUES (?, ?, 'canvas', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(stable_id) DO NOTHING
+        """,
+        (
+            stable_id,
+            event_kind,
+            authority_id,
+            offering["id"],
+            offering_stable_id,
+            material_stable_id,
+            remote_item_stable_id,
+            resulting_material_version_stable_id,
+            resulting_sha256,
+            course_label,
+            safe_material_label,
+            json.dumps(normalized_fields, separators=(",", ":")),
+            applied_at,
+            applied_at,
+        ),
+    )
+    return stable_id
+
+
+def list_academic_changes(
+    conn: sqlite3.Connection,
+    *,
+    unseen_only: bool = False,
+    course_offering_stable_id: str = "",
+    limit: int = WHATS_NEW_DEFAULT_LIMIT,
+) -> list[dict[str, Any]]:
+    if limit < 1 or limit > WHATS_NEW_MAX_LIMIT:
+        raise ValueError(f"limit must be between 1 and {WHATS_NEW_MAX_LIMIT}")
+    params: list[Any] = []
+    where = ["1=1"]
+    if unseen_only:
+        where.append("state.seen_at IS NULL")
+    if course_offering_stable_id:
+        if len(course_offering_stable_id) > 160 or any(ord(char) < 32 for char in course_offering_stable_id):
+            raise ValueError("Invalid CourseOffering id")
+        where.append("event.course_offering_stable_id=?")
+        params.append(course_offering_stable_id)
+    params.append(limit)
+    rows = conn.execute(
+        f"""
+        SELECT event.*, state.seen_at,
+          CASE WHEN f.active=1 AND f.removed_at IS NULL THEN f.id ELSE NULL END AS file_id
+        FROM academic_change_events event
+        LEFT JOIN academic_change_event_state state ON state.event_id=event.id
+        LEFT JOIN materials material ON material.stable_id=event.material_stable_id
+        LEFT JOIN files f ON f.id=material.legacy_file_id
+        WHERE {' AND '.join(where)}
+        ORDER BY event.applied_at DESC, event.stable_id DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            changed_fields = json.loads(row["changed_fields_json"])
+        except (TypeError, json.JSONDecodeError):
+            changed_fields = []
+        result.append(
+            {
+                "event_id": row["stable_id"],
+                "event_kind": row["event_kind"],
+                "course_offering_id": row["course_offering_stable_id"],
+                "course_label": row["course_label"],
+                "material_id": row["material_stable_id"],
+                "material_label": row["material_label"],
+                "changed_fields": changed_fields if isinstance(changed_fields, list) else [],
+                "applied_at": row["applied_at"],
+                "seen": bool(row["seen_at"]),
+                "file_id": row["file_id"],
+            }
+        )
+    return result
+
+
+def normalize_academic_change_event_ids(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        raise ValueError("event_ids must be a list")
+    if not values or len(values) > WHATS_NEW_MAX_MARK_SEEN:
+        raise ValueError(f"event_ids must contain between 1 and {WHATS_NEW_MAX_MARK_SEEN} items")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str) or not re.fullmatch(r"change_[0-9a-f]{20}", value):
+            raise ValueError("Invalid academic change event id")
+        if value not in seen:
+            normalized.append(value)
+            seen.add(value)
+    return normalized
+
+
+def mark_academic_changes_seen(conn: sqlite3.Connection, event_stable_ids: list[str]) -> dict[str, Any]:
+    event_ids = normalize_academic_change_event_ids(event_stable_ids)
+    placeholders = ",".join("?" for _ in event_ids)
+    rows = conn.execute(
+        f"SELECT id, stable_id FROM academic_change_events WHERE stable_id IN ({placeholders})",
+        event_ids,
+    ).fetchall()
+    if {str(row["stable_id"]) for row in rows} != set(event_ids):
+        raise ValueError("Unknown academic change event id")
+    now = now_iso()
+    for row in rows:
+        conn.execute(
+            """
+            INSERT INTO academic_change_event_state(event_id, seen_at, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(event_id) DO NOTHING
+            """,
+            (row["id"], now, now),
+        )
+    return {"ok": True, "marked": len(rows)}
+
+
 def apply_canvas_file_sync(
     conn: sqlite3.Connection,
     connector: CanvasConnector,
@@ -3307,6 +3571,7 @@ def apply_canvas_file_sync(
     open_url: Callable[[str, int], Any] = default_canvas_download_open,
     fail_after_ingestion: int | None = None,
     fail_baseline: bool = False,
+    fail_after_event: int | None = None,
 ) -> dict[str, Any]:
     plan = canvas_file_sync_plan(conn, connector, requested_offering_ids)
     if not expected_plan_revision or plan["plan_revision"] != expected_plan_revision:
@@ -3375,9 +3640,11 @@ def apply_canvas_file_sync(
         conn.execute(f"SAVEPOINT {savepoint}")
         results: list[dict[str, Any]] = list(noops)
         baseline_updates: dict[int, tuple[sqlite3.Row, list[CanvasRemoteFile]]] = {}
+        applied_at = now_iso()
+        event_count = 0
         try:
             for index, item in enumerate(acquired):
-                section, _action = actions[item.remote_file_stable_id]
+                section, action = actions[item.remote_file_stable_id]
                 offering = offerings[str(section["course_offering_id"])]
                 course, week = ensure_canvas_course_binding(conn, offering)
                 provenance = IngestionSourceProvenance(
@@ -3424,6 +3691,37 @@ def apply_canvas_file_sync(
                 )
                 if fail_after_ingestion is not None and index + 1 >= fail_after_ingestion:
                     raise RuntimeError("synthetic_canvas_ingestion_failure")
+                version_stable_id, version_sha256 = current_material_version_identity(
+                    conn,
+                    result.material_stable_id,
+                )
+                if str(action["kind"]) == "ADD":
+                    event_kind = "CANVAS_FILE_ADDED"
+                elif result.version_changed:
+                    event_kind = "CANVAS_FILE_CONTENT_UPDATED"
+                else:
+                    event_kind = "CANVAS_FILE_METADATA_UPDATED"
+                resulting_revision_id = (
+                    version_stable_id
+                    if event_kind != "CANVAS_FILE_METADATA_UPDATED"
+                    else canvas_remote_revision_fingerprint(item.remote_file)
+                )
+                record_academic_change_event(
+                    conn,
+                    event_kind=event_kind,
+                    offering=offering,
+                    remote_item_stable_id=item.remote_file_stable_id,
+                    material_stable_id=result.material_stable_id,
+                    material_label=item.remote_file.display_name or item.remote_file.filename,
+                    changed_fields=list(action.get("changed_fields") or []),
+                    resulting_revision_id=resulting_revision_id,
+                    resulting_material_version_stable_id=version_stable_id,
+                    resulting_sha256=version_sha256,
+                    applied_at=applied_at,
+                )
+                event_count += 1
+                if fail_after_event is not None and event_count >= fail_after_event:
+                    raise RuntimeError("synthetic_academic_event_failure")
                 baseline_updates.setdefault(int(offering["id"]), (offering, []))[1].append(item.remote_file)
                 results.append(
                     {
@@ -3435,6 +3733,24 @@ def apply_canvas_file_sync(
                     }
                 )
             for offering, remote_file, stable_id in metadata_only:
+                _section, action = actions[stable_id]
+                version_stable_id, version_sha256 = current_material_version_identity(conn, stable_id)
+                record_academic_change_event(
+                    conn,
+                    event_kind="CANVAS_FILE_METADATA_UPDATED",
+                    offering=offering,
+                    remote_item_stable_id=stable_id,
+                    material_stable_id=stable_id,
+                    material_label=remote_file.display_name or remote_file.filename,
+                    changed_fields=list(action.get("changed_fields") or []),
+                    resulting_revision_id=canvas_remote_revision_fingerprint(remote_file),
+                    resulting_material_version_stable_id=version_stable_id,
+                    resulting_sha256=version_sha256,
+                    applied_at=applied_at,
+                )
+                event_count += 1
+                if fail_after_event is not None and event_count >= fail_after_event:
+                    raise RuntimeError("synthetic_academic_event_failure")
                 baseline_updates.setdefault(int(offering["id"]), (offering, []))[1].append(remote_file)
                 results.append({"remote_file_stable_id": stable_id, "status": "metadata_updated"})
             if canvas_baseline_revision(conn, offering_ids) != plan["local_baseline_revision"]:
@@ -5388,6 +5704,7 @@ def reset_studyhub_state(conn: sqlite3.Connection) -> dict[str, Any]:
     for table in (
         "ai_messages", "ai_conversations", "ai_interactions", "wrong_questions", "attempts", "bookmarks",
         "study_sessions", "notes", "stars", "questions", "solutions", "document_chunks", "file_versions",
+        "academic_change_event_state", "academic_change_events",
         "material_versions", "materials", "sources", "blobs",
         "ai_index_state", "sync_events", "files", "weeks", "courses", "terms", "app_settings",
     ):
@@ -6991,6 +7308,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.handle_canvas_sync_preview()
             elif parsed.path == "/api/canvas/sync-apply":
                 self.handle_canvas_sync_apply()
+            elif parsed.path == "/api/whats-new/seen":
+                self.handle_whats_new_seen()
             elif parsed.path in {
                 "/api/terms/manage",
                 "/api/courses/manage",
@@ -7157,6 +7476,23 @@ class StudyHubHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": True} | with_canvas_connector(apply_sync))
         except CanvasConnectorError as exc:
             self.send_canvas_error(exc)
+
+    def handle_whats_new_seen(self) -> None:
+        body = self.parse_body_json()
+        if set(body) != {"event_ids"}:
+            raise ValueError("What's New seen update accepts only event_ids")
+        event_ids = normalize_academic_change_event_ids(body.get("event_ids"))
+        conn = connect_db()
+        init_db(conn)
+        try:
+            result = mark_academic_changes_seen(conn, event_ids)
+            conn.commit()
+            self.send_json(result)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def handle_study_library_config(self) -> None:
         body = self.parse_body_json()
@@ -7389,6 +7725,25 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.send_json(self.handle_ai_status(conn))
             elif path == "/api/canvas/selected-courses":
                 self.send_json({"ok": True, "selected": remembered_canvas_course_selections(conn)})
+            elif path == "/api/whats-new":
+                unseen_value = qs.get("unseen_only", ["0"])[0]
+                if unseen_value not in {"0", "1"}:
+                    raise ValueError("unseen_only must be 0 or 1")
+                course_offering_id = qs.get("course_offering_id", [""])[0].strip()
+                try:
+                    limit = int(qs.get("limit", [str(WHATS_NEW_DEFAULT_LIMIT)])[0])
+                except ValueError as exc:
+                    raise ValueError("limit must be an integer") from exc
+                self.send_json(
+                    {
+                        "events": list_academic_changes(
+                            conn,
+                            unseen_only=unseen_value == "1",
+                            course_offering_stable_id=course_offering_id,
+                            limit=limit,
+                        )
+                    }
+                )
             elif path == "/api/wrong-questions":
                 rows = conn.execute("SELECT * FROM wrong_questions ORDER BY created_at DESC LIMIT 100").fetchall()
                 self.send_json(rows_to_dicts(rows))
