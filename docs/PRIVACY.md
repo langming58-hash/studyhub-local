@@ -160,6 +160,16 @@ profile-owned Canvas remote-content root. It does not grant general access to
 the data directory, cache directory, Canvas credentials, signed URLs, or sync
 controls.
 
+Committed Canvas file changes may create a local academic journal fact with an
+allowlisted event kind, bounded course/material label snapshots, stable
+StudyHub references, changed-field names, and existing content/version hashes.
+It never stores credentials, Canvas/download URLs, local paths, raw provider
+payloads, extracted document text, or backend session capabilities. Explicit
+seen state is stored separately as user-owned data and is never reset by a
+provider refresh. The offline What's New API exposes only safe stable IDs,
+labels, timestamps, seen status, and a navigation-safe local file ID when one
+exists.
+
 ## Public Data Boundary
 
 Public examples, fixtures, tests, screenshots, documentation, and demo assets

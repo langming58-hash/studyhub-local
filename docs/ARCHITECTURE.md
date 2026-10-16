@@ -116,8 +116,27 @@ this is not a cross-process locking guarantee. User-edited compatibility Course
 presentation fields remain protected by the existing `metadata_locked` overlay
 while CourseOffering metadata continues to refresh independently.
 
+Successfully committed Canvas file transitions now also write an immutable,
+structured `academic_change_events` fact inside the same caller-owned apply
+transaction as ingestion, MaterialVersion advancement, and baseline
+advancement. Event kind reflects the actual committed result: first
+acquisition, a new byte version, or metadata-only advancement. Unchanged and
+advisory missing items create no academic event. Deterministic event identity
+chains each remote item's predecessor event to the resulting revision, so exact
+retries are idempotent while repeated state cycles remain distinct historical
+transitions. A MaterialVersion identifies a content state; an
+AcademicChangeEvent identifies a committed transition. Separate
+`academic_change_event_state` rows
+hold explicit user-owned seen state; reads never create or update that state.
+The offline `/api/whats-new` read surface returns bounded safe labels, stable
+references, and a local file ID where available. `/api/whats-new/seen` accepts
+only bounded opaque event IDs and remains under the normal same-origin and
+CSRF mutation boundary. Legacy `sync_events` remains the operational local-scan
+log and is not overloaded or migrated.
+
 Not implemented yet: production Canvas OAuth, remote Term mapping, remote
-deletion semantics, automatic/background sync, SourceAnchor, Evidence,
+deletion semantics, a polished What's New frontend, notifications,
+automatic/background sync, SourceAnchor, Evidence,
 DerivedArtifact/ProcessingRecipe, Entity Resolution, the Assessments target
 model, background jobs, and target-domain UI reads.
 
