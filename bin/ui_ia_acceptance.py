@@ -33,6 +33,9 @@ def main() -> int:
 
     checks = {
         "primary_nav_has_six_destinations": nav_items == ["home", "courses", "search", "study", "ai", "settings"],
+        "whats_new_is_home_subworkspace": 'if (parts[0] === "whats-new")' in js
+        and 'viewName === "whats-new" ? "home" : viewName' in js
+        and "whats-new" not in nav_items,
         "sidebar_course_list_removed": 'id="courseList"' not in html and "renderCourseList() {}" in js,
         "global_scan_upload_hidden_by_default": 'id="uploadBtn" class="button secondary" hidden' in html
         and 'id="scanBtn" class="button secondary" hidden' in html,

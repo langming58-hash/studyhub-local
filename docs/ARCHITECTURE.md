@@ -129,14 +129,17 @@ AcademicChangeEvent identifies a committed transition. Separate
 `academic_change_event_state` rows
 hold explicit user-owned seen state; reads never create or update that state.
 The offline `/api/whats-new` read surface returns bounded safe labels, stable
-references, and a local file ID where available. `/api/whats-new/seen` accepts
-only bounded opaque event IDs and remains under the normal same-origin and
-CSRF mutation boundary. Legacy `sync_events` remains the operational local-scan
-log and is not overloaded or migrated.
+references, accurate scoped counts, and a local file ID where available. Home
+shows a compact unseen summary, while the recoverable `#/whats-new` Home
+sub-workspace provides explicit Unread/All views and local material navigation.
+Opening or rendering an event never acknowledges it. `/api/whats-new/seen`
+accepts only explicitly selected bounded opaque event IDs and remains under the
+normal same-origin and CSRF mutation boundary. The six-item primary navigation
+is unchanged. Legacy `sync_events` remains the operational local-scan log and
+is not overloaded or migrated.
 
 Not implemented yet: production Canvas OAuth, remote Term mapping, remote
-deletion semantics, a polished What's New frontend, notifications,
-automatic/background sync, SourceAnchor, Evidence,
+deletion semantics, notifications, automatic/background sync, SourceAnchor, Evidence,
 DerivedArtifact/ProcessingRecipe, Entity Resolution, the Assessments target
 model, background jobs, and target-domain UI reads.
 

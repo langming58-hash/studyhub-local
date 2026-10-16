@@ -3603,6 +3603,34 @@ def list_academic_changes(
     return result
 
 
+def academic_change_counts(
+    conn: sqlite3.Connection,
+    *,
+    course_offering_stable_id: str = "",
+) -> dict[str, int]:
+    params: list[Any] = []
+    where = ["1=1"]
+    if course_offering_stable_id:
+        if len(course_offering_stable_id) > 160 or any(ord(char) < 32 for char in course_offering_stable_id):
+            raise ValueError("Invalid CourseOffering id")
+        where.append("event.course_offering_stable_id=?")
+        params.append(course_offering_stable_id)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS total_count,
+          COALESCE(SUM(CASE WHEN state.seen_at IS NULL THEN 1 ELSE 0 END), 0) AS unseen_count
+        FROM academic_change_events event
+        LEFT JOIN academic_change_event_state state ON state.event_id=event.id
+        WHERE {' AND '.join(where)}
+        """,
+        params,
+    ).fetchone()
+    return {
+        "unseen_count": int(row["unseen_count"]),
+        "total_count": int(row["total_count"]),
+    }
+
+
 def normalize_academic_change_event_ids(values: Any) -> list[str]:
     if not isinstance(values, list):
         raise ValueError("event_ids must be a list")
@@ -7828,6 +7856,7 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                     limit = int(qs.get("limit", [str(WHATS_NEW_DEFAULT_LIMIT)])[0])
                 except ValueError as exc:
                     raise ValueError("limit must be an integer") from exc
+                counts = academic_change_counts(conn, course_offering_stable_id=course_offering_id)
                 self.send_json(
                     {
                         "events": list_academic_changes(
@@ -7835,7 +7864,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                             unseen_only=unseen_value == "1",
                             course_offering_stable_id=course_offering_id,
                             limit=limit,
-                        )
+                        ),
+                        **counts,
                     }
                 )
             elif path == "/api/wrong-questions":
