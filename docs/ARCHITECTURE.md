@@ -140,10 +140,12 @@ is not overloaded or migrated.
 
 Phase 2 also implements the `studyhub-backup-v1` export boundary for durable
 user-owned state. It projects allowlisted fields from one coherent SQLite read
-snapshot into canonical JSON members, validates the bounded ZIP, and atomically
-publishes it under the active profile's `exports/` directory. Original and
+snapshot, reached through a dedicated read-only/query-only connection for HTTP
+and CLI entry points, into canonical JSON members, validates the bounded ZIP,
+and atomically publishes it under the active profile's `exports/` directory. Original and
 Canvas-retained files, remote/provider facts, derived content, credentials,
-and absolute paths are excluded. The browser route accepts no destination
+absolute paths, and AI history without durable portable identities are
+excluded. The browser route accepts no destination
 path and returns safe metadata only. Restore, relinking, conflict resolution,
 scheduled/cloud backup, and original-file backup are not implemented. The
 canonical contract is [Backup Export Format](BACKUP_FORMAT.md).

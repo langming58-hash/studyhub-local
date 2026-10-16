@@ -46,9 +46,31 @@ Every data member is UTF-8 canonical JSON with this envelope:
 {"dataset":"notes","format_version":1,"records":[]}
 ```
 
-Objects use stable field names, records sort by portable stable identity, and
-JSON keys are sorted without insignificant whitespace. SQLite integer IDs and
-insertion order are not portable identity.
+Objects use stable field names, records sort by portable identity, and JSON
+keys are sorted without insignificant whitespace. SQLite integer IDs and
+insertion order are not portable identity. Append-only/event-like rows that do
+not have a native stable ID use a canonical semantic identity plus a
+deterministic occurrence index. This preserves duplicate records without
+exposing row IDs and produces the same identity set for equivalent multisets.
+
+Identity rules by v1 dataset are deliberately narrow:
+
+- terms, courses, learning units, materials, and academic-change events retain
+  their existing domain stable IDs or references derived from them
+- stars and bookmarks use the uniquely targeted material plus record kind
+- notes and attempts use their immutable semantic fields plus occurrence index
+- wrong-question state uses question/material/course/creation identity plus
+  occurrence index; mutable mastery, review count, and last-reviewed state are
+  payload, not identity
+- study sessions use course/start identity plus occurrence index; mutable or
+  presentation state remains payload
+- local source descriptors key from the associated stable Material identity
+- AI history and Canvas connector selection have no claimed v1 identity and
+  remain empty
+
+For exactly identical occurrences, the current schema cannot distinguish which
+historical row is which. V1 preserves the count and deterministic identity set,
+not a fictional mapping back to SQLite row identity.
 
 ## Manifest
 
@@ -73,7 +95,6 @@ The v1 projection includes only allowlisted fields:
 - user material presentation/classification overlays
 - safe descriptors for local user-owned sources
 - notes, stars, bookmarks, attempts, wrong-question state, and study sessions
-- field-allowlisted local AI conversation history
 - What's New acknowledgements keyed by academic-event stable identity
 
 Canvas compatibility courses are included only when they carry an explicit
@@ -112,17 +133,22 @@ empty in v1. This is an intentional omission, not a restore promise.
 
 ## AI History
 
-AI export uses a field allowlist: title, safe scope labels, timestamps,
-portable StudyHub references, and user/assistant message text. It does not dump
-context, sources, questions, solutions, provider responses, request IDs, or
-backend handles. Export text is bounded and redacts recognizable credentials,
-signed/provider URLs, and absolute filesystem paths.
+`data/ai_history.json` is a required but empty v1 member, and the manifest sets
+`ai_history_included: false`. Current conversation/message rows do not have an
+immutable portable identity: conversation titles and scopes can change, while
+integer row IDs are runtime-local. StudyHub therefore does not claim false
+restore identity or export AI history in v1. Renaming a conversation cannot
+change backup content. A future focused migration may introduce durable stable
+identities before AI history becomes portable.
 
 ## Snapshot And Publication
 
-Export reads all datasets from one SQLite read transaction and always rolls
-that transaction back. It does not scan, rebuild indexes, acknowledge events,
-contact Canvas/OpenAI/CredentialStore, or update user state.
+The HTTP and CLI entry points open the existing database with SQLite
+`mode=ro`, enable `PRAGMA query_only=ON`, validate the required schema without
+initializing or migrating it, and then read all datasets from one SQLite read
+transaction that is always rolled back. Missing or incompatible databases fail
+cleanly. Export does not scan, rebuild indexes, acknowledge events, contact
+Canvas/OpenAI/CredentialStore, or update user state.
 
 The writer creates a temporary file inside the active runtime profile's
 `exports/` directory, closes it, validates it, and atomically renames it to the
@@ -150,6 +176,9 @@ It rejects:
 The validator reads bounded members directly from the ZIP. Successful
 validation means only that the archive conforms to this export contract; it
 does not restore or prove that external source files still exist.
+Both `data/ai_history.json` and `data/connector_user_state.json` must remain
+empty in v1; non-empty records are rejected even if their JSON shape otherwise
+resembles an older draft.
 
 ## Forward Restore Contract
 

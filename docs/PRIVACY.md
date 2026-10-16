@@ -179,7 +179,8 @@ paths. Export never calls Canvas, OpenAI, or CredentialStore and never reads
 another runtime profile. Recognizable secrets and local paths embedded in
 portable user text are redacted as defense in depth. See
 [Backup Export Format](BACKUP_FORMAT.md) for the exact v1 contract and known
-omissions. Restore is not implemented.
+omissions. AI history is explicitly excluded until it has honest durable
+portable identities. Restore is not implemented.
 
 ## Public Data Boundary
 

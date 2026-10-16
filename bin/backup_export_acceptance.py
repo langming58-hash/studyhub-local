@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import sqlite3
@@ -14,6 +15,7 @@ import threading
 import urllib.request
 import warnings
 import zipfile
+from contextlib import redirect_stdout
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -234,9 +236,12 @@ def seed_state(server: Any, root: Path, id_base: int, *, reverse_insert_order: b
     )
     server.reconcile_domain_projection(conn)
 
+    duplicate_note = ("Repeated same-second note", timestamp)
     note_rows = [
         (f"My note with {root}, {MAC_PATH_CANARY}, {'to' + 'ken'}={TOKEN_CANARY}, and {API_KEY_CANARY}", timestamp),
         ("Second portable note", "2026-04-01T00:02:00+00:00"),
+        duplicate_note,
+        duplicate_note,
     ]
     if reverse_insert_order:
         note_rows.reverse()
@@ -249,24 +254,45 @@ def seed_state(server: Any, root: Path, id_base: int, *, reverse_insert_order: b
             (local_file_id, course_id, body, note_timestamp, note_timestamp),
         )
     conn.execute("INSERT INTO stars(target_type, target_id, created_at) VALUES ('file', ?, ?)", (local_file_id, timestamp))
-    conn.execute(
-        "INSERT INTO attempts(file_id, prompt, answer_text, result, created_at) VALUES (?, 'remote prompt omitted', 'My answer', 'review', ?)",
-        (local_file_id, timestamp),
-    )
-    conn.execute(
-        """
-        INSERT INTO wrong_questions(course_id, week_label, type, source_file_id,
-          question_ref, mistake, concept, attempts, last_reviewed, mastery, created_at)
-        VALUES (?, 'Module Alpha', 'tutorial', ?, 'Q-SYN-1', 'My correction',
-          'Synthetic concept', 2, ?, 'learning', ?)
-        """,
-        (course_id, local_file_id, timestamp, timestamp),
-    )
+    attempt_rows = [
+        ("remote prompt omitted", "My answer", "review", timestamp),
+        ("remote prompt omitted", "My answer", "review", timestamp),
+        ("another omitted prompt", "Another answer", "complete", "2026-04-01T00:03:00+00:00"),
+    ]
+    wrong_rows = [
+        ("My correction", "Synthetic concept", 2, timestamp, "learning"),
+        ("My correction", "Synthetic concept", 2, timestamp, "learning"),
+        ("Updated correction", "Synthetic concept", 3, "2026-04-02T00:00:00+00:00", "reviewing"),
+    ]
+    session_rows = [
+        ("Module Alpha", "review", timestamp, "2026-04-01T00:30:00+00:00"),
+        ("Module Alpha", "review", timestamp, "2026-04-01T00:30:00+00:00"),
+        ("Module Alpha", "practice", timestamp, "2026-04-01T00:45:00+00:00"),
+    ]
+    if reverse_insert_order:
+        attempt_rows.reverse()
+        wrong_rows.reverse()
+        session_rows.reverse()
+    for prompt, answer, result, attempt_timestamp in attempt_rows:
+        conn.execute(
+            "INSERT INTO attempts(file_id, prompt, answer_text, result, created_at) VALUES (?, ?, ?, ?, ?)",
+            (local_file_id, prompt, answer, result, attempt_timestamp),
+        )
+    for mistake, concept, attempts, last_reviewed, mastery in wrong_rows:
+        conn.execute(
+            """
+            INSERT INTO wrong_questions(course_id, week_label, type, source_file_id,
+              question_ref, mistake, concept, attempts, last_reviewed, mastery, created_at)
+            VALUES (?, 'Module Alpha', 'tutorial', ?, 'Q-SYN-1', ?, ?, ?, ?, ?, ?)
+            """,
+            (course_id, local_file_id, mistake, concept, attempts, last_reviewed, mastery, timestamp),
+        )
     conn.execute("INSERT INTO bookmarks(target_type, target_id, label, created_at) VALUES ('file', ?, 'Review this', ?)", (local_file_id, timestamp))
-    conn.execute(
-        "INSERT INTO study_sessions(course_id, week_label, mode, started_at, ended_at) VALUES (?, 'Module Alpha', 'review', ?, ?)",
-        (course_id, timestamp, "2026-04-01T00:30:00+00:00"),
-    )
+    for week_label, mode, started_at, ended_at in session_rows:
+        conn.execute(
+            "INSERT INTO study_sessions(course_id, week_label, mode, started_at, ended_at) VALUES (?, ?, ?, ?, ?)",
+            (course_id, week_label, mode, started_at, ended_at),
+        )
     conn.execute(
         """
         INSERT INTO ai_conversations(title, scope, context_json, course_code, week_label,
@@ -356,6 +382,21 @@ def archive_members(path: Path) -> dict[str, bytes]:
         return {name: archive.read(name) for name in archive.namelist()}
 
 
+def mark_zip_entries_encrypted(raw: bytes) -> bytes:
+    """Set ZIP encryption flags without adding a real password-protected payload."""
+    changed = bytearray(raw)
+    for signature, flag_offset in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+        cursor = 0
+        while True:
+            cursor = changed.find(signature, cursor)
+            if cursor < 0:
+                break
+            flags = int.from_bytes(changed[cursor + flag_offset : cursor + flag_offset + 2], "little")
+            changed[cursor + flag_offset : cursor + flag_offset + 2] = (flags | 0x1).to_bytes(2, "little")
+            cursor += len(signature)
+    return bytes(changed)
+
+
 def rewrite_archive(path: Path, mutation: Callable[[dict[str, bytes]], None]) -> Path:
     members = archive_members(path)
     mutation(members)
@@ -387,8 +428,38 @@ def main() -> int:
         before_dump = "\n".join(conn_one.iterdump())
 
         blocked = {"canvas": 0, "openai": 0, "credentials": 0}
-        server_one.with_canvas_connector = lambda _callback: (_ for _ in ()).throw(AssertionError("Canvas must remain offline"))
-        server_one.openai_responses_request = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("OpenAI must remain offline"))
+
+        def blocked_boundary(kind: str) -> Callable[..., Any]:
+            def fail(*_args: Any, **_kwargs: Any) -> Any:
+                blocked[kind] += 1
+                raise AssertionError(f"{kind} boundary must remain offline")
+
+            return fail
+
+        server_one.with_canvas_connector = blocked_boundary("canvas")
+        server_one.openai_responses_request = blocked_boundary("openai")
+        server_one.initialize_credential_client = blocked_boundary("credentials")
+        server_one.canvas_connection_record_from_private_transport = blocked_boundary("credentials")
+
+        readonly_conn = server_one.connect_backup_db_readonly()
+        readonly_failures = []
+        for sql in (
+            "INSERT INTO terms(stable_id, name, archived, sort_order, created_at, updated_at) VALUES ('blocked', 'Blocked', 0, 0, '', '')",
+            "UPDATE terms SET name='Blocked'",
+            "DELETE FROM terms",
+            "CREATE TABLE blocked_write(id INTEGER)",
+        ):
+            try:
+                readonly_conn.execute(sql)
+            except sqlite3.OperationalError:
+                readonly_failures.append(sql)
+        check(
+            "readonly_backup_connection_rejects_all_writes",
+            readonly_conn.execute("PRAGMA query_only").fetchone()[0] == 1 and len(readonly_failures) == 4,
+            failures,
+        )
+        readonly_conn.close()
+
         result_one = server_one.export_user_owned_backup(conn_one, created_at="2026-04-02T00:00:00+00:00")
         archive_one = server_one.EXPORT_DIR / result_one["filename"]
         validation = server_one.validate_backup_archive(archive_one)
@@ -416,6 +487,34 @@ def main() -> int:
         copied.parent.mkdir(parents=True, exist_ok=True)
         copied.write_bytes(raw_archive)
         check("validator_requires_no_original_root", server_two.validate_backup_archive(copied)["total_records"] == validation["total_records"], failures)
+
+        note_records_one = json.loads(members_one["data/notes.json"])["records"]
+        note_records_two = json.loads(members_two["data/notes.json"])["records"]
+        duplicate_notes_one = [record for record in note_records_one if record["body"] == "Repeated same-second note"]
+        duplicate_notes_two = [record for record in note_records_two if record["body"] == "Repeated same-second note"]
+        check(
+            "duplicate_same_second_notes_have_distinct_ids",
+            len(duplicate_notes_one) == 2 and len({record["stable_id"] for record in duplicate_notes_one}) == 2,
+            failures,
+        )
+        check(
+            "duplicate_note_id_set_is_portable_and_deterministic",
+            {record["stable_id"] for record in duplicate_notes_one}
+            == {record["stable_id"] for record in duplicate_notes_two},
+            failures,
+        )
+        study_records_one = json.loads(members_one["data/study_records.json"])["records"]
+        study_records_two = json.loads(members_two["data/study_records.json"])["records"]
+        for record_type, expected_count in (("attempt", 3), ("wrong_question_state", 3), ("study_session", 3)):
+            records_one = [record for record in study_records_one if record["record_type"] == record_type]
+            records_two = [record for record in study_records_two if record["record_type"] == record_type]
+            check(
+                f"duplicate_{record_type}_identity_is_deterministic",
+                len(records_one) == expected_count
+                and len({record["stable_id"] for record in records_one}) == expected_count
+                and {record["stable_id"] for record in records_one} == {record["stable_id"] for record in records_two},
+                failures,
+            )
 
         forbidden = [
             str(root_one).encode(),
@@ -447,7 +546,16 @@ def main() -> int:
         check("canvas_selection_explicitly_excluded", connector == [] and manifest["features"]["canvas_selection_included"] is False, failures)
         check("seen_state_uses_event_stable_identity", len(seen) == 1 and seen[0]["event_stable_id"] == "event_syn_alpha" and "event_id" not in seen[0], failures)
         ai_records = json.loads(members_one["data/ai_history.json"])["records"]
-        check("ai_history_is_field_allowlisted", len(ai_records) == 1 and "context_json" not in ai_records[0] and "sources_json" not in json.dumps(ai_records), failures)
+        check("ai_history_explicitly_excluded", ai_records == [] and manifest["features"]["ai_history_included"] is False, failures)
+        conn_one.execute("UPDATE ai_conversations SET title='Renamed synthetic conversation'")
+        conn_one.commit()
+        renamed_ai_result = server_one.export_user_owned_backup(conn_one, created_at="2026-04-02T00:01:00+00:00")
+        renamed_ai_members = archive_members(server_one.EXPORT_DIR / renamed_ai_result["filename"])
+        check(
+            "ai_rename_cannot_change_claimed_portable_identity",
+            members_one["data/ai_history.json"] == renamed_ai_members["data/ai_history.json"],
+            failures,
+        )
         local_sources = json.loads(members_one["data/local_sources.json"])["records"]
         check("local_source_uses_safe_relative_path", len(local_sources) == 1 and local_sources[0]["location"]["kind"] == "library_relative" and not local_sources[0]["location"]["relative_path"].startswith("/"), failures)
 
@@ -470,6 +578,34 @@ def main() -> int:
 
         check("unexpected_manifest_field_rejected", rejected(server_one, rewrite_archive(archive_one, unexpected_manifest_field)), failures)
 
+        def nonempty_ai_history(members: dict[str, bytes]) -> None:
+            payload = json.loads(members["data/ai_history.json"])
+            payload["records"] = [
+                {
+                    "stable_id": "conversation_disallowed",
+                    "title": "Disallowed old export shape",
+                    "scope": "course",
+                    "course_ref": None,
+                    "learning_unit_label": "",
+                    "material_ref": None,
+                    "created_at": "2026-04-01T00:00:00+00:00",
+                    "updated_at": "2026-04-01T00:00:00+00:00",
+                    "messages": [],
+                }
+            ]
+            raw = server_one.canonical_backup_json(payload)
+            members["data/ai_history.json"] = raw
+            manifest_value = json.loads(members["manifest.json"])
+            manifest_value["entries"]["data/ai_history.json"] = {
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "byte_size": len(raw),
+                "record_count": 1,
+            }
+            manifest_value["total_records"] += 1
+            members["manifest.json"] = server_one.canonical_backup_json(manifest_value)
+
+        check("nonempty_ai_history_rejected", rejected(server_one, rewrite_archive(archive_one, nonempty_ai_history)), failures)
+
         duplicate_path = temp_root / "duplicate.zip"
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
@@ -486,6 +622,12 @@ def main() -> int:
             archive.writestr("../escape.json", b"{}")
         check("path_traversal_member_rejected", rejected(server_one, traversal_path), failures)
 
+        backslash_path = temp_root / "backslash.zip"
+        with zipfile.ZipFile(backslash_path, "w") as archive:
+            for name, raw in members_one.items():
+                archive.writestr("data\\notes.json" if name == "data/notes.json" else name, raw)
+        check("backslash_member_rejected", rejected(server_one, backslash_path), failures)
+
         symlink_path = temp_root / "symlink.zip"
         with zipfile.ZipFile(symlink_path, "w") as archive:
             for name, raw in members_one.items():
@@ -497,6 +639,16 @@ def main() -> int:
                 else:
                     archive.writestr(name, raw)
         check("zip_symlink_member_rejected", rejected(server_one, symlink_path), failures)
+
+        encrypted_path = temp_root / "encrypted.zip"
+        encrypted_path.write_bytes(mark_zip_entries_encrypted(archive_one.read_bytes()))
+        check("encrypted_zip_rejected", rejected(server_one, encrypted_path), failures)
+
+        unsupported_compression_path = temp_root / "unsupported-compression.zip"
+        with zipfile.ZipFile(unsupported_compression_path, "w", compression=zipfile.ZIP_BZIP2) as archive:
+            for name, raw in members_one.items():
+                archive.writestr(name, raw)
+        check("unsupported_compression_rejected", rejected(server_one, unsupported_compression_path), failures)
 
         oversized = temp_root / "oversized.zip"
         with zipfile.ZipFile(oversized, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -544,6 +696,30 @@ def main() -> int:
             server_one.validate_backup_archive = original_validator
         check("incomplete_temporary_export_never_published", not list(failed_dir.glob("*.zip")) and not list(failed_dir.glob("*.tmp")), failures)
 
+        local_file_id = int(conn_one.execute("SELECT id FROM files WHERE stable_id='material_syn_local'").fetchone()["id"])
+        conn_one.execute("UPDATE files SET display_name='' WHERE id=?", (local_file_id,))
+        conn_one.commit()
+        trap_database = temp_root / "init-db-regression.sqlite"
+        trap_conn = sqlite3.connect(trap_database)
+        trap_conn.row_factory = sqlite3.Row
+        conn_one.backup(trap_conn)
+        original_init_db = server_one.init_db
+        original_init_db(trap_conn)
+        init_db_would_reconcile = trap_conn.execute(
+            "SELECT display_name FROM files WHERE id=?",
+            (local_file_id,),
+        ).fetchone()["display_name"] != ""
+        trap_conn.close()
+
+        init_db_calls = 0
+
+        def reject_init_db(_conn: sqlite3.Connection) -> None:
+            nonlocal init_db_calls
+            init_db_calls += 1
+            raise AssertionError("Backup entry points must not call init_db")
+
+        server_one.init_db = reject_init_db
+        before_http_dump = "\n".join(conn_one.iterdump())
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), server_one.StudyHubHandler)
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
@@ -566,6 +742,24 @@ def main() -> int:
             httpd.shutdown()
             httpd.server_close()
             thread.join(timeout=5)
+
+        after_http_dump = "\n".join(conn_one.iterdump())
+        check("http_export_does_not_call_init_db", init_db_calls == 0, failures)
+        check("http_export_is_zero_db_mutation", before_http_dump == after_http_dump, failures)
+        check(
+            "http_export_does_not_reconcile_init_db_trap",
+            init_db_would_reconcile
+            and conn_one.execute("SELECT display_name FROM files WHERE id=?", (local_file_id,)).fetchone()["display_name"] == "",
+            failures,
+        )
+
+        before_cli_dump = "\n".join(conn_one.iterdump())
+        with redirect_stdout(io.StringIO()):
+            cli_status = server_one.main(["backup"])
+        after_cli_dump = "\n".join(conn_one.iterdump())
+        check("cli_backup_uses_readonly_boundary", cli_status == 0 and init_db_calls == 0, failures)
+        check("cli_backup_is_zero_db_mutation", before_cli_dump == after_cli_dump, failures)
+        check("all_export_entry_points_avoid_credentials", blocked == {"canvas": 0, "openai": 0, "credentials": 0}, failures)
 
         check("profile_isolation_preserved", archive_one.parent == server_one.DATA_DIR / "exports" and archive_two.parent == server_two.DATA_DIR / "exports", failures)
         check("restore_is_not_implemented", "/api/backup/restore" not in (ROOT / "server.py").read_text(encoding="utf-8"), failures)

@@ -212,6 +212,38 @@ BACKUP_DATA_MEMBERS = (
 )
 BACKUP_MEMBERS = ("manifest.json", *BACKUP_DATA_MEMBERS)
 BACKUP_STABLE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+BACKUP_REQUIRED_SCHEMA: dict[str, set[str]] = {
+    "schema_migrations": {"version", "name", "applied_at"},
+    "terms": {"id", "stable_id", "name", "archived", "sort_order", "created_at", "updated_at"},
+    "courses": {
+        "id", "stable_id", "source_kind", "metadata_locked", "term_id", "display_name", "name",
+        "course_code", "code", "archived", "active", "sort_order", "created_at", "updated_at",
+    },
+    "weeks": {
+        "id", "stable_id", "course_id", "origin", "week_label", "week_number", "kind", "archived",
+        "created_at", "updated_at",
+    },
+    "files": {
+        "id", "stable_id", "course_id", "week_id", "metadata_locked", "display_name", "filename",
+        "material_type", "category", "exercise_type", "inbox", "active", "removed_at",
+        "material_updated_at", "indexed_at", "import_mode", "original_path", "sha256", "hash",
+        "file_size", "size", "source_missing",
+    },
+    "materials": {"stable_id", "legacy_file_id", "current_version_id"},
+    "material_versions": {"id", "source_id"},
+    "sources": {"id", "authority"},
+    "notes": {"target_type", "target_id", "body", "created_at", "updated_at"},
+    "stars": {"target_type", "target_id", "created_at"},
+    "attempts": {"file_id", "answer_text", "result", "created_at"},
+    "wrong_questions": {
+        "course_id", "week_label", "source_file_id", "question_ref", "mistake", "concept", "attempts",
+        "last_reviewed", "mastery", "created_at",
+    },
+    "bookmarks": {"target_type", "target_id", "label", "created_at"},
+    "study_sessions": {"course_id", "week_label", "mode", "started_at", "ended_at"},
+    "academic_change_events": {"id", "stable_id"},
+    "academic_change_event_state": {"event_id", "seen_at", "updated_at"},
+}
 CREDENTIAL_TRANSPORT_FD_ENV = "STUDYHUB_CREDENTIAL_TRANSPORT_FD"
 CREDENTIAL_TRANSPORT_PROTOCOL_ENV = "STUDYHUB_CREDENTIAL_PROTOCOL"
 CREDENTIAL_TRANSPORT_KIND_ENV = "STUDYHUB_CREDENTIAL_TRANSPORT"
@@ -2075,6 +2107,33 @@ def connect_db() -> sqlite3.Connection:
     return conn
 
 
+def validate_backup_db_schema(conn: sqlite3.Connection) -> None:
+    table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    available_tables = {str(row["name"]) for row in table_rows}
+    if not set(BACKUP_REQUIRED_SCHEMA).issubset(available_tables):
+        raise ValueError("Backup requires an initialized, compatible StudyHub database")
+    for table, required_columns in BACKUP_REQUIRED_SCHEMA.items():
+        columns = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if not required_columns.issubset(columns):
+            raise ValueError("Backup requires an initialized, compatible StudyHub database")
+
+
+def connect_backup_db_readonly() -> sqlite3.Connection:
+    database_path = DB_PATH.resolve()
+    if not database_path.is_file():
+        raise FileNotFoundError("StudyHub database is not initialized")
+    conn = sqlite3.connect(f"{database_path.as_uri()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA foreign_keys=ON")
+        validate_backup_db_schema(conn)
+        return conn
+    except Exception:
+        conn.close()
+        raise
+
+
 def ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
     existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     for name, ddl in columns.items():
@@ -3723,6 +3782,33 @@ def require_unique_backup_records(dataset: str, records: list[dict[str, Any]]) -
         raise ValueError(f"Too many records in {dataset}")
 
 
+def assign_backup_occurrence_ids(
+    prefix: str,
+    records: list[dict[str, Any]],
+    *,
+    identity_fields: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    """Assign deterministic IDs to a multiset without exposing SQLite row IDs."""
+    groups: dict[bytes, list[dict[str, Any]]] = {}
+    for record in records:
+        if "stable_id" in record:
+            raise ValueError("Occurrence-based backup record already has an identity")
+        semantic_identity = {field: record.get(field) for field in identity_fields}
+        identity_bytes = canonical_backup_json(semantic_identity)
+        groups.setdefault(identity_bytes, []).append(dict(record))
+    identified: list[dict[str, Any]] = []
+    for identity_bytes in sorted(groups):
+        ordered = sorted(groups[identity_bytes], key=canonical_backup_json)
+        for occurrence_index, record in enumerate(ordered, start=1):
+            record["stable_id"] = backup_record_id(
+                prefix,
+                identity_bytes.decode("utf-8"),
+                occurrence_index,
+            )
+            identified.append(record)
+    return identified
+
+
 def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
     material_by_file, course_by_id, week_by_id = backup_material_maps(conn)
     datasets: dict[str, list[dict[str, Any]]] = {member: [] for member in BACKUP_DATA_MEMBERS}
@@ -3773,7 +3859,6 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
             }
         )
     datasets["data/courses.json"] = courses
-    included_course_stable_ids = {record["stable_id"] for record in courses}
 
     learning_units: list[dict[str, Any]] = []
     included_week_ids: set[int] = set()
@@ -3871,7 +3956,6 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
         body = safe_backup_text(row["body"], limit=10_000)
         notes.append(
             {
-                "stable_id": backup_record_id("note", material_ref, row["created_at"], body),
                 "target_type": "material",
                 "target_ref": material_ref,
                 "body": body,
@@ -3879,7 +3963,11 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
                 "updated_at": str(row["updated_at"] or ""),
             }
         )
-    datasets["data/notes.json"] = notes
+    datasets["data/notes.json"] = assign_backup_occurrence_ids(
+        "note",
+        notes,
+        identity_fields=("target_type", "target_ref", "body", "created_at"),
+    )
 
     stars: list[dict[str, Any]] = []
     for row in conn.execute("SELECT * FROM stars ORDER BY created_at, id").fetchall():
@@ -3899,13 +3987,13 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
     datasets["data/stars.json"] = stars
 
     study_records: list[dict[str, Any]] = []
+    attempt_records: list[dict[str, Any]] = []
     for row in conn.execute("SELECT * FROM attempts ORDER BY created_at, id").fetchall():
         material_ref = material_by_file.get(int(row["file_id"])) if row["file_id"] else None
         answer = safe_backup_text(row["answer_text"], limit=20_000)
         result = safe_backup_text(row["result"], limit=120)
-        study_records.append(
+        attempt_records.append(
             {
-                "stable_id": backup_record_id("attempt", material_ref, row["created_at"], answer, result),
                 "record_type": "attempt",
                 "material_ref": material_ref,
                 "answer_text": answer,
@@ -3913,15 +4001,22 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
                 "created_at": str(row["created_at"] or ""),
             }
         )
+    study_records.extend(
+        assign_backup_occurrence_ids(
+            "attempt",
+            attempt_records,
+            identity_fields=("record_type", "material_ref", "answer_text", "result", "created_at"),
+        )
+    )
+    wrong_question_records: list[dict[str, Any]] = []
     for row in conn.execute("SELECT * FROM wrong_questions ORDER BY created_at, id").fetchall():
         material_ref = material_by_file.get(int(row["source_file_id"])) if row["source_file_id"] else None
         course_ref = course_by_id.get(int(row["course_id"])) if row["course_id"] and int(row["course_id"]) in included_course_ids else None
         question_ref = safe_backup_text(row["question_ref"], limit=240)
         mistake = safe_backup_text(row["mistake"], limit=10_000)
         concept = safe_backup_text(row["concept"], limit=500)
-        study_records.append(
+        wrong_question_records.append(
             {
-                "stable_id": backup_record_id("wrong", course_ref, material_ref, row["created_at"], question_ref, mistake),
                 "record_type": "wrong_question_state",
                 "course_ref": course_ref,
                 "material_ref": material_ref,
@@ -3935,6 +4030,13 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
                 "created_at": str(row["created_at"] or ""),
             }
         )
+    study_records.extend(
+        assign_backup_occurrence_ids(
+            "wrong",
+            wrong_question_records,
+            identity_fields=("record_type", "course_ref", "material_ref", "question_ref", "created_at"),
+        )
+    )
     for row in conn.execute("SELECT * FROM bookmarks ORDER BY created_at, id").fetchall():
         if str(row["target_type"] or "") != "file":
             raise ValueError("Unsupported bookmark target in backup v1")
@@ -3950,11 +4052,11 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
                 "created_at": str(row["created_at"] or ""),
             }
         )
+    session_records: list[dict[str, Any]] = []
     for row in conn.execute("SELECT * FROM study_sessions ORDER BY started_at, id").fetchall():
         course_ref = course_by_id.get(int(row["course_id"])) if row["course_id"] and int(row["course_id"]) in included_course_ids else None
-        study_records.append(
+        session_records.append(
             {
-                "stable_id": backup_record_id("study_session", course_ref, row["started_at"], row["mode"], row["week_label"]),
                 "record_type": "study_session",
                 "course_ref": course_ref,
                 "learning_unit_label": safe_backup_text(row["week_label"], limit=80),
@@ -3963,58 +4065,17 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
                 "ended_at": str(row["ended_at"] or "") or None,
             }
         )
+    study_records.extend(
+        assign_backup_occurrence_ids(
+            "study_session",
+            session_records,
+            identity_fields=("record_type", "course_ref", "started_at"),
+        )
+    )
     datasets["data/study_records.json"] = study_records
 
-    ai_history: list[dict[str, Any]] = []
-    conversations = conn.execute("SELECT * FROM ai_conversations WHERE deleted_at IS NULL ORDER BY created_at, id").fetchall()
-    for conversation in conversations:
-        material_ref = material_by_file.get(int(conversation["file_id"])) if conversation["file_id"] else None
-        course_ref = None
-        if conversation["course_code"]:
-            course_row = conn.execute(
-                "SELECT stable_id FROM courses WHERE course_code=? ORDER BY metadata_locked DESC, id LIMIT 1",
-                (conversation["course_code"],),
-            ).fetchone()
-            course_ref = str(course_row["stable_id"]) if course_row else None
-            if course_ref not in included_course_stable_ids:
-                course_ref = None
-        scope = str(conversation["scope"] or "")
-        if scope not in {"course", "week", "file", "question"}:
-            scope = "course"
-        conversation_ref = backup_record_id("conversation", conversation["created_at"], conversation["title"], scope, course_ref, material_ref)
-        messages = []
-        raw_messages = conn.execute(
-            "SELECT * FROM ai_messages WHERE conversation_id=? ORDER BY created_at, role, body, id",
-            (conversation["id"],),
-        ).fetchall()
-        for message in raw_messages:
-            role = str(message["role"] or "")
-            if role not in {"user", "assistant"}:
-                continue
-            body = safe_backup_text(message["body"], limit=100_000)
-            messages.append(
-                {
-                    "stable_id": backup_record_id("message", conversation_ref, message["created_at"], role, body),
-                    "role": role,
-                    "body": body,
-                    "status": safe_backup_text(message["status"], limit=80),
-                    "created_at": str(message["created_at"] or ""),
-                }
-            )
-        ai_history.append(
-            {
-                "stable_id": conversation_ref,
-                "title": safe_backup_text(conversation["title"], limit=120),
-                "scope": scope,
-                "course_ref": course_ref,
-                "learning_unit_label": safe_backup_text(conversation["week_label"], limit=80),
-                "material_ref": material_ref,
-                "created_at": str(conversation["created_at"] or ""),
-                "updated_at": str(conversation["updated_at"] or ""),
-                "messages": messages,
-            }
-        )
-    datasets["data/ai_history.json"] = ai_history
+    # Current AI rows have no portable immutable identity; v1 keeps the member empty.
+    datasets["data/ai_history.json"] = []
 
     # Canvas selection needs provider reconciliation data that v1 deliberately excludes.
     datasets["data/connector_user_state.json"] = []
@@ -4079,10 +4140,6 @@ BACKUP_RECORD_FIELDS: dict[str, set[str]] = {
     },
     "data/notes.json": {"stable_id", "target_type", "target_ref", "body", "created_at", "updated_at"},
     "data/stars.json": {"stable_id", "target_type", "target_ref", "created_at"},
-    "data/ai_history.json": {
-        "stable_id", "title", "scope", "course_ref", "learning_unit_label", "material_ref",
-        "created_at", "updated_at", "messages",
-    },
     "data/whats_new_state.json": {"stable_id", "event_stable_id", "seen_at", "updated_at"},
 }
 BACKUP_STUDY_RECORD_FIELDS: dict[str, set[str]] = {
@@ -4096,14 +4153,11 @@ BACKUP_STUDY_RECORD_FIELDS: dict[str, set[str]] = {
         "stable_id", "record_type", "course_ref", "learning_unit_label", "mode", "started_at", "ended_at",
     },
 }
-BACKUP_AI_MESSAGE_FIELDS = {"stable_id", "role", "body", "status", "created_at"}
-
-
 def validate_backup_record_schema(member: str, record: Any) -> None:
     if not isinstance(record, dict):
         raise ValueError("Backup record must be an object")
-    if member == "data/connector_user_state.json":
-        raise ValueError("Backup v1 connector user state must remain empty")
+    if member in {"data/ai_history.json", "data/connector_user_state.json"}:
+        raise ValueError("Backup v1 excluded dataset must remain empty")
     expected = BACKUP_RECORD_FIELDS.get(member)
     if member == "data/study_records.json":
         expected = BACKUP_STUDY_RECORD_FIELDS.get(str(record.get("record_type") or ""))
@@ -4122,20 +4176,6 @@ def validate_backup_record_schema(member: str, record: Any) -> None:
             pure = Path(relative)
             if not relative or pure.is_absolute() or ".." in pure.parts or "\\" in relative:
                 raise ValueError("Backup source location is unsafe")
-    if member == "data/ai_history.json":
-        messages = record.get("messages")
-        if not isinstance(messages, list) or len(messages) > BACKUP_MAX_RECORDS:
-            raise ValueError("Backup AI messages are invalid")
-        message_ids: set[str] = set()
-        for message in messages:
-            if not isinstance(message, dict) or set(message) != BACKUP_AI_MESSAGE_FIELDS:
-                raise ValueError("Backup AI message schema is invalid")
-            identity = str(message.get("stable_id") or "")
-            if not BACKUP_STABLE_ID_RE.fullmatch(identity) or identity in message_ids:
-                raise ValueError("Backup AI message identity is invalid")
-            if message.get("role") not in {"user", "assistant"}:
-                raise ValueError("Backup AI message role is invalid")
-            message_ids.add(identity)
 
 
 def validate_backup_relationships(parsed: dict[str, list[dict[str, Any]]]) -> None:
@@ -4198,6 +4238,7 @@ def validate_backup_archive(path: Path) -> dict[str, Any]:
             "restore_supported": False,
             "original_files_included": False,
             "canvas_selection_included": False,
+            "ai_history_included": False,
             "whats_new_acknowledgements": "reattach-only",
         }
         if manifest.get("features") != expected_features:
@@ -4295,6 +4336,7 @@ def export_user_owned_backup(
             "restore_supported": False,
             "original_files_included": False,
             "canvas_selection_included": False,
+            "ai_history_included": False,
             "whats_new_acknowledgements": "reattach-only",
         },
         "entries": entries,
@@ -4323,6 +4365,14 @@ def export_user_owned_backup(
         "format": BACKUP_FORMAT_NAME,
         "format_version": BACKUP_FORMAT_VERSION,
     }
+
+
+def export_current_profile_backup(*, created_at: str | None = None) -> dict[str, Any]:
+    conn = connect_backup_db_readonly()
+    try:
+        return export_user_owned_backup(conn, created_at=created_at)
+    finally:
+        conn.close()
 
 
 def normalize_academic_change_event_ids(values: Any) -> list[str]:
@@ -8299,13 +8349,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         body = self.parse_body_json()
         if body:
             raise ValueError("Backup export does not accept request parameters")
-        conn = connect_db()
-        init_db(conn)
-        try:
-            result = export_user_owned_backup(conn)
-            self.send_json({"ok": True, "backup": result})
-        finally:
-            conn.close()
+        result = export_current_profile_backup()
+        self.send_json({"ok": True, "backup": result})
 
     def handle_whats_new_seen(self) -> None:
         body = self.parse_body_json()
@@ -9268,12 +9313,7 @@ def verify_library() -> int:
 
 
 def backup_metadata() -> dict[str, Any]:
-    conn = connect_db()
-    init_db(conn)
-    try:
-        result = export_user_owned_backup(conn)
-    finally:
-        conn.close()
+    result = export_current_profile_backup()
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return result
 

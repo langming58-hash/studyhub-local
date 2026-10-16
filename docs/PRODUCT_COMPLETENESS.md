@@ -146,8 +146,9 @@ The migration is additive and idempotent:
 The implemented `studyhub-backup-v1` exporter creates a versioned archive with
 a schema manifest and canonical portable JSON for allowlisted user-owned
 course/learning-unit overlays, material metadata, notes, stars, study state,
-local AI conversation history, local source descriptors, and What's New seen
-acknowledgements. It excludes original study files, Canvas-retained bytes,
+local source descriptors, and What's New seen acknowledgements. AI history is
+an explicitly empty v1 member because current conversations do not yet have
+durable portable identity. The archive excludes original study files, Canvas-retained bytes,
 remote/provider facts, extracted text, previews, runtime databases,
 credentials, provider file/vector IDs, logs, and absolute paths. The writer
 uses one read snapshot, validates before atomic publication, and does not
