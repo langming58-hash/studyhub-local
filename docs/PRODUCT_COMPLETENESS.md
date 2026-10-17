@@ -72,7 +72,8 @@ clearly synthetic Demo fixtures.
 | Demo | Explicit disposable Demo workspace | IMPLEMENTED | Isolated visibility and reset |
 | Data | Clear recreatable cache | IMPLEMENTED | Current workspace only |
 | Data | Reset StudyHub-owned state only | IMPLEMENTED | Confirmation required |
-| Data | Metadata backup/restore | DESIGNED | Defer implementation until format is stable |
+| Data | Versioned user-owned metadata export | IMPLEMENTED | Canonical JSON ZIP; privacy-safe and validated |
+| Data | Restore/relink/conflict resolution | DESIGNED | Separate reviewed PR; not hidden in export |
 | Search | Local metadata and extracted-content search | EXISTS | Preserve |
 | Preview | PDF, Office fallback, text/code preview | EXISTS | Preserve |
 | Notes | File notes with persistence | EXISTS | Preserve |
@@ -142,18 +143,20 @@ The migration is additive and idempotent:
 
 ## Backup And Restore Design
 
-Backup is intentionally designed but not implemented in this pass. Shipping an
-unstable export format would create a false recovery guarantee while the P0
-schema is still settling.
+The implemented `studyhub-backup-v1` exporter creates a versioned archive with
+a schema manifest and canonical portable JSON for allowlisted user-owned
+course/learning-unit overlays, material metadata, notes, stars, study state,
+local source descriptors, and What's New seen acknowledgements. AI history is
+an explicitly empty v1 member because current conversations do not yet have
+durable portable identity. The archive excludes original study files, Canvas-retained bytes,
+remote/provider facts, extracted text, previews, runtime databases,
+credentials, provider file/vector IDs, logs, and absolute paths. The writer
+uses one read snapshot, validates before atomic publication, and does not
+mutate the database or require network access. The exact contract is
+[Backup Export Format](BACKUP_FORMAT.md).
 
-The future export is a versioned archive containing a schema manifest and
-portable JSON for terms, courses, weeks/modules, material metadata, notes,
-stars, attempts, wrong-question records, study state, and local AI conversation
-history. It must exclude original study files, extracted text, previews,
-runtime databases, credentials, provider file/vector IDs, logs, and absolute
-cache paths.
-
-Restore must first validate the archive version and schema, show a dry-run
+Restore is not implemented. A future restore must first validate the archive
+version and schema, show a dry-run
 summary, ask the user to relink unavailable source roots, and then import in a
 single database transaction after making a local rollback copy. Restore never
 overwrites or moves an original source file. Stable IDs are used to reconcile

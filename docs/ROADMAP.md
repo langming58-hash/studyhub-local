@@ -59,7 +59,8 @@ enhancement and is not a V1 completion blocker.
   when real use demonstrates a need; acknowledgement remains explicit
 - refine search ranking, filtering, and source navigation
 - complete human keyboard and VoiceOver validation
-- provide privacy-safe backup/export for user-owned metadata and study history
+- extend the implemented privacy-safe v1 export into a separately reviewed
+  restore/relink/conflict workflow
 - improve signed/notarized desktop distribution and dependency handling
 
 Each item requires a focused design and migration PR. This roadmap does not
@@ -117,7 +118,8 @@ The canonical registry and licensing rules are in the constitution.
 - OCR and media-transcription providers and packaging strategy
 - universal/Intel macOS and Windows distribution sequence
 - updater, deep-link, notification, and single-instance infrastructure
-- versioned backup/restore format for user-owned state
+- restore, relink, conflict-resolution, scheduling, encryption, and cloud
+  handling for the implemented versioned user-owned export format
 
 Open decisions remain PROPOSED until an audited decision PR records
 alternatives, licensing, trust boundary, ownership, migration, and tests.
