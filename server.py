@@ -7,6 +7,7 @@ import argparse
 import csv
 import hashlib
 import html
+import io
 import json
 import mimetypes
 import os
@@ -18,6 +19,7 @@ import signal
 import socket
 import sqlite3
 import ssl
+import stat
 import subprocess
 import sys
 import tempfile
@@ -4199,11 +4201,42 @@ def validate_backup_relationships(parsed: dict[str, list[dict[str, Any]]]) -> No
                 raise ValueError("Backup record references an unknown learning unit")
 
 
-def validate_backup_archive(path: Path) -> dict[str, Any]:
+def read_backup_archive_snapshot(path: Path) -> bytes:
+    """Read one bounded regular-file snapshot for all validation and parsing."""
     archive_path = Path(path)
-    if not archive_path.is_file() or archive_path.stat().st_size > BACKUP_MAX_ARCHIVE_BYTES:
-        raise ValueError("Backup archive is missing or too large")
-    with zipfile.ZipFile(archive_path, "r") as archive:
+    try:
+        if archive_path.is_symlink():
+            raise ValueError("Backup archive must be a regular file")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(archive_path, flags)
+    except (FileNotFoundError, NotADirectoryError, OSError) as exc:
+        raise ValueError("Backup archive is missing or invalid") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > BACKUP_MAX_ARCHIVE_BYTES:
+            raise ValueError("Backup archive is missing or too large")
+        with os.fdopen(descriptor, "rb", closefd=True) as handle:
+            descriptor = -1
+            snapshot = handle.read(BACKUP_MAX_ARCHIVE_BYTES + 1)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if len(snapshot) > BACKUP_MAX_ARCHIVE_BYTES:
+        raise ValueError("Backup archive is too large")
+    return snapshot
+
+
+def validate_backup_snapshot(
+    snapshot: bytes,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    """Validate and parse the exact immutable archive bytes supplied."""
+    if len(snapshot) > BACKUP_MAX_ARCHIVE_BYTES:
+        raise ValueError("Backup archive is too large")
+    try:
+        archive_context = zipfile.ZipFile(io.BytesIO(snapshot), "r")
+    except zipfile.BadZipFile as exc:
+        raise ValueError("Backup archive is invalid") from exc
+    with archive_context as archive:
         infos = archive.infolist()
         names = [info.filename for info in infos]
         if len(infos) > BACKUP_MAX_ENTRIES or len(names) != len(set(names)):
@@ -4289,13 +4322,19 @@ def validate_backup_archive(path: Path) -> dict[str, Any]:
         validate_backup_relationships(parsed_datasets)
         if total_records != manifest.get("total_records"):
             raise ValueError("Backup total record count mismatch")
-        return {
+        validation = {
             "format": BACKUP_FORMAT_NAME,
             "format_version": BACKUP_FORMAT_VERSION,
             "created_at": str(manifest.get("created_at") or ""),
             "record_counts": {member: int(entries[member]["record_count"]) for member in BACKUP_DATA_MEMBERS},
             "total_records": total_records,
         }
+        return validation, manifest, parsed_datasets
+
+
+def validate_backup_archive(path: Path) -> dict[str, Any]:
+    validation, _manifest, _datasets = validate_backup_snapshot(read_backup_archive_snapshot(path))
+    return validation
 
 
 def export_user_owned_backup(
@@ -4408,13 +4447,8 @@ def staged_restore_path(restore_id: Any) -> Path:
 
 def read_validated_backup_archive(path: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     try:
-        validation = validate_backup_archive(path)
-        with zipfile.ZipFile(path, "r") as archive:
-            manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
-            datasets = {
-                member: json.loads(archive.read(member).decode("utf-8"))["records"]
-                for member in BACKUP_DATA_MEMBERS
-            }
+        snapshot = read_backup_archive_snapshot(path)
+        validation, manifest, datasets = validate_backup_snapshot(snapshot)
     except (zipfile.BadZipFile, KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("Backup archive is invalid") from exc
     return validation, manifest, datasets
@@ -4477,6 +4511,45 @@ def restore_differences(
     return [field for field in fields if backup.get(field) != current.get(field)]
 
 
+def restore_state_token(value: Any) -> str:
+    """Hash private reconciliation state without exposing its local values."""
+    return hashlib.sha256(canonical_backup_json(value)).hexdigest()
+
+
+def restore_record_state_token(
+    record: dict[str, Any] | None,
+    *,
+    fields: tuple[str, ...],
+) -> str:
+    if record is None:
+        return restore_state_token({"presence": "ABSENT"})
+    return restore_state_token(
+        {
+            "presence": "PRESENT",
+            "values": {field: record.get(field) for field in fields},
+        }
+    )
+
+
+def restore_multiset_state_token(
+    backup_records: list[dict[str, Any]],
+    current_records: list[dict[str, Any]],
+    *,
+    identity_fields: tuple[str, ...],
+) -> str:
+    relevant_identities = {
+        canonical_backup_json({field: record.get(field) for field in identity_fields})
+        for record in backup_records
+    }
+    relevant_current = [
+        restore_payload(record)
+        for record in current_records
+        if canonical_backup_json({field: record.get(field) for field in identity_fields})
+        in relevant_identities
+    ]
+    return restore_state_token(sorted(relevant_current, key=canonical_backup_json))
+
+
 def restore_multiset_actions(
     dataset: str,
     backup_records: list[dict[str, Any]],
@@ -4536,6 +4609,7 @@ def build_restore_plan(
         raise ValueError("Restore preview requires a clean read snapshot")
     actions: list[dict[str, Any]] = []
     source_inspection: dict[str, dict[str, Any]] = {}
+    target_state_tokens: dict[str, str] = {}
     conn.execute("BEGIN")
     try:
         current = project_user_owned_backup(conn)
@@ -4579,6 +4653,10 @@ def build_restore_plan(
     term_fields = ("name", "archived", "sort_order")
     for record in datasets["data/terms.json"]:
         local = current_by_member["data/terms.json"].get(str(record["stable_id"]))
+        target_state_tokens[f"term:{record['stable_id']}"] = restore_record_state_token(
+            local,
+            fields=term_fields,
+        )
         if local is None:
             classification, differing = "CREATE", []
         else:
@@ -4596,6 +4674,10 @@ def build_restore_plan(
     for record in datasets["data/courses.json"]:
         stable_id = str(record["stable_id"])
         local = current_by_member["data/courses.json"].get(stable_id)
+        target_state_tokens[f"course:{stable_id}"] = restore_record_state_token(
+            local,
+            fields=course_fields,
+        )
         term_ref = record.get("term_ref")
         if local is not None:
             differing = restore_differences(record, local, fields=course_fields)
@@ -4624,6 +4706,10 @@ def build_restore_plan(
     for record in datasets["data/learning_units.json"]:
         stable_id = str(record["stable_id"])
         local = current_by_member["data/learning_units.json"].get(stable_id)
+        target_state_tokens[f"learning_unit:{stable_id}"] = restore_record_state_token(
+            local,
+            fields=unit_fields,
+        )
         if record.get("course_ref") not in resolvable_courses:
             classification, differing = "UNRESOLVED_REFERENCE", []
         elif local is None:
@@ -4644,6 +4730,12 @@ def build_restore_plan(
         location = record["location"]
         label = str(record.get("display_name") or "Material")
         current_material = current_materials.get(material_ref)
+        target_state_tokens[f"material:{material_ref}"] = restore_state_token(
+            {
+                "current": current_material or {"presence": "ABSENT"},
+                "same_content_candidates": sorted(materials_by_hash.get(expected_sha, [])),
+            }
+        )
         observed_sha: str | None = ""
         if location.get("kind") == "library_relative" and not bool(record.get("missing")):
             relative = str(location.get("relative_path") or "")
@@ -4693,6 +4785,7 @@ def build_restore_plan(
         if not resolved_ref:
             classification = material_failure.get(backup_ref, "UNRESOLVED_REFERENCE")
             differing: list[str] = []
+            local = None
         else:
             local = current_overlays.get(resolved_ref)
             normalized = dict(record)
@@ -4702,6 +4795,10 @@ def build_restore_plan(
             else:
                 differing = restore_differences(normalized, local, fields=overlay_fields)
                 classification = "NOOP" if not differing else "CONFLICT"
+        target_state_tokens[f"material_overlay:{record['stable_id']}"] = restore_record_state_token(
+            local,
+            fields=overlay_fields,
+        )
         actions.append(
             restore_action(
                 "material_overlays",
@@ -4735,6 +4832,11 @@ def build_restore_plan(
 
     backup_notes, note_failures = resolved_records(datasets["data/notes.json"], ("target_ref",))
     actions.extend(note_failures)
+    target_state_tokens["notes"] = restore_multiset_state_token(
+        backup_notes,
+        current["data/notes.json"],
+        identity_fields=("target_type", "target_ref", "body", "created_at"),
+    )
     actions.extend(
         restore_multiset_actions(
             "notes",
@@ -4754,6 +4856,9 @@ def build_restore_plan(
             classification = material_failure.get(backup_ref, "UNRESOLVED_REFERENCE")
         else:
             classification = "NOOP" if resolved_ref in current_stars else "CREATE"
+        target_state_tokens[f"star:{record['stable_id']}"] = restore_state_token(
+            {"present": bool(resolved_ref and resolved_ref in current_stars)}
+        )
         actions.append(restore_action("stars", record, classification, label="Star"))
 
     backup_study = datasets["data/study_records.json"]
@@ -4767,6 +4872,11 @@ def build_restore_plan(
         refs = ("material_ref",) if record_type in {"attempt", "wrong_question_state"} else ()
         normalized, failures = resolved_records(selected, refs)
         actions.extend(failures)
+        target_state_tokens[f"study_records:{record_type}"] = restore_multiset_state_token(
+            normalized,
+            [record for record in current_study if record["record_type"] == record_type],
+            identity_fields=identity_fields,
+        )
         actions.extend(
             restore_multiset_actions(
                 "study_records",
@@ -4794,11 +4904,18 @@ def build_restore_plan(
             local = current_bookmarks[resolved_ref]
             differing = restore_differences(record, local, fields=("label",))
             classification = "NOOP" if not differing else "CONFLICT"
+        target_state_tokens[f"bookmark:{record['stable_id']}"] = restore_record_state_token(
+            current_bookmarks.get(resolved_ref) if resolved_ref else None,
+            fields=("label",),
+        )
         actions.append(restore_action("study_records", record, classification, label="Bookmark", differing_fields=differing))
 
     events = {str(row["stable_id"]): bool(row["seen_at"]) for row in event_rows}
     for record in datasets["data/whats_new_state.json"]:
         event_ref = str(record["event_stable_id"])
+        target_state_tokens[f"whats_new:{event_ref}"] = restore_state_token(
+            {"present": event_ref in events, "seen": events.get(event_ref)}
+        )
         if event_ref not in events:
             classification, reason = "UNSUPPORTED_BY_V1", "academic_event_not_present"
         elif events[event_ref]:
@@ -4822,6 +4939,7 @@ def build_restore_plan(
             member: manifest["entries"][member]["sha256"] for member in sorted(manifest["entries"])
         },
         "source_inspection": source_inspection,
+        "relevant_target_state": target_state_tokens,
         "actions": actions,
     }
     plan_revision = "restore_" + hashlib.sha256(canonical_backup_json(revision_input)).hexdigest()[:24]

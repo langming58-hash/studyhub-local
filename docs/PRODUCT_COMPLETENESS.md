@@ -158,12 +158,16 @@ mutate the database or require network access. The exact contract is
 
 Read-only restore validation and preview are implemented. The desktop app uses
 a native picker and profile-private staging copy, then reuses the strict v1
-validator and a query-only database connection to produce a deterministic
-grouped plan. Stable IDs drive entity reconciliation; explicitly referenced
+validator on one bounded immutable archive snapshot and a query-only database
+connection to produce a deterministic grouped plan. Stable IDs drive entity
+reconciliation; explicitly referenced
 local sources are checked without a whole-library scan; missing sources,
 unresolved Material references, differing user progress, and absent academic
 events remain visible instead of being skipped or fabricated. Preview makes no
 database changes and does not contact Canvas, OpenAI, or CredentialStore.
+The plan revision privately binds relevant current semantic values and
+duplicate-capable record multiplicity, without including ignored timestamps,
+SQLite row IDs, runtime roots, local paths, or those private values in the API.
 
 Restore apply is not implemented. A future focused PR must revalidate and
 recompute the plan, require the expected plan revision, collect explicit

@@ -151,11 +151,15 @@ path and returns safe metadata only.
 The desktop restore-preview boundary uses a native single-file picker to copy
 an archive into the active profile's private `restore-inbox`; browser and HTTP
 surfaces receive only an opaque staging ID. Python reuses the authoritative
-archive validator, reads the current database through the query-only backup
-connection, and constructs an ephemeral deterministic `RestorePlan`. Preview
+archive validator over one bounded immutable archive snapshot, so bytes planned
+are exactly the bytes validated. It reads the current database through the
+query-only backup connection, and constructs an ephemeral deterministic
+`RestorePlan`. Preview
 does not initialize, migrate, scan, ingest, relink, write user state, or contact
 network/credential services. It explains safe matches, candidate user-state
 updates, conflicts, missing-source relinks, and unsupported v1 omissions.
+Its revision privately binds relevant current semantic values and multiplicity,
+while excluding ignored timestamps, row IDs, runtime roots, and local paths.
 Restore apply, automatic relinking, overwrite decisions, scheduled/cloud
 backup, and original-file backup are not implemented. The canonical contract
 is [Backup Export Format](BACKUP_FORMAT.md).

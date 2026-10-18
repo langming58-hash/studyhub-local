@@ -189,15 +189,20 @@ localhost API accepts only that ID, never an arbitrary filesystem path. Failed
 staging removes controlled temporary files and never modifies or deletes the
 user-selected original.
 
-Preview runs the validator above before reconciliation, opens the current
-database through the dedicated read-only/query-only backup connection, and
+Preview performs one bounded read of the staged regular file, then validates
+and parses that same immutable in-memory archive snapshot before
+reconciliation. It opens the current database through the dedicated
+read-only/query-only backup connection, and
 does not call initialization, migration, scanning, Canvas, OpenAI, or the
 CredentialStore. It builds an ephemeral versioned `RestorePlan` with explicit
 `CREATE`, `MATCH`, `UPDATE_USER_STATE`, `NOOP`, `UNRESOLVED_REFERENCE`,
 `CONFLICT`, `RELINK_REQUIRED`, and `UNSUPPORTED_BY_V1` classifications. The
-plan revision binds the validated member hashes, plan version, and relevant
-portable current state while excluding row IDs, paths, time, and restore
-session identity.
+plan revision binds the validated member hashes, plan version, public actions,
+explicit source inspection, and private hashes of the relevant current semantic
+target state. Those private state hashes bind compared values and multiset
+multiplicity without exposing local values through the API. SQLite row IDs,
+absolute paths, runtime roots, restore-session identity, and timestamps ignored
+by reconciliation remain excluded.
 
 Terms, courses, and managed learning units reconcile by stable ID only. Local
 source descriptors inspect only their explicit StudyLibrary-relative candidate;

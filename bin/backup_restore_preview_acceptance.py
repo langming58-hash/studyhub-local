@@ -265,6 +265,7 @@ def main() -> int:
         check("canvas_selection_reported_excluded", "canvas_state_not_included" in plan["warnings"], failures)
         check("no_remote_facts_planned_for_creation", not any(item["dataset"] in {"course_offerings", "canvas_sync_baselines", "academic_change_events"} for item in actions), failures)
         check("preview_response_contains_no_absolute_paths", not contains_absolute_path(plan, [source_root, match_root]), failures)
+        check("private_target_state_tokens_not_exposed", "relevant_target_state" not in json.dumps(plan), failures)
 
         reverse = load_server(reverse_root)
         reverse_conn = seed_state(reverse, reverse_root, 900)
@@ -279,6 +280,179 @@ def main() -> int:
         reverse_plan = reverse.preview_staged_restore(reverse_id)
         check("deterministic_restore_plan_revision", plan["plan_revision"] == reverse_plan["plan_revision"], failures)
         check("plan_revision_independent_of_ids_roots_and_session", plan["summary"] == reverse_plan["summary"] and plan["sections"] == reverse_plan["sections"], failures)
+
+        def revision() -> str:
+            return str(match.preview_staged_restore(match_restore_id)["plan_revision"])
+
+        match_conn.execute("UPDATE terms SET name='Local B' WHERE stable_id='term_syn_alpha'")
+        match_conn.commit()
+        term_b = revision()
+        match_conn.execute("UPDATE terms SET name='Local C' WHERE stable_id='term_syn_alpha'")
+        match_conn.commit()
+        term_c_plan = match.preview_staged_restore(match_restore_id)
+        term_conflict = next(
+            item for item in plan_actions(term_c_plan, "terms") if item["stable_id"] == "term_syn_alpha"
+        )
+        check(
+            "conflicting_term_value_changes_revision",
+            term_b != term_c_plan["plan_revision"]
+            and term_conflict["classification"] == "CONFLICT"
+            and term_conflict["differing_fields"] == ["name"],
+            failures,
+        )
+        match_conn.execute("UPDATE terms SET name='Synthetic Term' WHERE stable_id='term_syn_alpha'")
+
+        match_conn.execute("UPDATE courses SET display_name='Local B' WHERE stable_id='course_syn_alpha'")
+        match_conn.commit()
+        course_b = revision()
+        match_conn.execute("UPDATE courses SET display_name='Local C' WHERE stable_id='course_syn_alpha'")
+        match_conn.commit()
+        course_c = revision()
+        check("conflicting_course_value_changes_revision", course_b != course_c, failures)
+        match_conn.execute("UPDATE courses SET display_name='My Synthetic Course' WHERE stable_id='course_syn_alpha'")
+
+        match_conn.execute("UPDATE files SET display_name='Local B' WHERE stable_id='material_syn_local'")
+        match_conn.commit()
+        overlay_b = revision()
+        match_conn.execute("UPDATE files SET display_name='Local C' WHERE stable_id='material_syn_local'")
+        match_conn.commit()
+        overlay_c = revision()
+        check("conflicting_material_overlay_value_changes_revision", overlay_b != overlay_c, failures)
+        match_conn.execute("UPDATE files SET display_name='My guide' WHERE stable_id='material_syn_local'")
+
+        match_conn.execute("UPDATE bookmarks SET label='Local B'")
+        match_conn.commit()
+        bookmark_b = revision()
+        match_conn.execute("UPDATE bookmarks SET label='Local C'")
+        match_conn.commit()
+        bookmark_c = revision()
+        check("conflicting_bookmark_value_changes_revision", bookmark_b != bookmark_c, failures)
+        match_conn.execute("UPDATE bookmarks SET label='Review this'")
+
+        wrong_snapshot = [
+            tuple(row)
+            for row in match_conn.execute(
+                "SELECT id, mistake, concept, attempts, last_reviewed, mastery FROM wrong_questions ORDER BY id"
+            ).fetchall()
+        ]
+        match_conn.execute("UPDATE wrong_questions SET mastery='local-learning'")
+        match_conn.commit()
+        wrong_learning = revision()
+        match_conn.execute("UPDATE wrong_questions SET mastery='local-mastered'")
+        match_conn.commit()
+        wrong_mastered = revision()
+        check("wrong_question_mutable_value_changes_revision", wrong_learning != wrong_mastered, failures)
+        match_conn.executemany(
+            "UPDATE wrong_questions SET mistake=?, concept=?, attempts=?, last_reviewed=?, mastery=? WHERE id=?",
+            [(mistake, concept, attempts, reviewed, mastery, row_id) for row_id, mistake, concept, attempts, reviewed, mastery in wrong_snapshot],
+        )
+
+        attempt = match_conn.execute(
+            "SELECT id, file_id, prompt, answer_text, result, created_at FROM attempts ORDER BY id LIMIT 1"
+        ).fetchone()
+        match_conn.commit()
+        attempts_full = revision()
+        match_conn.execute("DELETE FROM attempts WHERE id=?", (attempt["id"],))
+        match_conn.commit()
+        attempts_reduced = revision()
+        check("duplicate_attempt_multiplicity_changes_revision", attempts_full != attempts_reduced, failures)
+        match_conn.execute(
+            "INSERT INTO attempts(id, file_id, prompt, answer_text, result, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            tuple(attempt),
+        )
+
+        match_conn.execute("UPDATE academic_change_event_state SET seen_at='2026-04-01T00:00:00+00:00'")
+        match_conn.commit()
+        seen_revision = revision()
+        match_conn.execute("UPDATE academic_change_event_state SET seen_at=NULL")
+        match_conn.commit()
+        unseen_revision = revision()
+        check("whats_new_seen_state_changes_revision", seen_revision != unseen_revision, failures)
+        match_conn.execute("UPDATE academic_change_event_state SET seen_at='2026-04-01T00:00:00+00:00'")
+
+        material_version = match_conn.execute(
+            """
+            SELECT mv.id, mv.sha256, mv.byte_size
+            FROM material_versions mv JOIN materials m ON m.current_version_id=mv.id
+            WHERE m.stable_id='material_syn_local'
+            """
+        ).fetchone()
+        match_conn.commit()
+        match_conn.execute("UPDATE material_versions SET sha256=? WHERE id=?", ("b" * 64, material_version["id"]))
+        match_conn.commit()
+        material_b = revision()
+        match_conn.execute("UPDATE material_versions SET sha256=? WHERE id=?", ("c" * 64, material_version["id"]))
+        match_conn.commit()
+        material_c = revision()
+        check("current_material_content_identity_changes_revision", material_b != material_c, failures)
+        match_conn.execute(
+            "UPDATE material_versions SET sha256=?, byte_size=? WHERE id=?",
+            (material_version["sha256"], material_version["byte_size"], material_version["id"]),
+        )
+        match_conn.commit()
+
+        source_file = match_root / "library/SYN9200 - Synthetic Course/Module Alpha/Lecture/synthetic-guide.txt"
+        source_bytes = source_file.read_bytes()
+        source_file.write_bytes(b"B" * len(source_bytes))
+        source_b = revision()
+        source_file.write_bytes(b"C" * len(source_bytes))
+        source_c = revision()
+        check("explicit_source_candidate_bytes_change_revision", source_b != source_c, failures)
+        source_file.write_bytes(source_bytes)
+        match_conn.commit()
+
+        replacement_archive = mutate_dataset(
+            source,
+            archive,
+            "data/terms.json",
+            lambda payload: payload["records"][0].update({"name": "Replacement archive"}),
+        )
+        original_snapshot_reader = match.read_backup_archive_snapshot
+
+        def replace_after_snapshot(path: Path) -> bytes:
+            snapshot = original_snapshot_reader(path)
+            Path(path).write_bytes(replacement_archive.read_bytes())
+            return snapshot
+
+        match.read_backup_archive_snapshot = replace_after_snapshot
+        staged.write_bytes(archive.read_bytes())
+        try:
+            snapshot_a_plan = match.preview_staged_restore(match_restore_id)
+        finally:
+            match.read_backup_archive_snapshot = original_snapshot_reader
+        snapshot_b_plan = match.preview_staged_restore(match_restore_id)
+        check(
+            "archive_replacement_uses_one_validated_snapshot",
+            snapshot_a_plan["plan_revision"] == plan["plan_revision"]
+            and snapshot_b_plan["plan_revision"] != snapshot_a_plan["plan_revision"],
+            failures,
+        )
+
+        malformed_replacement = base / "post-snapshot-malformed.zip"
+        malformed_replacement.write_bytes(b"not-a-zip")
+
+        def replace_with_malformed_after_snapshot(path: Path) -> bytes:
+            snapshot = original_snapshot_reader(path)
+            Path(path).write_bytes(malformed_replacement.read_bytes())
+            return snapshot
+
+        match.read_backup_archive_snapshot = replace_with_malformed_after_snapshot
+        staged.write_bytes(archive.read_bytes())
+        try:
+            snapshot_before_malformed = match.preview_staged_restore(match_restore_id)
+        finally:
+            match.read_backup_archive_snapshot = original_snapshot_reader
+        malformed_next_rejected = False
+        try:
+            match.preview_staged_restore(match_restore_id)
+        except ValueError:
+            malformed_next_rejected = True
+        check(
+            "malformed_replacement_cannot_cross_validation_boundary",
+            snapshot_before_malformed["plan_revision"] == plan["plan_revision"] and malformed_next_rejected,
+            failures,
+        )
+        staged.write_bytes(archive.read_bytes())
 
         empty = load_server(empty_root)
         empty_conn = empty.connect_db()
@@ -306,7 +480,6 @@ def main() -> int:
         check("material_references_not_silently_skipped", any(item["classification"] in {"RELINK_REQUIRED", "UNRESOLVED_REFERENCE"} for item in empty_actions if item["dataset"] in {"material_overlays", "user_records", "stars"}), failures)
         check("missing_academic_event_not_manufactured", any(item["dataset"] == "whats_new_state" and item["classification"] == "UNSUPPORTED_BY_V1" for item in empty_actions), failures)
 
-        source_file = match_root / "library/SYN9200 - Synthetic Course/Module Alpha/Lecture/synthetic-guide.txt"
         source_file.unlink()
         missing_plan = match.preview_staged_restore(match_restore_id)
         check("existing_material_missing_file_still_requires_relink", any(item["dataset"] == "local_sources" and item["classification"] == "RELINK_REQUIRED" for item in plan_actions(missing_plan)), failures)
@@ -401,6 +574,17 @@ def main() -> int:
                 assert_preview_rejected_before_planning(match, invalid_archive, f"{index:032x}"),
                 failures,
             )
+
+        staged_symlink = match.RESTORE_INBOX_DIR / f"{'8' * 32}.zip"
+        staged_symlink.symlink_to(archive)
+        symlink_rejected = False
+        try:
+            match.preview_staged_restore("8" * 32)
+        except (FileNotFoundError, PermissionError, ValueError):
+            symlink_rejected = True
+        finally:
+            staged_symlink.unlink(missing_ok=True)
+        check("staged_archive_symlink_rejected", symlink_rejected, failures)
 
         old_revision = plan["plan_revision"]
         staged.write_bytes(b"tampered")
