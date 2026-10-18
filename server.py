@@ -4821,8 +4821,6 @@ def build_restore_plan(
         "archive_entries": {
             member: manifest["entries"][member]["sha256"] for member in sorted(manifest["entries"])
         },
-        "current": current,
-        "material_state": current_materials,
         "source_inspection": source_inspection,
         "actions": actions,
     }

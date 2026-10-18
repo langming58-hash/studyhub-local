@@ -270,6 +270,9 @@ def main() -> int:
         reverse_conn = seed_state(reverse, reverse_root, 900)
         reverse_conn.execute("UPDATE courses SET metadata_locked=1 WHERE stable_id='course_syn_remote'")
         reverse_conn.execute("UPDATE weeks SET origin='managed' WHERE stable_id='unit_syn_remote'")
+        reverse_conn.execute("UPDATE terms SET created_at='2030-01-01T00:00:00+00:00', updated_at='2030-01-02T00:00:00+00:00'")
+        reverse_conn.execute("UPDATE courses SET created_at='2030-01-03T00:00:00+00:00', updated_at='2030-01-04T00:00:00+00:00'")
+        reverse_conn.execute("UPDATE weeks SET created_at='2030-01-05T00:00:00+00:00', updated_at='2030-01-06T00:00:00+00:00'")
         reverse_conn.commit()
         reverse_id = "b" * 32
         stage(reverse, archive, reverse_id)
