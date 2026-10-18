@@ -4,9 +4,10 @@ Status: **AUTHORITATIVE `studyhub-backup-v1` EXPORT CONTRACT**.
 
 StudyHub's implemented backup surface exports a privacy-safe, portable
 projection of durable `USER_OWNED` state. It is not a database dump, an
-academic-file archive, or a complete backup/restore system. Restore, relinking,
-conflict resolution, scheduling, cloud backup, and encryption are not
-implemented.
+academic-file archive, or a complete backup/restore system. StudyHub can now
+select and privately stage an archive, validate it, and produce a deterministic
+zero-mutation restore preview. Restore apply, conflict resolution, automatic
+relinking, scheduling, cloud backup, and encryption are not implemented.
 
 ## Format Identity And Versioning
 
@@ -180,10 +181,41 @@ Both `data/ai_history.json` and `data/connector_user_state.json` must remain
 empty in v1; non-empty records are rejected even if their JSON shape otherwise
 resembles an older draft.
 
-## Forward Restore Contract
+## Read-Only Restore Preview
 
-A later restore PR must remain separate and must implement Validate -> Preview
--> Explain -> Relink/Conflict Decisions -> Apply -> Undo or rollback recovery.
-It must not infer ownership from table placement, overwrite originals, create
-remote facts, or silently discard unresolved references. Until that focused
-work exists, StudyHub supports versioned export and inspection only.
+The desktop app selects one archive through a native picker and copies it into
+the active profile's private `restore-inbox` using a generated opaque ID. The
+localhost API accepts only that ID, never an arbitrary filesystem path. Failed
+staging removes controlled temporary files and never modifies or deletes the
+user-selected original.
+
+Preview runs the validator above before reconciliation, opens the current
+database through the dedicated read-only/query-only backup connection, and
+does not call initialization, migration, scanning, Canvas, OpenAI, or the
+CredentialStore. It builds an ephemeral versioned `RestorePlan` with explicit
+`CREATE`, `MATCH`, `UPDATE_USER_STATE`, `NOOP`, `UNRESOLVED_REFERENCE`,
+`CONFLICT`, `RELINK_REQUIRED`, and `UNSUPPORTED_BY_V1` classifications. The
+plan revision binds the validated member hashes, plan version, and relevant
+portable current state while excluding row IDs, paths, time, and restore
+session identity.
+
+Terms, courses, and managed learning units reconcile by stable ID only. Local
+source descriptors inspect only their explicit StudyLibrary-relative candidate;
+there is no whole-library scan or basename guessing. Missing or externally
+referenced originals require later explicit relinking. Material references are
+never satisfied with fabricated placeholder Materials. Notes, attempts, and
+study sessions preserve multiplicity. Differing wrong-question progress is a
+conflict, and What's New acknowledgement state can reattach only to an existing
+identical academic event. Remote facts, AI history, and Canvas connection state
+remain excluded.
+
+The Settings UI presents the complete grouped preview and omissions, but no
+Apply control. Discard removes only the private staged copy.
+
+## Forward Apply Contract
+
+A later focused PR must implement Relink/Conflict Decisions -> Apply -> Undo or
+rollback recovery. Apply must revalidate the staged archive, recompute the plan,
+and require the caller's expected `plan_revision` so changed target or archive
+state fails closed. It must not infer ownership from table placement, overwrite
+originals, create remote facts, or silently discard unresolved references.

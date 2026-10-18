@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-choose-backup-archive"
+description = "Enables the choose_backup_archive command without any pre-configured scope."
+commands.allow = ["choose_backup_archive"]
+
+[[permission]]
+identifier = "deny-choose-backup-archive"
+description = "Denies the choose_backup_archive command without any pre-configured scope."
+commands.deny = ["choose_backup_archive"]

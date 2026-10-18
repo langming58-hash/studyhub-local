@@ -351,6 +351,12 @@
           "markdownDescription": "Enables the canvas_connection_status command without any pre-configured scope."
         },
         {
+          "description": "Enables the choose_backup_archive command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-choose-backup-archive",
+          "markdownDescription": "Enables the choose_backup_archive command without any pre-configured scope."
+        },
+        {
           "description": "Enables the choose_study_files command without any pre-configured scope.",
           "type": "string",
           "const": "allow-choose-study-files",
@@ -397,6 +403,12 @@
           "type": "string",
           "const": "deny-canvas-connection-status",
           "markdownDescription": "Denies the canvas_connection_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the choose_backup_archive command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-choose-backup-archive",
+          "markdownDescription": "Denies the choose_backup_archive command without any pre-configured scope."
         },
         {
           "description": "Denies the choose_study_files command without any pre-configured scope.",

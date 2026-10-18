@@ -525,6 +525,110 @@ menu {
   border-bottom: 0;
 }
 
+.restore-section {
+  grid-column: 1 / -1;
+}
+
+.restore-preview {
+  display: grid;
+  gap: 14px;
+}
+
+.restore-preview-head,
+.restore-summary,
+.restore-group summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.restore-preview-head {
+  align-items: flex-start;
+}
+
+.restore-preview-head h3 {
+  margin: 2px 0 4px;
+  font-size: 18px;
+}
+
+.restore-status {
+  min-height: 24px;
+  color: var(--muted);
+}
+
+.restore-summary {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.restore-summary span {
+  min-width: 140px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+
+.restore-groups {
+  display: grid;
+  gap: 8px;
+}
+
+.restore-group {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.restore-group summary {
+  min-height: 44px;
+  padding: 9px 12px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.restore-group summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.restore-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0 12px 10px;
+}
+
+.restore-group li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+
+.restore-group li small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+}
+
+.restore-classification {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: right;
+}
+
+.restore-omissions {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.restore-omissions p {
+  margin: 0;
+}
+
 .file-card {
   padding: 12px;
   display: grid;
@@ -1748,5 +1852,23 @@ label {
     align-items: flex-start;
     flex-direction: column;
     gap: 2px;
+  }
+
+  .restore-preview-head,
+  .restore-summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .restore-summary span {
+    min-width: 0;
+  }
+
+  .restore-group li {
+    grid-template-columns: 1fr;
+  }
+
+  .restore-classification {
+    text-align: left;
   }
 }

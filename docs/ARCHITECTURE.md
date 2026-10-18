@@ -146,9 +146,19 @@ and atomically publishes it under the active profile's `exports/` directory. Ori
 Canvas-retained files, remote/provider facts, derived content, credentials,
 absolute paths, and AI history without durable portable identities are
 excluded. The browser route accepts no destination
-path and returns safe metadata only. Restore, relinking, conflict resolution,
-scheduled/cloud backup, and original-file backup are not implemented. The
-canonical contract is [Backup Export Format](BACKUP_FORMAT.md).
+path and returns safe metadata only.
+
+The desktop restore-preview boundary uses a native single-file picker to copy
+an archive into the active profile's private `restore-inbox`; browser and HTTP
+surfaces receive only an opaque staging ID. Python reuses the authoritative
+archive validator, reads the current database through the query-only backup
+connection, and constructs an ephemeral deterministic `RestorePlan`. Preview
+does not initialize, migrate, scan, ingest, relink, write user state, or contact
+network/credential services. It explains safe matches, candidate user-state
+updates, conflicts, missing-source relinks, and unsupported v1 omissions.
+Restore apply, automatic relinking, overwrite decisions, scheduled/cloud
+backup, and original-file backup are not implemented. The canonical contract
+is [Backup Export Format](BACKUP_FORMAT.md).
 
 Not implemented yet: production Canvas OAuth, remote Term mapping, remote
 deletion semantics, notifications, automatic/background sync, SourceAnchor, Evidence,
