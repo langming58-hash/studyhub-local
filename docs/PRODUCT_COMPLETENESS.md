@@ -73,7 +73,8 @@ clearly synthetic Demo fixtures.
 | Data | Clear recreatable cache | IMPLEMENTED | Current workspace only |
 | Data | Reset StudyHub-owned state only | IMPLEMENTED | Confirmation required |
 | Data | Versioned user-owned metadata export | IMPLEMENTED | Canonical JSON ZIP; privacy-safe and validated |
-| Data | Restore/relink/conflict resolution | DESIGNED | Separate reviewed PR; not hidden in export |
+| Data | Restore validate/preview/explain | IMPLEMENTED | Deterministic, zero-mutation, native trusted staging |
+| Data | Restore apply/relink decisions | DESIGNED | Separate reviewed PR; no Apply control yet |
 | Search | Local metadata and extracted-content search | EXISTS | Preserve |
 | Preview | PDF, Office fallback, text/code preview | EXISTS | Preserve |
 | Notes | File notes with persistence | EXISTS | Preserve |
@@ -155,12 +156,24 @@ uses one read snapshot, validates before atomic publication, and does not
 mutate the database or require network access. The exact contract is
 [Backup Export Format](BACKUP_FORMAT.md).
 
-Restore is not implemented. A future restore must first validate the archive
-version and schema, show a dry-run
-summary, ask the user to relink unavailable source roots, and then import in a
-single database transaction after making a local rollback copy. Restore never
-overwrites or moves an original source file. Stable IDs are used to reconcile
-records; conflicts require an explicit keep/replace/duplicate decision.
+Read-only restore validation and preview are implemented. The desktop app uses
+a native picker and profile-private staging copy, then reuses the strict v1
+validator on one bounded immutable archive snapshot and a query-only database
+connection to produce a deterministic grouped plan. Stable IDs drive entity
+reconciliation; explicitly referenced
+local sources are checked without a whole-library scan; missing sources,
+unresolved Material references, differing user progress, and absent academic
+events remain visible instead of being skipped or fabricated. Preview makes no
+database changes and does not contact Canvas, OpenAI, or CredentialStore.
+The plan revision privately binds relevant current semantic values and
+duplicate-capable record multiplicity, without including ignored timestamps,
+SQLite row IDs, runtime roots, local paths, or those private values in the API.
+
+Restore apply is not implemented. A future focused PR must revalidate and
+recompute the plan, require the expected plan revision, collect explicit
+relink/conflict decisions, and import transactionally with rollback recovery.
+It must never overwrite or move an original source file or default to
+backup-wins.
 
 ## P0 Verification
 

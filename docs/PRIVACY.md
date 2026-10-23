@@ -180,7 +180,18 @@ another runtime profile. Recognizable secrets and local paths embedded in
 portable user text are redacted as defense in depth. See
 [Backup Export Format](BACKUP_FORMAT.md) for the exact v1 contract and known
 omissions. AI history is explicitly excluded until it has honest durable
-portable identities. Restore is not implemented.
+portable identities.
+
+Restore preview is implemented as a read-only comparison boundary. Tauri
+stages a user-selected backup copy under the active profile and gives the
+frontend an opaque ID; the localhost API cannot accept an arbitrary path. The
+staged copy is not statically served, exposed through MCP, logged, or bundled.
+Preview revalidates the archive, reads the current database query-only, and may
+hash only the explicitly referenced StudyLibrary-relative candidate needed for
+comparison. It does not scan the library, contact Canvas/OpenAI/CredentialStore,
+or mutate persistent user state. Safe preview responses omit absolute paths,
+raw provider IDs, database IDs, and hidden technical hashes. Restore apply and
+automatic relinking are not implemented.
 
 ## Public Data Boundary
 

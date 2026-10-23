@@ -3,6 +3,7 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "choose_study_folder",
             "choose_study_files",
+            "choose_backup_archive",
             "canvas_connection_status",
             "configure_canvas_development_connection",
             "remove_canvas_connection",

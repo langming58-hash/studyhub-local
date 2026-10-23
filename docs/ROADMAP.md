@@ -59,8 +59,9 @@ enhancement and is not a V1 completion blocker.
   when real use demonstrates a need; acknowledgement remains explicit
 - refine search ranking, filtering, and source navigation
 - complete human keyboard and VoiceOver validation
-- extend the implemented privacy-safe v1 export into a separately reviewed
-  restore/relink/conflict workflow
+- extend the implemented privacy-safe v1 export and zero-mutation restore
+  preview into separately reviewed relink decisions, conflict resolution,
+  stale-plan-protected apply, and rollback recovery
 - improve signed/notarized desktop distribution and dependency handling
 
 Each item requires a focused design and migration PR. This roadmap does not

@@ -360,9 +360,10 @@ def main() -> int:
             "development_external_source_positive_control": development_external["positive_library"] is True
             and development_external["positive_reference"] is True
             and development_external["positive_import"] is True,
-            "native_demo_picker_protection_remains_covered": rust.count("allows_external_sources()") == 2
+            "native_demo_picker_protection_remains_covered": rust.count("allows_external_sources()") >= 3
             and "Demo/Test mode cannot select external study folders." in rust
-            and "Demo/Test mode cannot select external study files." in rust,
+            and "Demo/Test mode cannot select external study files." in rust
+            and "Demo/Test mode cannot select external backup archives." in rust,
         }
 
     for name, passed in checks.items():

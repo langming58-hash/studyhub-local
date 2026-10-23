@@ -1,15 +1,14 @@
 use std::env;
 use std::ffi::OsString;
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
-#[cfg(debug_assertions)]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(not(debug_assertions))]
 use tauri::path::BaseDirectory;
@@ -33,6 +32,8 @@ const FALLBACK_URL: &str = "tauri://localhost/index.html";
 const PRODUCTION_IDENTIFIER: &str = "io.studyhublocal.desktop";
 const DEVELOPMENT_IDENTIFIER: &str = "io.studyhublocal.desktop.dev";
 const DEMO_IDENTIFIER: &str = "io.studyhublocal.desktop.demo";
+const MAX_BACKUP_ARCHIVE_BYTES: u64 = 20 * 1024 * 1024;
+static RESTORE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RuntimeProfile {
@@ -453,6 +454,105 @@ async fn choose_study_files(
     .map_err(|_| "StudyHub could not open the file picker.".to_string())
 }
 
+fn next_restore_id() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let counter = RESTORE_ID_COUNTER.fetch_add(1, Ordering::SeqCst) as u128;
+    let process = std::process::id() as u128;
+    format!("{:032x}", timestamp ^ (process << 64) ^ counter)
+}
+
+fn stage_backup_archive(
+    source: &Path,
+    data_dir: &Path,
+    profile: RuntimeProfile,
+) -> Result<String, String> {
+    if !profile.allows_external_sources() {
+        return Err("Demo/Test mode cannot select external backup archives.".to_string());
+    }
+    let metadata = std::fs::symlink_metadata(source)
+        .map_err(|_| "StudyHub could not read the selected backup archive.".to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("Select one regular backup ZIP file.".to_string());
+    }
+    if metadata.len() == 0 || metadata.len() > MAX_BACKUP_ARCHIVE_BYTES {
+        return Err("The selected backup archive is empty or too large.".to_string());
+    }
+
+    let restore_dir = data_dir.join("restore-inbox");
+    std::fs::create_dir_all(&restore_dir)
+        .map_err(|_| "StudyHub could not prepare private restore staging.".to_string())?;
+    let restore_id = next_restore_id();
+    let temporary = restore_dir.join(format!(".{restore_id}.tmp"));
+    let published = restore_dir.join(format!("{restore_id}.zip"));
+    let result = (|| -> Result<(), String> {
+        let mut input = File::open(source)
+            .map_err(|_| "StudyHub could not read the selected backup archive.".to_string())?;
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|_| "StudyHub could not stage the selected backup archive.".to_string())?;
+        let mut copied = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let count = input
+                .read(&mut buffer)
+                .map_err(|_| "StudyHub could not read the selected backup archive.".to_string())?;
+            if count == 0 {
+                break;
+            }
+            copied += count as u64;
+            if copied > MAX_BACKUP_ARCHIVE_BYTES {
+                return Err("The selected backup archive is too large.".to_string());
+            }
+            output
+                .write_all(&buffer[..count])
+                .map_err(|_| "StudyHub could not stage the selected backup archive.".to_string())?;
+        }
+        if copied != metadata.len() {
+            return Err("The selected backup archive changed while it was copied.".to_string());
+        }
+        output
+            .sync_all()
+            .map_err(|_| "StudyHub could not finish private restore staging.".to_string())?;
+        drop(output);
+        std::fs::rename(&temporary, &published)
+            .map_err(|_| "StudyHub could not publish private restore staging.".to_string())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+        let _ = std::fs::remove_file(&published);
+    }
+    result.map(|()| restore_id)
+}
+
+#[tauri::command]
+async fn choose_backup_archive(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BackendState>,
+) -> Result<Option<String>, String> {
+    if !state.config.profile.allows_external_sources() {
+        return Err("Demo/Test mode cannot select external backup archives.".to_string());
+    }
+    let data_dir = state.config.data_dir.clone();
+    let profile = state.config.profile;
+    tauri::async_runtime::spawn_blocking(move || {
+        let selected = app
+            .dialog()
+            .file()
+            .add_filter("StudyHub backup", &["zip"])
+            .blocking_pick_file();
+        selected
+            .map(|path| stage_backup_archive(Path::new(&path.to_string()), &data_dir, profile))
+            .transpose()
+    })
+    .await
+    .map_err(|_| "StudyHub could not open the backup picker.".to_string())?
+}
+
 #[tauri::command]
 async fn restart_backend(
     app: tauri::AppHandle,
@@ -602,6 +702,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             choose_study_folder,
             choose_study_files,
+            choose_backup_archive,
             canvas_connection_status,
             configure_canvas_development_connection,
             remove_canvas_connection,
@@ -703,5 +804,46 @@ mod tests {
             resolve_runtime_profile(PRODUCTION_IDENTIFIER, true, true),
             Ok(RuntimeProfile::DemoTest)
         );
+    }
+
+    #[test]
+    fn native_backup_staging_preserves_original_and_uses_profile_inbox() {
+        let root = env::temp_dir().join(format!("studyhub-restore-stage-{}", next_restore_id()));
+        let source = root.join("synthetic-backup.zip");
+        let data_dir = root.join("profile-data");
+        std::fs::create_dir_all(&root).expect("create synthetic staging root");
+        let original = b"PK\x05\x06synthetic-backup";
+        std::fs::write(&source, original).expect("write synthetic archive");
+        let restore_id = stage_backup_archive(&source, &data_dir, RuntimeProfile::Development)
+            .expect("stage synthetic archive");
+        assert_eq!(restore_id.len(), 32);
+        assert!(restore_id.chars().all(|value| value.is_ascii_hexdigit()));
+        assert_eq!(std::fs::read(&source).expect("read original"), original);
+        assert_eq!(
+            std::fs::read(
+                data_dir
+                    .join("restore-inbox")
+                    .join(format!("{restore_id}.zip"))
+            )
+            .expect("read staged copy"),
+            original
+        );
+        std::fs::remove_dir_all(root).expect("remove synthetic staging root");
+    }
+
+    #[test]
+    fn demo_test_backup_staging_is_denied_before_copy() {
+        let root = env::temp_dir().join(format!("studyhub-restore-deny-{}", next_restore_id()));
+        let source = root.join("synthetic-backup.zip");
+        std::fs::create_dir_all(&root).expect("create synthetic deny root");
+        std::fs::write(&source, b"PK\x05\x06synthetic-backup").expect("write synthetic archive");
+        assert!(stage_backup_archive(
+            &source,
+            &root.join("profile-data"),
+            RuntimeProfile::DemoTest
+        )
+        .is_err());
+        assert!(!root.join("profile-data/restore-inbox").exists());
+        std::fs::remove_dir_all(root).expect("remove synthetic deny root");
     }
 }

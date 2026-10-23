@@ -7,6 +7,7 @@ import argparse
 import csv
 import hashlib
 import html
+import io
 import json
 import mimetypes
 import os
@@ -18,6 +19,7 @@ import signal
 import socket
 import sqlite3
 import ssl
+import stat
 import subprocess
 import sys
 import tempfile
@@ -95,6 +97,7 @@ def configured_path(env_name: str, fallback: Path) -> Path:
 RUNTIME_DIR = configured_path("STUDYHUB_RUNTIME_DIR", APP_ROOT)
 DATA_DIR = configured_path("STUDYHUB_DATA_DIR", RUNTIME_DIR / "data")
 EXPORT_DIR = DATA_DIR / "exports"
+RESTORE_INBOX_DIR = DATA_DIR / "restore-inbox"
 CACHE_DIR = configured_path("STUDYHUB_CACHE_DIR", RUNTIME_DIR / "cache")
 TEXT_CACHE_DIR = CACHE_DIR / "text"
 TEXT_EXTRACTION_VERSION = "extract-v2-office-paragraphs"
@@ -212,6 +215,8 @@ BACKUP_DATA_MEMBERS = (
 )
 BACKUP_MEMBERS = ("manifest.json", *BACKUP_DATA_MEMBERS)
 BACKUP_STABLE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+RESTORE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+RESTORE_PLAN_VERSION = 1
 BACKUP_REQUIRED_SCHEMA: dict[str, set[str]] = {
     "schema_migrations": {"version", "name", "applied_at"},
     "terms": {"id", "stable_id", "name", "archived", "sort_order", "created_at", "updated_at"},
@@ -4196,11 +4201,42 @@ def validate_backup_relationships(parsed: dict[str, list[dict[str, Any]]]) -> No
                 raise ValueError("Backup record references an unknown learning unit")
 
 
-def validate_backup_archive(path: Path) -> dict[str, Any]:
+def read_backup_archive_snapshot(path: Path) -> bytes:
+    """Read one bounded regular-file snapshot for all validation and parsing."""
     archive_path = Path(path)
-    if not archive_path.is_file() or archive_path.stat().st_size > BACKUP_MAX_ARCHIVE_BYTES:
-        raise ValueError("Backup archive is missing or too large")
-    with zipfile.ZipFile(archive_path, "r") as archive:
+    try:
+        if archive_path.is_symlink():
+            raise ValueError("Backup archive must be a regular file")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(archive_path, flags)
+    except (FileNotFoundError, NotADirectoryError, OSError) as exc:
+        raise ValueError("Backup archive is missing or invalid") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > BACKUP_MAX_ARCHIVE_BYTES:
+            raise ValueError("Backup archive is missing or too large")
+        with os.fdopen(descriptor, "rb", closefd=True) as handle:
+            descriptor = -1
+            snapshot = handle.read(BACKUP_MAX_ARCHIVE_BYTES + 1)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if len(snapshot) > BACKUP_MAX_ARCHIVE_BYTES:
+        raise ValueError("Backup archive is too large")
+    return snapshot
+
+
+def validate_backup_snapshot(
+    snapshot: bytes,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    """Validate and parse the exact immutable archive bytes supplied."""
+    if len(snapshot) > BACKUP_MAX_ARCHIVE_BYTES:
+        raise ValueError("Backup archive is too large")
+    try:
+        archive_context = zipfile.ZipFile(io.BytesIO(snapshot), "r")
+    except zipfile.BadZipFile as exc:
+        raise ValueError("Backup archive is invalid") from exc
+    with archive_context as archive:
         infos = archive.infolist()
         names = [info.filename for info in infos]
         if len(infos) > BACKUP_MAX_ENTRIES or len(names) != len(set(names)):
@@ -4286,13 +4322,19 @@ def validate_backup_archive(path: Path) -> dict[str, Any]:
         validate_backup_relationships(parsed_datasets)
         if total_records != manifest.get("total_records"):
             raise ValueError("Backup total record count mismatch")
-        return {
+        validation = {
             "format": BACKUP_FORMAT_NAME,
             "format_version": BACKUP_FORMAT_VERSION,
             "created_at": str(manifest.get("created_at") or ""),
             "record_counts": {member: int(entries[member]["record_count"]) for member in BACKUP_DATA_MEMBERS},
             "total_records": total_records,
         }
+        return validation, manifest, parsed_datasets
+
+
+def validate_backup_archive(path: Path) -> dict[str, Any]:
+    validation, _manifest, _datasets = validate_backup_snapshot(read_backup_archive_snapshot(path))
+    return validation
 
 
 def export_user_owned_backup(
@@ -4373,6 +4415,582 @@ def export_current_profile_backup(*, created_at: str | None = None) -> dict[str,
         return export_user_owned_backup(conn, created_at=created_at)
     finally:
         conn.close()
+
+
+RESTORE_CLASSIFICATIONS = (
+    "CREATE",
+    "MATCH",
+    "UPDATE_USER_STATE",
+    "NOOP",
+    "UNRESOLVED_REFERENCE",
+    "CONFLICT",
+    "RELINK_REQUIRED",
+    "UNSUPPORTED_BY_V1",
+)
+
+
+def normalize_restore_id(value: Any) -> str:
+    restore_id = str(value or "")
+    if not RESTORE_ID_RE.fullmatch(restore_id):
+        raise ValueError("Invalid restore staging ID")
+    return restore_id
+
+
+def staged_restore_path(restore_id: Any) -> Path:
+    normalized = normalize_restore_id(restore_id)
+    root = RESTORE_INBOX_DIR.resolve()
+    candidate = (root / f"{normalized}.zip").resolve(strict=False)
+    if candidate.parent != root:
+        raise PermissionError("Restore staging path denied")
+    return candidate
+
+
+def read_validated_backup_archive(path: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    try:
+        snapshot = read_backup_archive_snapshot(path)
+        validation, manifest, datasets = validate_backup_snapshot(snapshot)
+    except (zipfile.BadZipFile, KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Backup archive is invalid") from exc
+    return validation, manifest, datasets
+
+
+def hash_explicit_restore_candidate(path: Path, expected_size: int) -> str | None:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return None
+    if path.is_symlink() or not path.is_file() or expected_size < 0 or metadata.st_size != expected_size:
+        return ""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            block = handle.read(1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+    if path.lstat().st_size != metadata.st_size:
+        return ""
+    return digest.hexdigest()
+
+
+def restore_action(
+    dataset: str,
+    record: dict[str, Any],
+    classification: str,
+    *,
+    label: str,
+    differing_fields: list[str] | None = None,
+    reason: str = "",
+) -> dict[str, Any]:
+    if classification not in RESTORE_CLASSIFICATIONS:
+        raise ValueError("Unknown restore action classification")
+    action = {
+        "dataset": dataset,
+        "stable_id": str(record.get("stable_id") or ""),
+        "classification": classification,
+        "label": safe_backup_text(label, limit=240),
+        "differing_fields": sorted(set(differing_fields or [])),
+        "reason": reason,
+    }
+    if not BACKUP_STABLE_ID_RE.fullmatch(action["stable_id"]):
+        raise ValueError("Restore action lacks a portable identity")
+    return action
+
+
+def restore_payload(record: dict[str, Any], *, exclude: set[str] | None = None) -> dict[str, Any]:
+    omitted = {"stable_id"} | (exclude or set())
+    return {key: value for key, value in record.items() if key not in omitted}
+
+
+def restore_differences(
+    backup: dict[str, Any],
+    current: dict[str, Any],
+    *,
+    fields: tuple[str, ...],
+) -> list[str]:
+    return [field for field in fields if backup.get(field) != current.get(field)]
+
+
+def restore_state_token(value: Any) -> str:
+    """Hash private reconciliation state without exposing its local values."""
+    return hashlib.sha256(canonical_backup_json(value)).hexdigest()
+
+
+def restore_record_state_token(
+    record: dict[str, Any] | None,
+    *,
+    fields: tuple[str, ...],
+) -> str:
+    if record is None:
+        return restore_state_token({"presence": "ABSENT"})
+    return restore_state_token(
+        {
+            "presence": "PRESENT",
+            "values": {field: record.get(field) for field in fields},
+        }
+    )
+
+
+def restore_multiset_state_token(
+    backup_records: list[dict[str, Any]],
+    current_records: list[dict[str, Any]],
+    *,
+    identity_fields: tuple[str, ...],
+) -> str:
+    relevant_identities = {
+        canonical_backup_json({field: record.get(field) for field in identity_fields})
+        for record in backup_records
+    }
+    relevant_current = [
+        restore_payload(record)
+        for record in current_records
+        if canonical_backup_json({field: record.get(field) for field in identity_fields})
+        in relevant_identities
+    ]
+    return restore_state_token(sorted(relevant_current, key=canonical_backup_json))
+
+
+def restore_multiset_actions(
+    dataset: str,
+    backup_records: list[dict[str, Any]],
+    current_records: list[dict[str, Any]],
+    *,
+    identity_fields: tuple[str, ...],
+    label: str,
+    allow_state_conflict: bool,
+) -> list[dict[str, Any]]:
+    current_groups: dict[bytes, list[dict[str, Any]]] = {}
+    for record in current_records:
+        key = canonical_backup_json({field: record.get(field) for field in identity_fields})
+        current_groups.setdefault(key, []).append(record)
+    for records in current_groups.values():
+        records.sort(key=lambda item: canonical_backup_json(restore_payload(item)))
+
+    actions: list[dict[str, Any]] = []
+    for record in sorted(backup_records, key=lambda item: str(item["stable_id"])):
+        key = canonical_backup_json({field: record.get(field) for field in identity_fields})
+        candidates = current_groups.get(key, [])
+        payload = canonical_backup_json(restore_payload(record))
+        exact_index = next(
+            (index for index, candidate in enumerate(candidates) if canonical_backup_json(restore_payload(candidate)) == payload),
+            None,
+        )
+        if exact_index is not None:
+            candidates.pop(exact_index)
+            actions.append(restore_action(dataset, record, "NOOP", label=label))
+        elif candidates and allow_state_conflict:
+            candidate = candidates.pop(0)
+            differing = sorted(
+                key
+                for key in set(restore_payload(record)) | set(restore_payload(candidate))
+                if restore_payload(record).get(key) != restore_payload(candidate).get(key)
+            )
+            actions.append(
+                restore_action(
+                    dataset,
+                    record,
+                    "CONFLICT",
+                    label=label,
+                    differing_fields=differing,
+                    reason="local_user_state_differs",
+                )
+            )
+        else:
+            actions.append(restore_action(dataset, record, "CREATE", label=label))
+    return actions
+
+
+def build_restore_plan(
+    conn: sqlite3.Connection,
+    manifest: dict[str, Any],
+    datasets: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    if conn.in_transaction:
+        raise ValueError("Restore preview requires a clean read snapshot")
+    actions: list[dict[str, Any]] = []
+    source_inspection: dict[str, dict[str, Any]] = {}
+    target_state_tokens: dict[str, str] = {}
+    conn.execute("BEGIN")
+    try:
+        current = project_user_owned_backup(conn)
+        material_rows = conn.execute(
+            """
+            SELECT m.stable_id, COALESCE(mv.sha256, f.sha256, f.hash, '') AS sha256,
+              COALESCE(mv.byte_size, f.file_size, f.size, 0) AS byte_size
+            FROM materials m
+            LEFT JOIN material_versions mv ON mv.id=m.current_version_id
+            LEFT JOIN files f ON f.id=m.legacy_file_id
+            WHERE m.stable_id!=''
+            ORDER BY m.stable_id
+            """
+        ).fetchall()
+        event_rows = conn.execute(
+            """
+            SELECT event.stable_id, state.seen_at
+            FROM academic_change_events event
+            LEFT JOIN academic_change_event_state state ON state.event_id=event.id
+            ORDER BY event.stable_id
+            """
+        ).fetchall()
+    finally:
+        conn.rollback()
+
+    current_by_member = {
+        member: {str(record["stable_id"]): record for record in records}
+        for member, records in current.items()
+    }
+    current_materials = {
+        str(row["stable_id"]): {"sha256": str(row["sha256"] or ""), "byte_size": int(row["byte_size"] or 0)}
+        for row in material_rows
+    }
+    materials_by_hash: dict[str, list[str]] = {}
+    for stable_id, item in current_materials.items():
+        if item["sha256"]:
+            materials_by_hash.setdefault(item["sha256"], []).append(stable_id)
+    material_resolution: dict[str, str] = {}
+    material_failure: dict[str, str] = {}
+
+    term_fields = ("name", "archived", "sort_order")
+    for record in datasets["data/terms.json"]:
+        local = current_by_member["data/terms.json"].get(str(record["stable_id"]))
+        target_state_tokens[f"term:{record['stable_id']}"] = restore_record_state_token(
+            local,
+            fields=term_fields,
+        )
+        if local is None:
+            classification, differing = "CREATE", []
+        else:
+            differing = restore_differences(record, local, fields=term_fields)
+            classification = "NOOP" if not differing else "CONFLICT"
+        actions.append(restore_action("terms", record, classification, label=str(record["name"]), differing_fields=differing))
+    resolvable_terms = set(current_by_member["data/terms.json"]) | {
+        str(record["stable_id"]) for record in datasets["data/terms.json"]
+    }
+
+    course_fields = (
+        "term_ref", "display_name", "course_code", "archived", "active", "sort_order", "metadata_locked", "course_kind",
+    )
+    resolvable_courses = set(current_by_member["data/courses.json"])
+    for record in datasets["data/courses.json"]:
+        stable_id = str(record["stable_id"])
+        local = current_by_member["data/courses.json"].get(stable_id)
+        target_state_tokens[f"course:{stable_id}"] = restore_record_state_token(
+            local,
+            fields=course_fields,
+        )
+        term_ref = record.get("term_ref")
+        if local is not None:
+            differing = restore_differences(record, local, fields=course_fields)
+            classification = "NOOP" if not differing else "CONFLICT"
+            resolvable_courses.add(stable_id)
+        elif record.get("course_kind") == "remote_overlay":
+            classification, differing = "UNRESOLVED_REFERENCE", []
+        elif term_ref is not None and term_ref not in resolvable_terms:
+            classification, differing = "UNRESOLVED_REFERENCE", []
+        else:
+            classification, differing = "CREATE", []
+            resolvable_courses.add(stable_id)
+        actions.append(
+            restore_action(
+                "courses",
+                record,
+                classification,
+                label=str(record["display_name"]),
+                differing_fields=differing,
+                reason="remote_overlay_requires_existing_course" if classification == "UNRESOLVED_REFERENCE" else "",
+            )
+        )
+
+    unit_fields = ("course_ref", "label", "number", "kind", "archived")
+    resolvable_units = set(current_by_member["data/learning_units.json"])
+    for record in datasets["data/learning_units.json"]:
+        stable_id = str(record["stable_id"])
+        local = current_by_member["data/learning_units.json"].get(stable_id)
+        target_state_tokens[f"learning_unit:{stable_id}"] = restore_record_state_token(
+            local,
+            fields=unit_fields,
+        )
+        if record.get("course_ref") not in resolvable_courses:
+            classification, differing = "UNRESOLVED_REFERENCE", []
+        elif local is None:
+            classification, differing = "CREATE", []
+            resolvable_units.add(stable_id)
+        else:
+            differing = restore_differences(record, local, fields=unit_fields)
+            classification = "NOOP" if not differing else "CONFLICT"
+        actions.append(
+            restore_action("learning_units", record, classification, label=str(record["label"]), differing_fields=differing)
+        )
+
+    study_root = DEFAULT_STUDY_ROOT.resolve()
+    for record in datasets["data/local_sources.json"]:
+        material_ref = str(record["material_ref"])
+        expected_sha = str(record.get("sha256") or "")
+        expected_size = int(record.get("byte_size") or 0)
+        location = record["location"]
+        label = str(record.get("display_name") or "Material")
+        current_material = current_materials.get(material_ref)
+        target_state_tokens[f"material:{material_ref}"] = restore_state_token(
+            {
+                "current": current_material or {"presence": "ABSENT"},
+                "same_content_candidates": sorted(materials_by_hash.get(expected_sha, [])),
+            }
+        )
+        observed_sha: str | None = ""
+        if location.get("kind") == "library_relative" and not bool(record.get("missing")):
+            relative = str(location.get("relative_path") or "")
+            candidate = (study_root / relative).resolve(strict=False)
+            if candidate != study_root and study_root not in candidate.parents:
+                raise ValueError("Backup source location is unsafe")
+            observed_sha = hash_explicit_restore_candidate(candidate, expected_size)
+            source_inspection[material_ref] = {
+                "exists": observed_sha is not None,
+                "matches": bool(observed_sha and observed_sha == expected_sha),
+                "sha256": observed_sha or "",
+            }
+        if location.get("kind") == "relink_required" or bool(record.get("missing")):
+            if current_material is not None:
+                material_resolution[material_ref] = material_ref
+            classification, reason = "RELINK_REQUIRED", "source_requires_explicit_relink"
+        elif observed_sha is None:
+            classification, reason = "RELINK_REQUIRED", "source_file_missing"
+        elif not observed_sha or observed_sha != expected_sha:
+            classification, reason = "CONFLICT", "source_content_differs"
+        elif current_material is not None:
+            material_resolution[material_ref] = material_ref
+            if expected_sha and current_material["sha256"] == expected_sha:
+                classification, reason = "NOOP", ""
+            elif expected_sha and current_material["sha256"] != expected_sha:
+                classification, reason = "CONFLICT", "material_content_differs"
+            else:
+                classification, reason = "MATCH", ""
+        elif len(materials_by_hash.get(expected_sha, [])) == 1:
+            material_resolution[material_ref] = materials_by_hash[expected_sha][0]
+            classification, reason = "MATCH", ""
+        else:
+            classification, reason = "RELINK_REQUIRED", "matching_file_is_not_registered"
+        if classification in {"CONFLICT", "RELINK_REQUIRED", "UNRESOLVED_REFERENCE"}:
+            material_failure[material_ref] = classification
+        actions.append(restore_action("local_sources", record, classification, label=label, reason=reason))
+
+    current_overlays = {
+        str(record["material_ref"]): record for record in current["data/material_overlays.json"]
+    }
+    overlay_fields = (
+        "course_ref", "learning_unit_ref", "display_name", "material_type", "category", "exercise_type", "inbox", "active", "removed_at",
+    )
+    for record in datasets["data/material_overlays.json"]:
+        backup_ref = str(record["material_ref"])
+        resolved_ref = material_resolution.get(backup_ref)
+        if not resolved_ref:
+            classification = material_failure.get(backup_ref, "UNRESOLVED_REFERENCE")
+            differing: list[str] = []
+            local = None
+        else:
+            local = current_overlays.get(resolved_ref)
+            normalized = dict(record)
+            normalized["material_ref"] = resolved_ref
+            if local is None:
+                classification, differing = "UPDATE_USER_STATE", []
+            else:
+                differing = restore_differences(normalized, local, fields=overlay_fields)
+                classification = "NOOP" if not differing else "CONFLICT"
+        target_state_tokens[f"material_overlay:{record['stable_id']}"] = restore_record_state_token(
+            local,
+            fields=overlay_fields,
+        )
+        actions.append(
+            restore_action(
+                "material_overlays",
+                record,
+                classification,
+                label=str(record["display_name"]),
+                differing_fields=differing,
+            )
+        )
+
+    def resolved_records(records: list[dict[str, Any]], reference_fields: tuple[str, ...]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        resolved: list[dict[str, Any]] = []
+        unresolved_actions: list[dict[str, Any]] = []
+        for record in records:
+            normalized = dict(record)
+            failure = ""
+            for field in reference_fields:
+                value = record.get(field)
+                if value is None:
+                    continue
+                mapped = material_resolution.get(str(value))
+                if mapped:
+                    normalized[field] = mapped
+                else:
+                    failure = material_failure.get(str(value), "UNRESOLVED_REFERENCE")
+            if failure:
+                unresolved_actions.append(restore_action("user_records", record, failure, label="Study record"))
+            else:
+                resolved.append(normalized)
+        return resolved, unresolved_actions
+
+    backup_notes, note_failures = resolved_records(datasets["data/notes.json"], ("target_ref",))
+    actions.extend(note_failures)
+    target_state_tokens["notes"] = restore_multiset_state_token(
+        backup_notes,
+        current["data/notes.json"],
+        identity_fields=("target_type", "target_ref", "body", "created_at"),
+    )
+    actions.extend(
+        restore_multiset_actions(
+            "notes",
+            backup_notes,
+            current["data/notes.json"],
+            identity_fields=("target_type", "target_ref", "body", "created_at"),
+            label="Note",
+            allow_state_conflict=True,
+        )
+    )
+
+    current_stars = {str(record["target_ref"]): record for record in current["data/stars.json"]}
+    for record in datasets["data/stars.json"]:
+        backup_ref = str(record["target_ref"])
+        resolved_ref = material_resolution.get(backup_ref)
+        if not resolved_ref:
+            classification = material_failure.get(backup_ref, "UNRESOLVED_REFERENCE")
+        else:
+            classification = "NOOP" if resolved_ref in current_stars else "CREATE"
+        target_state_tokens[f"star:{record['stable_id']}"] = restore_state_token(
+            {"present": bool(resolved_ref and resolved_ref in current_stars)}
+        )
+        actions.append(restore_action("stars", record, classification, label="Star"))
+
+    backup_study = datasets["data/study_records.json"]
+    current_study = current["data/study_records.json"]
+    for record_type, identity_fields, label, conflict in (
+        ("attempt", ("record_type", "material_ref", "answer_text", "result", "created_at"), "Attempt", False),
+        ("wrong_question_state", ("record_type", "course_ref", "material_ref", "question_ref", "created_at"), "Wrong question", True),
+        ("study_session", ("record_type", "course_ref", "started_at"), "Study session", True),
+    ):
+        selected = [record for record in backup_study if record["record_type"] == record_type]
+        refs = ("material_ref",) if record_type in {"attempt", "wrong_question_state"} else ()
+        normalized, failures = resolved_records(selected, refs)
+        actions.extend(failures)
+        target_state_tokens[f"study_records:{record_type}"] = restore_multiset_state_token(
+            normalized,
+            [record for record in current_study if record["record_type"] == record_type],
+            identity_fields=identity_fields,
+        )
+        actions.extend(
+            restore_multiset_actions(
+                "study_records",
+                normalized,
+                [record for record in current_study if record["record_type"] == record_type],
+                identity_fields=identity_fields,
+                label=label,
+                allow_state_conflict=conflict,
+            )
+        )
+
+    current_bookmarks = {
+        str(record["target_ref"]): record
+        for record in current_study
+        if record["record_type"] == "bookmark"
+    }
+    for record in [item for item in backup_study if item["record_type"] == "bookmark"]:
+        backup_ref = str(record["target_ref"])
+        resolved_ref = material_resolution.get(backup_ref)
+        if not resolved_ref:
+            classification, differing = material_failure.get(backup_ref, "UNRESOLVED_REFERENCE"), []
+        elif resolved_ref not in current_bookmarks:
+            classification, differing = "CREATE", []
+        else:
+            local = current_bookmarks[resolved_ref]
+            differing = restore_differences(record, local, fields=("label",))
+            classification = "NOOP" if not differing else "CONFLICT"
+        target_state_tokens[f"bookmark:{record['stable_id']}"] = restore_record_state_token(
+            current_bookmarks.get(resolved_ref) if resolved_ref else None,
+            fields=("label",),
+        )
+        actions.append(restore_action("study_records", record, classification, label="Bookmark", differing_fields=differing))
+
+    events = {str(row["stable_id"]): bool(row["seen_at"]) for row in event_rows}
+    for record in datasets["data/whats_new_state.json"]:
+        event_ref = str(record["event_stable_id"])
+        target_state_tokens[f"whats_new:{event_ref}"] = restore_state_token(
+            {"present": event_ref in events, "seen": events.get(event_ref)}
+        )
+        if event_ref not in events:
+            classification, reason = "UNSUPPORTED_BY_V1", "academic_event_not_present"
+        elif events[event_ref]:
+            classification, reason = "NOOP", ""
+        else:
+            classification, reason = "UPDATE_USER_STATE", ""
+        actions.append(restore_action("whats_new_state", record, classification, label="What's New acknowledgement", reason=reason))
+
+    actions.sort(key=lambda item: (item["dataset"], item["stable_id"]))
+    summary = {classification.lower(): 0 for classification in RESTORE_CLASSIFICATIONS}
+    for action in actions:
+        summary[action["classification"].lower()] += 1
+    summary["total"] = len(actions)
+    sections = [
+        {"dataset": dataset, "actions": [action for action in actions if action["dataset"] == dataset]}
+        for dataset in sorted({action["dataset"] for action in actions})
+    ]
+    revision_input = {
+        "plan_version": RESTORE_PLAN_VERSION,
+        "archive_entries": {
+            member: manifest["entries"][member]["sha256"] for member in sorted(manifest["entries"])
+        },
+        "source_inspection": source_inspection,
+        "relevant_target_state": target_state_tokens,
+        "actions": actions,
+    }
+    plan_revision = "restore_" + hashlib.sha256(canonical_backup_json(revision_input)).hexdigest()[:24]
+    return {
+        "plan_version": RESTORE_PLAN_VERSION,
+        "backup": {
+            "format": BACKUP_FORMAT_NAME,
+            "format_version": BACKUP_FORMAT_VERSION,
+            "created_at": str(manifest.get("created_at") or ""),
+            "total_records": int(manifest.get("total_records") or 0),
+            "record_counts": {
+                Path(member).stem: int(manifest["entries"][member]["record_count"])
+                for member in BACKUP_DATA_MEMBERS
+            },
+        },
+        "summary": summary,
+        "sections": sections,
+        "conflicts": [action for action in actions if action["classification"] == "CONFLICT"],
+        "unresolved": [
+            action
+            for action in actions
+            if action["classification"] in {"UNRESOLVED_REFERENCE", "RELINK_REQUIRED", "UNSUPPORTED_BY_V1"}
+        ],
+        "warnings": [
+            "original_files_not_included",
+            "ai_history_not_included",
+            "canvas_state_not_included",
+            "review_only_apply_unavailable",
+        ],
+        "plan_revision": plan_revision,
+    }
+
+
+def preview_staged_restore(restore_id: Any) -> dict[str, Any]:
+    path = staged_restore_path(restore_id)
+    if not path.is_file() or path.is_symlink():
+        raise FileNotFoundError("Staged backup not found")
+    _validation, manifest, datasets = read_validated_backup_archive(path)
+    conn = connect_backup_db_readonly()
+    try:
+        return build_restore_plan(conn, manifest, datasets)
+    finally:
+        conn.close()
+
+
+def discard_staged_restore(restore_id: Any) -> dict[str, Any]:
+    path = staged_restore_path(restore_id)
+    if not path.is_file() or path.is_symlink():
+        raise FileNotFoundError("Staged backup not found")
+    path.unlink()
+    return {"ok": True, "discarded": normalize_restore_id(restore_id)}
 
 
 def normalize_academic_change_event_ids(values: Any) -> list[str]:
@@ -8176,6 +8794,10 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.handle_canvas_sync_apply()
             elif parsed.path == "/api/backup/export":
                 self.handle_backup_export()
+            elif parsed.path == "/api/backup/restore-preview":
+                self.handle_backup_restore_preview()
+            elif parsed.path == "/api/backup/restore-discard":
+                self.handle_backup_restore_discard()
             elif parsed.path == "/api/whats-new/seen":
                 self.handle_whats_new_seen()
             elif parsed.path in {
@@ -8351,6 +8973,18 @@ class StudyHubHandler(BaseHTTPRequestHandler):
             raise ValueError("Backup export does not accept request parameters")
         result = export_current_profile_backup()
         self.send_json({"ok": True, "backup": result})
+
+    def handle_backup_restore_preview(self) -> None:
+        body = self.parse_body_json()
+        if set(body) != {"restore_id"}:
+            raise ValueError("Restore preview accepts only restore_id")
+        self.send_json({"ok": True, "plan": preview_staged_restore(body.get("restore_id"))})
+
+    def handle_backup_restore_discard(self) -> None:
+        body = self.parse_body_json()
+        if set(body) != {"restore_id"}:
+            raise ValueError("Restore discard accepts only restore_id")
+        self.send_json(discard_staged_restore(body.get("restore_id")))
 
     def handle_whats_new_seen(self) -> None:
         body = self.parse_body_json()

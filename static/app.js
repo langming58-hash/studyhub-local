@@ -17,6 +17,12 @@ const state = {
   selectedMaterialIds: new Set(),
   nativeImportPaths: [],
   duplicateImport: null,
+  restore: {
+    restoreId: null,
+    plan: null,
+    status: "idle",
+    error: "",
+  },
   studyMode: "practice",
   searchFiltersOpen: false,
   sidebarCollapsed: localStorage.getItem("studyhub.sidebarCollapsed") === "true",
@@ -1650,6 +1656,89 @@ function wrongRow(row) {
   `;
 }
 
+const RESTORE_GROUPS = Object.freeze([
+  { key: "ready", title: "restore.ready", classes: ["CREATE", "UPDATE_USER_STATE"] },
+  { key: "present", title: "restore.present", classes: ["MATCH", "NOOP"] },
+  { key: "attention", title: "restore.attention", classes: ["CONFLICT", "UNRESOLVED_REFERENCE"] },
+  { key: "relink", title: "restore.relink", classes: ["RELINK_REQUIRED"] },
+  { key: "unsupported", title: "restore.unsupported", classes: ["UNSUPPORTED_BY_V1"] },
+]);
+
+function restoreClassificationLabel(classification) {
+  return t(`restore.classification.${String(classification || "").toLowerCase()}`);
+}
+
+function restorePreviewMarkup() {
+  const restore = state.restore;
+  if (restore.status === "validating") {
+    return `<p class="restore-status" role="status" aria-live="polite">${escapeHtml(t("restore.validating"))}</p>`;
+  }
+  if (restore.error) {
+    return `
+      <div class="notice error" role="alert">
+        <strong>${escapeHtml(t("restore.validationFailed"))}</strong>
+        <p>${escapeHtml(restore.error)}</p>
+        ${restore.restoreId ? `<button class="button secondary" type="button" data-discard-restore="1">${escapeHtml(t("restore.discard"))}</button>` : ""}
+      </div>
+    `;
+  }
+  if (!restore.plan) {
+    return `<p class="muted" role="status" aria-live="polite">${escapeHtml(t("restore.chooseHelp"))}</p>`;
+  }
+  const plan = restore.plan;
+  const actions = (plan.sections || []).flatMap((section) => section.actions || []);
+  const groups = RESTORE_GROUPS.map((group) => ({
+    ...group,
+    actions: actions.filter((action) => group.classes.includes(action.classification)),
+  })).filter((group) => group.actions.length);
+  const summary = plan.summary || {};
+  return `
+    <div class="restore-preview" aria-labelledby="restorePreviewTitle">
+      <div class="restore-preview-head">
+        <div>
+          <p class="eyebrow">${escapeHtml(t("restore.validated"))}</p>
+          <h3 id="restorePreviewTitle">${escapeHtml(t("restore.preview"))}</h3>
+          <p class="muted">${escapeHtml(t("restore.archiveSummary", {
+            version: plan.backup?.format_version || 1,
+            count: plan.backup?.total_records || 0,
+            created: plan.backup?.created_at || t("common.unknown"),
+          }))}</p>
+        </div>
+        <button class="button secondary" type="button" data-discard-restore="1">${escapeHtml(t("restore.discard"))}</button>
+      </div>
+      <div class="restore-summary" aria-label="${escapeHtml(t("restore.actionSummary"))}">
+        <span><strong>${Number(summary.create || 0) + Number(summary.update_user_state || 0)}</strong> ${escapeHtml(t("restore.ready"))}</span>
+        <span><strong>${Number(summary.noop || 0) + Number(summary.match || 0)}</strong> ${escapeHtml(t("restore.present"))}</span>
+        <span><strong>${Number(summary.conflict || 0) + Number(summary.unresolved_reference || 0)}</strong> ${escapeHtml(t("restore.attention"))}</span>
+        <span><strong>${Number(summary.relink_required || 0)}</strong> ${escapeHtml(t("restore.relink"))}</span>
+      </div>
+      <div class="restore-groups">
+        ${groups.map((group) => `
+          <details class="restore-group" ${group.key === "attention" || group.key === "relink" ? "open" : ""}>
+            <summary><span>${escapeHtml(t(group.title))}</span><span>${group.actions.length}</span></summary>
+            <ul>
+              ${group.actions.map((action) => `
+                <li>
+                  <span>${escapeHtml(action.label || t("common.unknown"))}</span>
+                  <span class="restore-classification">${escapeHtml(restoreClassificationLabel(action.classification))}</span>
+                  ${action.reason ? `<small>${escapeHtml(t(`restore.reason.${action.reason}`))}</small>` : ""}
+                  ${(action.differing_fields || []).length ? `<small>${escapeHtml(t("restore.fieldsDiffer", { fields: action.differing_fields.join(", ") }))}</small>` : ""}
+                </li>
+              `).join("")}
+            </ul>
+          </details>
+        `).join("")}
+      </div>
+      <div class="restore-omissions">
+        <p>${escapeHtml(t("restore.originalsExcluded"))}</p>
+        <p>${escapeHtml(t("restore.aiExcluded"))}</p>
+        <p>${escapeHtml(t("restore.canvasExcluded"))}</p>
+      </div>
+      <p class="notice" role="status"><strong>${escapeHtml(t("restore.reviewOnly"))}</strong> ${escapeHtml(t("restore.applyUnavailable"))}</p>
+    </div>
+  `;
+}
+
 async function renderSettings() {
   setTitle(t("nav.settings"), t("settings.eyebrow"));
   setPageActions(true);
@@ -1759,6 +1848,14 @@ async function renderSettings() {
           <button class="button secondary" data-reset-studyhub="1">${escapeHtml(t("settings.resetMetadata"))}</button>
         </div>
         <p class="muted">${escapeHtml(t("settings.dataSafety"))}</p>
+      </section>
+      <section class="section-block quiet-section restore-section">
+        <div class="section-head">
+          <div><p class="eyebrow">${escapeHtml(t("settings.localData"))}</p><h2>${escapeHtml(t("restore.title"))}</h2></div>
+          <button class="button secondary" type="button" data-choose-backup="1" ${state.health.desktopMode ? "" : "disabled"}>${escapeHtml(t("restore.choose"))}</button>
+        </div>
+        <p class="muted">${escapeHtml(t(state.health.desktopMode ? "restore.description" : "restore.desktopRequired"))}</p>
+        ${restorePreviewMarkup()}
       </section>
       <section class="section-block quiet-section">
         <div class="section-head">
@@ -2278,6 +2375,42 @@ document.addEventListener("click", async (event) => {
     } finally {
       target.disabled = false;
     }
+    return;
+  }
+  if (target.dataset.chooseBackup) {
+    state.restore.status = "validating";
+    state.restore.error = "";
+    state.restore.plan = null;
+    await renderSettings();
+    try {
+      const restoreId = await desktopInvoke("choose_backup_archive");
+      if (!restoreId) {
+        state.restore.status = "idle";
+        await renderSettings();
+        return;
+      }
+      state.restore.restoreId = restoreId;
+      const result = await postJson("/api/backup/restore-preview", { restore_id: restoreId });
+      state.restore.plan = result.plan;
+      state.restore.status = "ready";
+    } catch (error) {
+      state.restore.status = "error";
+      state.restore.error = error.message || String(error);
+    }
+    await renderSettings();
+    return;
+  }
+  if (target.dataset.discardRestore) {
+    if (state.restore.restoreId) {
+      try {
+        await postJson("/api/backup/restore-discard", { restore_id: state.restore.restoreId });
+      } catch (error) {
+        toast(error.message || String(error));
+        return;
+      }
+    }
+    state.restore = { restoreId: null, plan: null, status: "idle", error: "" };
+    await renderSettings();
     return;
   }
   if (target.dataset.resetStudyhub) {
