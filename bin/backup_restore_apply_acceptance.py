@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
 
 from backup_export_acceptance import LOCAL_BYTES, archive_members, load_server, seed_state  # noqa: E402
-from backup_restore_preview_acceptance import http_post, stage  # noqa: E402
+from backup_restore_preview_acceptance import http_post, mutate_dataset, stage  # noqa: E402
 
 
 def check(name: str, passed: bool, failures: list[str]) -> None:
@@ -95,6 +95,86 @@ def structural_archive(server: Any, source: Path, output: Path) -> Path:
     return write_archive(server, output, members)
 
 
+def consistency_archive(server: Any, source: Path, output: Path) -> Path:
+    members = archive_members(source)
+    course_payload = json.loads(members["data/courses.json"])
+    course_payload["records"].append(
+        {
+            "stable_id": "course_syn_beta",
+            "term_ref": "term_syn_alpha",
+            "display_name": "Synthetic Course B",
+            "course_code": "SYN9300",
+            "archived": False,
+            "active": True,
+            "sort_order": 5,
+            "metadata_locked": True,
+            "course_kind": "local",
+            "created_at": "2026-05-01T00:00:00+00:00",
+            "updated_at": "2026-05-01T00:00:00+00:00",
+        }
+    )
+    members["data/courses.json"] = server.canonical_backup_json(course_payload)
+    unit_payload = json.loads(members["data/learning_units.json"])
+    unit_payload["records"].append(
+        {
+            "stable_id": "unit_syn_beta",
+            "course_ref": "course_syn_beta",
+            "label": "Module Beta",
+            "number": 2,
+            "kind": "module",
+            "archived": False,
+            "created_at": "2026-05-01T00:00:00+00:00",
+            "updated_at": "2026-05-01T00:00:00+00:00",
+        }
+    )
+    members["data/learning_units.json"] = server.canonical_backup_json(unit_payload)
+    overlay_payload = json.loads(members["data/material_overlays.json"])
+    overlay = next(record for record in overlay_payload["records"] if record["material_ref"] == "material_syn_local")
+    overlay.update(
+        {
+            "course_ref": "course_syn_beta",
+            "learning_unit_ref": "unit_syn_beta",
+            "display_name": "Restored Name",
+            "material_type": "quiz",
+            "category": "Quiz",
+            "exercise_type": "Quiz",
+            "updated_at": "2026-05-02T00:00:00+00:00",
+        }
+    )
+    members["data/material_overlays.json"] = server.canonical_backup_json(overlay_payload)
+    manifest = json.loads(members["manifest.json"])
+    for member in server.BACKUP_DATA_MEMBERS:
+        payload = json.loads(members[member])
+        manifest["entries"][member] = {
+            "sha256": hashlib.sha256(members[member]).hexdigest(),
+            "byte_size": len(members[member]),
+            "record_count": len(payload["records"]),
+        }
+    manifest["total_records"] = sum(item["record_count"] for item in manifest["entries"].values())
+    members["manifest.json"] = server.canonical_backup_json(manifest)
+    return write_archive(server, output, members)
+
+
+def seed_search_metadata(conn: sqlite3.Connection) -> int:
+    file_id = int(conn.execute("SELECT id FROM files WHERE stable_id='material_syn_local'").fetchone()["id"])
+    timestamp = "2026-04-01T00:00:00+00:00"
+    conn.execute(
+        "INSERT INTO questions(file_id, course_code, week_label, exercise_type, question_number, question_text, source_location, created_at) VALUES (?, 'SYN9200', 'Module Alpha', '', 'Q1', 'Synthetic alpha question', 'p.1', ?)",
+        (file_id, timestamp),
+    )
+    conn.execute(
+        "INSERT INTO solutions(file_id, course_code, week_label, exercise_type, solution_label, source_location, created_at) VALUES (?, 'SYN9200', 'Module Alpha', '', 'Official Solution', 'p.2', ?)",
+        (file_id, timestamp),
+    )
+    file_row = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
+    conn.execute(
+        "INSERT INTO files_fts(rowid, filename, course_code, week_label, category, source_label, extracted_text) VALUES (?, ?, 'SYN9200', 'Module Alpha', 'Lecture', ?, 'searchable synthetic content')",
+        (file_id, file_row["filename"], file_row["source_label"]),
+    )
+    conn.commit()
+    return file_id
+
+
 def expect_error(call: Any, code: str) -> bool:
     try:
         call()
@@ -111,6 +191,15 @@ def prepare_target(base: Path, archive: Path, suffix: str, restore_id: str) -> t
     return server, conn, staged, server.preview_staged_restore(restore_id)
 
 
+def mutate_record(
+    payload: dict[str, Any],
+    predicate: Any,
+    mutation: Any,
+) -> None:
+    record = next(item for item in payload["records"] if predicate(item))
+    mutation(record)
+
+
 def main() -> int:
     failures: list[str] = []
     with tempfile.TemporaryDirectory(prefix="studyhub-restore-apply-") as temporary:
@@ -120,6 +209,7 @@ def main() -> int:
         archive = export_archive(source, source_conn)
         original_hash = hashlib.sha256(archive.read_bytes()).hexdigest()
         structure = structural_archive(source, archive, base / "structure.zip")
+        consistency = consistency_archive(source, archive, base / "consistency.zip")
 
         server_source = (ROOT / "server.py").read_text(encoding="utf-8")
         frontend = (ROOT / "static/app.js").read_text(encoding="utf-8")
@@ -141,6 +231,68 @@ def main() -> int:
         check("ui_has_no_backup_wins", "RESTORE_BACKUP" not in frontend and "Use backup value" not in frontend, failures)
         check("ui_has_stale_review", "restore.localStateChanged" in frontend and "restore.reviewAgain" in frontend, failures)
         check("english_and_chinese_apply_strings", catalog.count('"restore.apply"') == 2 and "应用恢复" in catalog, failures)
+
+        invalid = load_server(base / "invalid-archives")
+        invalid_conn = seed_state(invalid, base / "invalid-archives", 400, reverse_insert_order=True)
+        clear_restore_state(invalid_conn)
+        invalid_before = logical_dump(invalid_conn)
+        malformed_cases = (
+            ("term_name_type", "data/terms.json", lambda r: True, lambda r: r.update(name=["bad"])),
+            ("term_boolean_type", "data/terms.json", lambda r: True, lambda r: r.update(archived=1)),
+            ("sort_order_bool", "data/terms.json", lambda r: True, lambda r: r.update(sort_order=True)),
+            ("course_name_bound", "data/courses.json", lambda r: r["course_kind"] == "local", lambda r: r.update(display_name="x" * (invalid.BACKUP_COURSE_NAME_MAX + 1))),
+            ("course_code_control", "data/courses.json", lambda r: r["course_kind"] == "local", lambda r: r.update(course_code="SYN\x00BAD")),
+            ("course_kind_enum", "data/courses.json", lambda r: r["course_kind"] == "local", lambda r: r.update(course_kind="unknown")),
+            ("unit_label_bound", "data/learning_units.json", lambda r: True, lambda r: r.update(label="x" * (invalid.BACKUP_UNIT_LABEL_MAX + 1))),
+            ("unit_number_type", "data/learning_units.json", lambda r: True, lambda r: r.update(number="2")),
+            ("material_name_bound", "data/material_overlays.json", lambda r: True, lambda r: r.update(display_name="x" * (invalid.BACKUP_MATERIAL_NAME_MAX + 1))),
+            ("material_boolean_type", "data/material_overlays.json", lambda r: True, lambda r: r.update(active="true")),
+            ("material_type_enum", "data/material_overlays.json", lambda r: True, lambda r: r.update(material_type="video-lecture")),
+            ("source_negative_size", "data/local_sources.json", lambda r: True, lambda r: r.update(byte_size=-1)),
+            ("source_sha", "data/local_sources.json", lambda r: True, lambda r: r.update(sha256="not-a-sha")),
+            ("source_path_control", "data/local_sources.json", lambda r: True, lambda r: r["location"].update(relative_path="folder/bad\x00name.txt")),
+            ("note_body_bound", "data/notes.json", lambda r: True, lambda r: r.update(body="x" * (invalid.BACKUP_NOTE_BODY_MAX + 1))),
+            ("note_target_enum", "data/notes.json", lambda r: True, lambda r: r.update(target_type="file")),
+            ("attempt_answer_bound", "data/study_records.json", lambda r: r["record_type"] == "attempt", lambda r: r.update(answer_text="x" * (invalid.BACKUP_ANSWER_TEXT_MAX + 1))),
+            ("attempt_result_type", "data/study_records.json", lambda r: r["record_type"] == "attempt", lambda r: r.update(result=["bad"])),
+            ("wrong_attempt_negative", "data/study_records.json", lambda r: r["record_type"] == "wrong_question_state", lambda r: r.update(attempt_count=-1)),
+            ("bookmark_label_bound", "data/study_records.json", lambda r: r["record_type"] == "bookmark", lambda r: r.update(label="x" * (invalid.BACKUP_BOOKMARK_LABEL_MAX + 1))),
+            ("session_mode_type", "data/study_records.json", lambda r: r["record_type"] == "study_session", lambda r: r.update(mode=7)),
+            ("whats_new_seen_type", "data/whats_new_state.json", lambda r: True, lambda r: r.update(seen_at=["bad"])),
+            ("timestamp_object", "data/terms.json", lambda r: True, lambda r: r.update(created_at={"bad": True})),
+            ("integer_bool", "data/learning_units.json", lambda r: True, lambda r: r.update(number=True)),
+        )
+        malformed_results: dict[str, bool] = {}
+        for index, (name, member, predicate, mutation) in enumerate(malformed_cases, start=1):
+            malformed = mutate_dataset(
+                invalid,
+                archive,
+                member,
+                lambda payload, predicate=predicate, mutation=mutation: mutate_record(payload, predicate, mutation),
+            )
+            restore_id = f"{index + 100:032x}"
+            stage(invalid, malformed, restore_id)
+            preview_rejected = False
+            apply_rejected = False
+            try:
+                invalid.preview_staged_restore(restore_id)
+            except ValueError:
+                preview_rejected = True
+            try:
+                invalid.apply_staged_restore(restore_id, "restore_" + "a" * 24, [])
+            except ValueError:
+                apply_rejected = True
+            unchanged = logical_dump(invalid_conn) == invalid_before
+            malformed_results[name] = preview_rejected and apply_rejected and unchanged
+            check(f"malformed_{name}_rejected_without_mutation", malformed_results[name], failures)
+        check("strict_type_validation", all(malformed_results[name] for name in ("term_name_type", "unit_number_type", "attempt_result_type", "session_mode_type", "whats_new_seen_type", "timestamp_object")), failures)
+        check("strict_boolean_validation", all(malformed_results[name] for name in ("term_boolean_type", "material_boolean_type")), failures)
+        check("strict_integer_validation", all(malformed_results[name] for name in ("sort_order_bool", "source_negative_size", "wrong_attempt_negative", "integer_bool")), failures)
+        check("strict_text_bounds", all(malformed_results[name] for name in ("course_name_bound", "unit_label_bound", "material_name_bound", "note_body_bound", "attempt_answer_bound", "bookmark_label_bound")), failures)
+        check("strict_control_character_validation", all(malformed_results[name] for name in ("course_code_control", "source_path_control")), failures)
+        check("strict_enum_validation", all(malformed_results[name] for name in ("course_kind_enum", "material_type_enum", "note_target_enum")), failures)
+        check("strict_sha_validation", malformed_results["source_sha"], failures)
+        check("malformed_archives_zero_mutation", all(malformed_results.values()) and logical_dump(invalid_conn) == invalid_before, failures)
 
         server, conn, staged, plan = prepare_target(base, archive, "target", "a" * 32)
         before_archive_hash = hashlib.sha256(staged.read_bytes()).hexdigest()
@@ -171,6 +323,7 @@ def main() -> int:
             before_commit=inspect_before_commit,
         )
         check("safe_restore_succeeds", result["ok"] is True, failures)
+        check("valid_exporter_roundtrip", result["ok"] is True and result["applied"]["created"] > 0, failures)
         check("note_multiplicity_restored", conn.execute("SELECT COUNT(*) AS c FROM notes").fetchone()["c"] == 4, failures)
         check("star_created", conn.execute("SELECT COUNT(*) AS c FROM stars").fetchone()["c"] == 1, failures)
         check("attempt_multiplicity_restored", conn.execute("SELECT COUNT(*) AS c FROM attempts").fetchone()["c"] == 3, failures)
@@ -217,6 +370,135 @@ def main() -> int:
         overlay_file = overlay_conn.execute("SELECT display_name, metadata_locked FROM files WHERE stable_id='material_syn_local'").fetchone()
         check("material_overlay_classified_update_user_state", overlay_action["classification"] == "UPDATE_USER_STATE", failures)
         check("material_overlay_applied_to_resolved_material", overlay_file["display_name"] == "My guide" and overlay_file["metadata_locked"] == 1, failures)
+
+        domain = load_server(base / "domain-consistency")
+        domain_conn = seed_state(domain, base / "domain-consistency", 900, reverse_insert_order=True)
+        clear_restore_state(domain_conn)
+        domain_file_id = seed_search_metadata(domain_conn)
+        domain_conn.execute("UPDATE files SET metadata_locked=0 WHERE id=?", (domain_file_id,))
+        domain_conn.commit()
+        before_material = domain_conn.execute(
+            "SELECT stable_id, current_version_id FROM materials WHERE legacy_file_id=?",
+            (domain_file_id,),
+        ).fetchone()
+        before_domain_counts = tuple(
+            domain_conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in ("materials", "material_versions", "blobs", "sources")
+        )
+        before_version_state = tuple(
+            tuple(row)
+            for row in domain_conn.execute(
+                "SELECT stable_id, sha256, blob_id, source_id FROM material_versions WHERE legacy_file_id=? ORDER BY id",
+                (domain_file_id,),
+            ).fetchall()
+        )
+        stage(domain, consistency, "7" * 32)
+        domain_plan = domain.preview_staged_restore("7" * 32)
+        writer_alignment: list[bool] = []
+        observer_old_state: list[bool] = []
+
+        def inspect_domain_before_commit(writer: sqlite3.Connection) -> None:
+            file_row = writer.execute("SELECT * FROM files WHERE id=?", (domain_file_id,)).fetchone()
+            material_row = writer.execute("SELECT * FROM materials WHERE legacy_file_id=?", (domain_file_id,)).fetchone()
+            writer_alignment.append(
+                all(
+                    file_row[field] == material_row[field]
+                    for field in (
+                        "course_id", "week_id", "course_code", "course_name", "week_label",
+                        "week_number", "material_type", "display_name", "active", "removed_at",
+                    )
+                )
+                and file_row["section"] == "02 Exercises"
+            )
+            observer = domain.connect_backup_db_readonly()
+            try:
+                old = observer.execute("SELECT course_code, display_name FROM files WHERE id=?", (domain_file_id,)).fetchone()
+                observer_old_state.append(old["course_code"] == "SYN9200" and old["display_name"] != "Restored Name")
+            finally:
+                observer.close()
+
+        domain.apply_staged_restore(
+            "7" * 32,
+            domain_plan["plan_revision"],
+            decisions_for(domain_plan),
+            before_commit=inspect_domain_before_commit,
+        )
+        domain_file = domain_conn.execute("SELECT * FROM files WHERE id=?", (domain_file_id,)).fetchone()
+        domain_material = domain_conn.execute("SELECT * FROM materials WHERE legacy_file_id=?", (domain_file_id,)).fetchone()
+        check("material_domain_projection_synchronized_before_commit", writer_alignment == [True], failures)
+        check("material_domain_projection_atomic_visibility", observer_old_state == [True], failures)
+        check(
+            "material_domain_projection_synchronized_after_commit",
+            domain_file["course_code"] == domain_material["course_code"] == "SYN9300"
+            and domain_file["week_label"] == domain_material["week_label"] == "Module Beta"
+            and domain_file["display_name"] == domain_material["display_name"] == "Restored Name"
+            and domain_file["material_type"] == domain_material["material_type"] == "quiz",
+            failures,
+        )
+        check("section_classification_synchronized", domain_file["section"] == "02 Exercises" and domain_file["category"] == "Quiz" and domain_file["exercise_type"] == "Quiz", failures)
+        search_rows = {
+            table: domain_conn.execute(
+                f"SELECT course_code, week_label, {field} AS classification FROM {table} WHERE {id_field}=?",
+                (domain_file_id,),
+            ).fetchall()
+            for table, field, id_field in (
+                ("document_chunks", "category", "file_id"),
+                ("questions", "exercise_type", "file_id"),
+                ("solutions", "exercise_type", "file_id"),
+                ("files_fts", "category", "rowid"),
+            )
+        }
+        check(
+            "search_metadata_synchronized",
+            all(
+                rows and all(row["course_code"] == "SYN9300" and row["week_label"] == "Module Beta" and row["classification"] == "Quiz" for row in rows)
+                for rows in search_rows.values()
+            ),
+            failures,
+        )
+        fts_result = domain_conn.execute(
+            "SELECT f.course_code, f.week_label, f.category FROM files_fts JOIN files f ON files_fts.rowid=f.id WHERE files_fts MATCH 'searchable'"
+        ).fetchone()
+        check("normal_local_search_sees_restored_metadata", fts_result is not None and tuple(fts_result) == ("SYN9300", "Module Beta", "Quiz"), failures)
+        after_domain_counts = tuple(
+            domain_conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in ("materials", "material_versions", "blobs", "sources")
+        )
+        after_version_state = tuple(
+            tuple(row)
+            for row in domain_conn.execute(
+                "SELECT stable_id, sha256, blob_id, source_id FROM material_versions WHERE legacy_file_id=? ORDER BY id",
+                (domain_file_id,),
+            ).fetchall()
+        )
+        after_material = domain_conn.execute(
+            "SELECT stable_id, current_version_id FROM materials WHERE legacy_file_id=?",
+            (domain_file_id,),
+        ).fetchone()
+        check("no_new_domain_identity_rows_from_overlay", before_domain_counts == after_domain_counts, failures)
+        check("material_stable_identity_unchanged", tuple(before_material) == tuple(after_material), failures)
+        check("material_version_blob_source_unchanged", before_version_state == after_version_state, failures)
+
+        atomic = load_server(base / "overlay-atomic")
+        atomic_conn = seed_state(atomic, base / "overlay-atomic", 1000, reverse_insert_order=True)
+        clear_restore_state(atomic_conn)
+        atomic_file_id = seed_search_metadata(atomic_conn)
+        atomic_conn.execute("UPDATE files SET metadata_locked=0 WHERE id=?", (atomic_file_id,))
+        atomic_conn.commit()
+        stage(atomic, consistency, "8" * 32)
+        atomic_plan = atomic.preview_staged_restore("8" * 32)
+        atomic_before = logical_dump(atomic_conn)
+        atomic_failed = False
+        try:
+            atomic.apply_staged_restore(
+                "8" * 32,
+                atomic_plan["plan_revision"],
+                decisions_for(atomic_plan),
+                failure_point="after_overlay",
+            )
+        except RuntimeError:
+            atomic_failed = True
+        check("overlay_sync_atomic_rollback", atomic_failed and logical_dump(atomic_conn) == atomic_before, failures)
 
         conflict, conflict_conn, _conflict_stage, conflict_plan = prepare_target(base, archive, "conflict", "c" * 32)
         conflict_conn.execute("INSERT INTO bookmarks(target_type, target_id, label, created_at) SELECT 'file', id, 'Different label', '2026-01-01' FROM files WHERE stable_id='material_syn_local'")
@@ -381,6 +663,8 @@ def main() -> int:
         for open_conn in (
             source_conn, conn, overlay_conn, conflict_conn, wrong_conn, missing_event_conn,
             relink_conn, stale_conn, source_stale_conn, snapshot_conn, concurrent_conn,
+            domain_conn, atomic_conn,
+            invalid_conn,
         ):
             open_conn.close()
 

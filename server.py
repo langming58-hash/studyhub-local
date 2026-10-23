@@ -200,6 +200,30 @@ BACKUP_MAX_ENTRY_BYTES = 10 * 1024 * 1024
 BACKUP_MAX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 BACKUP_MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
 BACKUP_MAX_RECORDS = 100_000
+BACKUP_STABLE_ID_MAX = 200
+BACKUP_TIMESTAMP_MAX = 128
+BACKUP_TERM_NAME_MAX = 120
+BACKUP_COURSE_NAME_MAX = 120
+BACKUP_COURSE_CODE_MAX = 40
+BACKUP_UNIT_LABEL_MAX = 80
+BACKUP_UNIT_KIND_MAX = 20
+BACKUP_MATERIAL_NAME_MAX = 240
+BACKUP_MATERIAL_TYPE_MAX = 40
+BACKUP_CATEGORY_MAX = 80
+BACKUP_EXERCISE_TYPE_MAX = 80
+BACKUP_NOTE_BODY_MAX = 10_000
+BACKUP_ANSWER_TEXT_MAX = 20_000
+BACKUP_RESULT_MAX = 120
+BACKUP_QUESTION_REF_MAX = 240
+BACKUP_MISTAKE_MAX = 10_000
+BACKUP_CONCEPT_MAX = 500
+BACKUP_MASTERY_MAX = 40
+BACKUP_BOOKMARK_LABEL_MAX = 240
+BACKUP_SESSION_MODE_MAX = 40
+BACKUP_SOURCE_PATH_MAX = 4096
+BACKUP_SOURCE_COMPONENT_MAX = 255
+BACKUP_MAX_PORTABLE_INTEGER = (1 << 63) - 1
+BACKUP_MAX_SOURCE_BYTES = 1 << 40
 BACKUP_DATA_MEMBERS = (
     "data/terms.json",
     "data/courses.json",
@@ -214,7 +238,7 @@ BACKUP_DATA_MEMBERS = (
     "data/whats_new_state.json",
 )
 BACKUP_MEMBERS = ("manifest.json", *BACKUP_DATA_MEMBERS)
-BACKUP_STABLE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+BACKUP_STABLE_ID_RE = re.compile(rf"^[A-Za-z0-9][A-Za-z0-9._:-]{{0,{BACKUP_STABLE_ID_MAX - 1}}}$")
 RESTORE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 RESTORE_PLAN_REVISION_RE = re.compile(r"^restore_[0-9a-f]{24}$")
 RESTORE_PLAN_VERSION = 1
@@ -3840,7 +3864,7 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
     terms = [
         {
             "stable_id": str(row["stable_id"]),
-            "name": safe_backup_text(row["name"], limit=120),
+            "name": safe_backup_text(row["name"], limit=BACKUP_TERM_NAME_MAX),
             "archived": bool(row["archived"]),
             "sort_order": int(row["sort_order"] or 0),
             "created_at": str(row["created_at"] or ""),
@@ -3871,8 +3895,8 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
             {
                 "stable_id": stable_id,
                 "term_ref": term_by_id.get(int(row["term_id"])) if row["term_id"] else None,
-                "display_name": safe_backup_text(row["display_name"] or row["name"], limit=120),
-                "course_code": safe_backup_text(row["course_code"] or row["code"], limit=40),
+                "display_name": safe_backup_text(row["display_name"] or row["name"], limit=BACKUP_COURSE_NAME_MAX),
+                "course_code": safe_backup_text(row["course_code"] or row["code"], limit=BACKUP_COURSE_CODE_MAX),
                 "archived": bool(row["archived"]),
                 "active": bool(row["active"]),
                 "sort_order": int(row["sort_order"] or 0),
@@ -3897,9 +3921,9 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
             {
                 "stable_id": stable_id,
                 "course_ref": course_by_id.get(int(row["course_id"])),
-                "label": safe_backup_text(row["week_label"], limit=80),
+                "label": safe_backup_text(row["week_label"], limit=BACKUP_UNIT_LABEL_MAX),
                 "number": int(row["week_number"]) if row["week_number"] is not None else None,
-                "kind": safe_backup_text(row["kind"], limit=20),
+                "kind": safe_backup_text(row["kind"], limit=BACKUP_UNIT_KIND_MAX),
                 "archived": bool(row["archived"]),
                 "created_at": str(row["created_at"] or ""),
                 "updated_at": str(row["updated_at"] or ""),
@@ -3918,10 +3942,10 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
                 "material_ref": material_ref,
                 "course_ref": course_by_id.get(int(row["course_id"])) if int(row["course_id"]) in included_course_ids else None,
                 "learning_unit_ref": week_by_id.get(int(row["week_id"])) if row["week_id"] and int(row["week_id"]) in included_week_ids else None,
-                "display_name": safe_backup_text(row["display_name"] or row["filename"], limit=240),
-                "material_type": safe_backup_text(row["material_type"], limit=40),
-                "category": safe_backup_text(row["category"], limit=80),
-                "exercise_type": safe_backup_text(row["exercise_type"], limit=80),
+                "display_name": safe_backup_text(row["display_name"] or row["filename"], limit=BACKUP_MATERIAL_NAME_MAX),
+                "material_type": safe_backup_text(row["material_type"], limit=BACKUP_MATERIAL_TYPE_MAX),
+                "category": safe_backup_text(row["category"], limit=BACKUP_CATEGORY_MAX),
+                "exercise_type": safe_backup_text(row["exercise_type"], limit=BACKUP_EXERCISE_TYPE_MAX),
                 "inbox": bool(row["inbox"]),
                 "active": bool(row["active"]),
                 "removed_at": str(row["removed_at"] or "") or None,
@@ -3952,17 +3976,23 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
         source_path = Path(str(row["original_path"] or "")).expanduser().resolve(strict=False)
         try:
             relative_path = source_path.relative_to(library_root).as_posix()
-            if not relative_path or relative_path.startswith("../") or "\\" in relative_path:
+            if (
+                not relative_path
+                or relative_path.startswith("../")
+                or "\\" in relative_path
+                or len(relative_path) > BACKUP_SOURCE_PATH_MAX
+                or any(len(component) > BACKUP_SOURCE_COMPONENT_MAX for component in relative_path.split("/"))
+            ):
                 raise ValueError("Unsafe library-relative source path")
             location = {"kind": "library_relative", "relative_path": relative_path}
         except ValueError:
-            location = {"kind": "relink_required", "basename": safe_backup_text(source_path.name or row["filename"], limit=240)}
+            location = {"kind": "relink_required", "basename": safe_backup_text(source_path.name or row["filename"], limit=BACKUP_MATERIAL_NAME_MAX)}
         local_sources.append(
             {
                 "stable_id": backup_record_id("backup_source", material_ref),
                 "material_ref": material_ref,
                 "location": location,
-                "display_name": safe_backup_text(row["display_name"] or row["filename"], limit=240),
+                "display_name": safe_backup_text(row["display_name"] or row["filename"], limit=BACKUP_MATERIAL_NAME_MAX),
                 "sha256": str(row["sha256"] or row["hash"] or ""),
                 "byte_size": int(row["file_size"] or row["size"] or 0),
                 "missing": bool(row["source_missing"]),
@@ -3977,7 +4007,7 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
         material_ref = material_by_file.get(int(row["target_id"]))
         if not material_ref:
             raise ValueError("Note target lacks a portable material identity")
-        body = safe_backup_text(row["body"], limit=10_000)
+        body = safe_backup_text(row["body"], limit=BACKUP_NOTE_BODY_MAX)
         notes.append(
             {
                 "target_type": "material",
@@ -4014,8 +4044,8 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
     attempt_records: list[dict[str, Any]] = []
     for row in conn.execute("SELECT * FROM attempts ORDER BY created_at, id").fetchall():
         material_ref = material_by_file.get(int(row["file_id"])) if row["file_id"] else None
-        answer = safe_backup_text(row["answer_text"], limit=20_000)
-        result = safe_backup_text(row["result"], limit=120)
+        answer = safe_backup_text(row["answer_text"], limit=BACKUP_ANSWER_TEXT_MAX)
+        result = safe_backup_text(row["result"], limit=BACKUP_RESULT_MAX)
         attempt_records.append(
             {
                 "record_type": "attempt",
@@ -4036,21 +4066,21 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
     for row in conn.execute("SELECT * FROM wrong_questions ORDER BY created_at, id").fetchall():
         material_ref = material_by_file.get(int(row["source_file_id"])) if row["source_file_id"] else None
         course_ref = course_by_id.get(int(row["course_id"])) if row["course_id"] and int(row["course_id"]) in included_course_ids else None
-        question_ref = safe_backup_text(row["question_ref"], limit=240)
-        mistake = safe_backup_text(row["mistake"], limit=10_000)
-        concept = safe_backup_text(row["concept"], limit=500)
+        question_ref = safe_backup_text(row["question_ref"], limit=BACKUP_QUESTION_REF_MAX)
+        mistake = safe_backup_text(row["mistake"], limit=BACKUP_MISTAKE_MAX)
+        concept = safe_backup_text(row["concept"], limit=BACKUP_CONCEPT_MAX)
         wrong_question_records.append(
             {
                 "record_type": "wrong_question_state",
                 "course_ref": course_ref,
                 "material_ref": material_ref,
-                "learning_unit_label": safe_backup_text(row["week_label"], limit=80),
+                "learning_unit_label": safe_backup_text(row["week_label"], limit=BACKUP_UNIT_LABEL_MAX),
                 "question_ref": question_ref,
                 "mistake": mistake,
                 "concept": concept,
                 "attempt_count": int(row["attempts"] or 0),
                 "last_reviewed": str(row["last_reviewed"] or "") or None,
-                "mastery": safe_backup_text(row["mastery"], limit=40),
+                "mastery": safe_backup_text(row["mastery"], limit=BACKUP_MASTERY_MAX),
                 "created_at": str(row["created_at"] or ""),
             }
         )
@@ -4072,7 +4102,7 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
                 "stable_id": backup_record_id("bookmark", material_ref),
                 "record_type": "bookmark",
                 "target_ref": material_ref,
-                "label": safe_backup_text(row["label"], limit=240),
+                "label": safe_backup_text(row["label"], limit=BACKUP_BOOKMARK_LABEL_MAX),
                 "created_at": str(row["created_at"] or ""),
             }
         )
@@ -4083,8 +4113,8 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
             {
                 "record_type": "study_session",
                 "course_ref": course_ref,
-                "learning_unit_label": safe_backup_text(row["week_label"], limit=80),
-                "mode": safe_backup_text(row["mode"], limit=40),
+                "learning_unit_label": safe_backup_text(row["week_label"], limit=BACKUP_UNIT_LABEL_MAX),
+                "mode": safe_backup_text(row["mode"], limit=BACKUP_SESSION_MODE_MAX),
                 "started_at": str(row["started_at"] or ""),
                 "ended_at": str(row["ended_at"] or "") or None,
             }
@@ -4177,6 +4207,181 @@ BACKUP_STUDY_RECORD_FIELDS: dict[str, set[str]] = {
         "stable_id", "record_type", "course_ref", "learning_unit_label", "mode", "started_at", "ended_at",
     },
 }
+
+
+def is_backup_json_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def validate_backup_text(
+    value: Any,
+    *,
+    limit: int,
+    nullable: bool = False,
+    multiline: bool = False,
+    allow_empty: bool = True,
+) -> None:
+    if value is None and nullable:
+        return
+    if not isinstance(value, str) or len(value) > limit or (not allow_empty and not value):
+        raise ValueError("Backup record text value is invalid")
+    allowed_controls = {"\n", "\t"} if multiline else set()
+    if any((ord(char) < 32 or 127 <= ord(char) <= 159) and char not in allowed_controls for char in value):
+        raise ValueError("Backup record text contains a control character")
+
+
+def validate_backup_bool(value: Any) -> None:
+    if not isinstance(value, bool):
+        raise ValueError("Backup record boolean value is invalid")
+
+
+def validate_backup_int(
+    value: Any,
+    *,
+    nullable: bool = False,
+    minimum: int = 0,
+    maximum: int = BACKUP_MAX_PORTABLE_INTEGER,
+) -> None:
+    if value is None and nullable:
+        return
+    if not is_backup_json_int(value) or value < minimum or value > maximum:
+        raise ValueError("Backup record integer value is invalid")
+
+
+def validate_backup_stable_id(value: Any, *, nullable: bool = False) -> None:
+    if value is None and nullable:
+        return
+    if not isinstance(value, str) or not BACKUP_STABLE_ID_RE.fullmatch(value):
+        raise ValueError("Backup record stable identity is invalid")
+
+
+def validate_backup_timestamp(value: Any, *, nullable: bool = False) -> None:
+    validate_backup_text(value, limit=BACKUP_TIMESTAMP_MAX, nullable=nullable)
+
+
+def validate_backup_record_values(member: str, record: dict[str, Any]) -> None:
+    """Validate the semantic studyhub-backup-v1 contract without coercion."""
+    validate_backup_stable_id(record["stable_id"])
+
+    if member == "data/terms.json":
+        validate_backup_text(record["name"], limit=BACKUP_TERM_NAME_MAX)
+        validate_backup_bool(record["archived"])
+        validate_backup_int(record["sort_order"])
+        validate_backup_timestamp(record["created_at"])
+        validate_backup_timestamp(record["updated_at"])
+        return
+
+    if member == "data/courses.json":
+        validate_backup_stable_id(record["term_ref"], nullable=True)
+        validate_backup_text(record["display_name"], limit=BACKUP_COURSE_NAME_MAX)
+        validate_backup_text(record["course_code"], limit=BACKUP_COURSE_CODE_MAX)
+        for field in ("archived", "active", "metadata_locked"):
+            validate_backup_bool(record[field])
+        validate_backup_int(record["sort_order"])
+        if record["course_kind"] not in {"local", "remote_overlay"}:
+            raise ValueError("Backup course kind is invalid")
+        validate_backup_timestamp(record["created_at"])
+        validate_backup_timestamp(record["updated_at"])
+        return
+
+    if member == "data/learning_units.json":
+        validate_backup_stable_id(record["course_ref"])
+        validate_backup_text(record["label"], limit=BACKUP_UNIT_LABEL_MAX)
+        validate_backup_int(record["number"], nullable=True, maximum=1_000_000)
+        validate_backup_text(record["kind"], limit=BACKUP_UNIT_KIND_MAX)
+        validate_backup_bool(record["archived"])
+        validate_backup_timestamp(record["created_at"])
+        validate_backup_timestamp(record["updated_at"])
+        return
+
+    if member == "data/material_overlays.json":
+        for field in ("material_ref", "course_ref", "learning_unit_ref"):
+            validate_backup_stable_id(record[field], nullable=field != "material_ref")
+        validate_backup_text(record["display_name"], limit=BACKUP_MATERIAL_NAME_MAX)
+        validate_backup_text(record["material_type"], limit=BACKUP_MATERIAL_TYPE_MAX)
+        if record["material_type"] not in MATERIAL_TYPES:
+            raise ValueError("Backup material type is invalid")
+        validate_backup_text(record["category"], limit=BACKUP_CATEGORY_MAX)
+        validate_backup_text(record["exercise_type"], limit=BACKUP_EXERCISE_TYPE_MAX)
+        for field in ("inbox", "active"):
+            validate_backup_bool(record[field])
+        validate_backup_timestamp(record["removed_at"], nullable=True)
+        validate_backup_timestamp(record["updated_at"])
+        return
+
+    if member == "data/local_sources.json":
+        validate_backup_stable_id(record["material_ref"])
+        validate_backup_text(record["display_name"], limit=BACKUP_MATERIAL_NAME_MAX)
+        if not isinstance(record["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", record["sha256"]):
+            raise ValueError("Backup source SHA-256 is invalid")
+        validate_backup_int(record["byte_size"], maximum=BACKUP_MAX_SOURCE_BYTES)
+        validate_backup_bool(record["missing"])
+        location = record["location"]
+        location_field = "relative_path" if location["kind"] == "library_relative" else "basename"
+        location_value = location[location_field]
+        validate_backup_text(location_value, limit=BACKUP_SOURCE_PATH_MAX, allow_empty=False)
+        if location["kind"] == "library_relative" and any(
+            len(component) > BACKUP_SOURCE_COMPONENT_MAX for component in location_value.split("/")
+        ):
+            raise ValueError("Backup source location is too long")
+        return
+
+    if member == "data/notes.json":
+        if record["target_type"] != "material":
+            raise ValueError("Backup note target type is invalid")
+        validate_backup_stable_id(record["target_ref"])
+        validate_backup_text(record["body"], limit=BACKUP_NOTE_BODY_MAX, multiline=True)
+        validate_backup_timestamp(record["created_at"])
+        validate_backup_timestamp(record["updated_at"])
+        return
+
+    if member == "data/stars.json":
+        if record["target_type"] != "material":
+            raise ValueError("Backup star target type is invalid")
+        validate_backup_stable_id(record["target_ref"])
+        validate_backup_timestamp(record["created_at"])
+        return
+
+    if member == "data/whats_new_state.json":
+        validate_backup_stable_id(record["event_stable_id"])
+        validate_backup_timestamp(record["seen_at"])
+        validate_backup_timestamp(record["updated_at"])
+        return
+
+    if member != "data/study_records.json":
+        raise ValueError("Backup record dataset is invalid")
+
+    record_type = record["record_type"]
+    if not isinstance(record_type, str) or record_type not in BACKUP_STUDY_RECORD_FIELDS:
+        raise ValueError("Backup study record type is invalid")
+    if record_type == "attempt":
+        validate_backup_stable_id(record["material_ref"], nullable=True)
+        validate_backup_text(record["answer_text"], limit=BACKUP_ANSWER_TEXT_MAX, multiline=True)
+        validate_backup_text(record["result"], limit=BACKUP_RESULT_MAX)
+        validate_backup_timestamp(record["created_at"])
+    elif record_type == "wrong_question_state":
+        validate_backup_stable_id(record["course_ref"], nullable=True)
+        validate_backup_stable_id(record["material_ref"], nullable=True)
+        validate_backup_text(record["learning_unit_label"], limit=BACKUP_UNIT_LABEL_MAX)
+        validate_backup_text(record["question_ref"], limit=BACKUP_QUESTION_REF_MAX)
+        validate_backup_text(record["mistake"], limit=BACKUP_MISTAKE_MAX, multiline=True)
+        validate_backup_text(record["concept"], limit=BACKUP_CONCEPT_MAX, multiline=True)
+        validate_backup_int(record["attempt_count"])
+        validate_backup_timestamp(record["last_reviewed"], nullable=True)
+        validate_backup_text(record["mastery"], limit=BACKUP_MASTERY_MAX)
+        validate_backup_timestamp(record["created_at"])
+    elif record_type == "bookmark":
+        validate_backup_stable_id(record["target_ref"])
+        validate_backup_text(record["label"], limit=BACKUP_BOOKMARK_LABEL_MAX)
+        validate_backup_timestamp(record["created_at"])
+    else:
+        validate_backup_stable_id(record["course_ref"], nullable=True)
+        validate_backup_text(record["learning_unit_label"], limit=BACKUP_UNIT_LABEL_MAX)
+        validate_backup_text(record["mode"], limit=BACKUP_SESSION_MODE_MAX)
+        validate_backup_timestamp(record["started_at"])
+        validate_backup_timestamp(record["ended_at"], nullable=True)
+
+
 def validate_backup_record_schema(member: str, record: Any) -> None:
     if not isinstance(record, dict):
         raise ValueError("Backup record must be an object")
@@ -4192,14 +4397,19 @@ def validate_backup_record_schema(member: str, record: Any) -> None:
         if not isinstance(location, dict):
             raise ValueError("Backup source location is invalid")
         location_kind = location.get("kind")
+        if not isinstance(location_kind, str):
+            raise ValueError("Backup source location is invalid")
         expected_location = {"kind", "relative_path"} if location_kind == "library_relative" else {"kind", "basename"}
         if location_kind not in {"library_relative", "relink_required"} or set(location) != expected_location:
             raise ValueError("Backup source location is invalid")
         if location_kind == "library_relative":
-            relative = str(location.get("relative_path") or "")
+            relative = location.get("relative_path")
+            if not isinstance(relative, str):
+                raise ValueError("Backup source location is invalid")
             pure = Path(relative)
             if not relative or pure.is_absolute() or ".." in pure.parts or "\\" in relative:
                 raise ValueError("Backup source location is unsafe")
+    validate_backup_record_values(member, record)
 
 
 def validate_backup_relationships(parsed: dict[str, list[dict[str, Any]]]) -> None:
@@ -4281,14 +4491,27 @@ def validate_backup_snapshot(
             manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
         except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError("Backup manifest is malformed") from exc
-        if manifest.get("format") != BACKUP_FORMAT_NAME or manifest.get("format_version") != BACKUP_FORMAT_VERSION:
+        if (
+            manifest.get("format") != BACKUP_FORMAT_NAME
+            or not is_backup_json_int(manifest.get("format_version"))
+            or manifest.get("format_version") != BACKUP_FORMAT_VERSION
+        ):
             raise ValueError("Unsupported backup format version")
         manifest_fields = {
             "format", "format_version", "minimum_restore_format_version", "created_at", "app_version",
             "runtime_profile", "disposable_demo", "features", "entries", "total_records",
         }
-        if set(manifest) != manifest_fields or manifest.get("minimum_restore_format_version") != BACKUP_FORMAT_VERSION:
+        if (
+            set(manifest) != manifest_fields
+            or not is_backup_json_int(manifest.get("minimum_restore_format_version"))
+            or manifest.get("minimum_restore_format_version") != BACKUP_FORMAT_VERSION
+            or not is_backup_json_int(manifest.get("total_records"))
+            or not 0 <= manifest["total_records"] <= BACKUP_MAX_RECORDS
+            or not isinstance(manifest.get("disposable_demo"), bool)
+        ):
             raise ValueError("Backup manifest schema is invalid")
+        for field in ("created_at", "app_version", "runtime_profile"):
+            validate_backup_text(manifest.get(field), limit=BACKUP_TIMESTAMP_MAX)
         expected_features = {
             "original_files_included": False,
             "canvas_selection_included": False,
@@ -4300,7 +4523,10 @@ def validate_backup_snapshot(
             not isinstance(features, dict)
             or set(features) != {"restore_supported", *expected_features}
             or not isinstance(features.get("restore_supported"), bool)
-            or any(features.get(key) != value for key, value in expected_features.items())
+            or any(
+                type(features.get(key)) is not type(value) or features.get(key) != value
+                for key, value in expected_features.items()
+            )
         ):
             raise ValueError("Backup manifest features are invalid")
         entries = manifest.get("entries")
@@ -4315,14 +4541,25 @@ def validate_backup_snapshot(
             if (
                 not isinstance(expected, dict)
                 or set(expected) != {"sha256", "byte_size", "record_count"}
-                or expected.get("sha256") != hashlib.sha256(raw).hexdigest()
+                or not isinstance(expected.get("sha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", expected["sha256"])
+                or expected["sha256"] != hashlib.sha256(raw).hexdigest()
+                or not is_backup_json_int(expected.get("byte_size"))
+                or not 0 <= expected["byte_size"] <= BACKUP_MAX_ENTRY_BYTES
+                or not is_backup_json_int(expected.get("record_count"))
+                or not 0 <= expected["record_count"] <= BACKUP_MAX_RECORDS
             ):
                 raise ValueError("Backup member checksum mismatch")
             try:
                 payload = json.loads(raw.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise ValueError("Backup dataset is malformed") from exc
-            if set(payload) != {"dataset", "format_version", "records"} or payload.get("format_version") != BACKUP_FORMAT_VERSION:
+            if (
+                not isinstance(payload, dict)
+                or set(payload) != {"dataset", "format_version", "records"}
+                or not is_backup_json_int(payload.get("format_version"))
+                or payload.get("format_version") != BACKUP_FORMAT_VERSION
+            ):
                 raise ValueError("Backup dataset schema is invalid")
             if payload.get("dataset") != Path(member).stem or not isinstance(payload.get("records"), list):
                 raise ValueError("Backup dataset identity is invalid")
@@ -4334,12 +4571,14 @@ def validate_backup_snapshot(
             require_unique_backup_records(member, records)
             for record in records:
                 validate_backup_record_schema(member, record)
-                identity = str(record.get("stable_id") or record.get("record_id"))
+                identity = record["stable_id"]
                 if identity in all_portable_ids:
                     raise ValueError("Backup portable identities collide")
                 all_portable_ids.add(identity)
                 for key, value in record.items():
-                    if key.endswith("_ref") and value is not None and not BACKUP_STABLE_ID_RE.fullmatch(str(value)):
+                    if key.endswith("_ref") and value is not None and (
+                        not isinstance(value, str) or not BACKUP_STABLE_ID_RE.fullmatch(value)
+                    ):
                         raise ValueError("Backup contains a malformed stable reference")
             parsed_datasets[member] = records
             total_records += len(records)
@@ -5101,6 +5340,60 @@ def require_restore_dependency(condition: bool) -> None:
         raise RestoreApplyError("restore_dependency_unresolved")
 
 
+def sync_restored_material_projection(
+    conn: sqlite3.Connection,
+    *,
+    legacy_file_id: int,
+    material_stable_id: str,
+) -> None:
+    """Synchronize presentation fields only; never rebuild provenance or versions."""
+    file_row = conn.execute("SELECT * FROM files WHERE id=?", (legacy_file_id,)).fetchone()
+    material_row = conn.execute(
+        "SELECT id, legacy_file_id FROM materials WHERE stable_id=?",
+        (material_stable_id,),
+    ).fetchone()
+    require_restore_dependency(
+        file_row is not None
+        and material_row is not None
+        and material_row["legacy_file_id"] == legacy_file_id
+    )
+    conn.execute(
+        """
+        UPDATE materials SET course_id=?, week_id=?, course_code=?, course_name=?,
+          week_label=?, week_number=?, material_type=?, display_name=?, active=?,
+          removed_at=?, updated_at=?
+        WHERE id=? AND legacy_file_id=?
+        """,
+        (
+            file_row["course_id"], file_row["week_id"], file_row["course_code"],
+            file_row["course_name"], file_row["week_label"], file_row["week_number"],
+            file_row["material_type"], file_row["display_name"], int(file_row["active"]),
+            file_row["removed_at"], file_row["material_updated_at"],
+            material_row["id"], legacy_file_id,
+        ),
+    )
+    require_restore_dependency(conn.execute("SELECT changes() AS c").fetchone()["c"] == 1)
+
+
+def sync_restored_material_search_metadata(conn: sqlite3.Connection, *, legacy_file_id: int) -> None:
+    """Update local derived metadata without re-extracting or changing indexed content."""
+    file_row = conn.execute("SELECT * FROM files WHERE id=?", (legacy_file_id,)).fetchone()
+    require_restore_dependency(file_row is not None)
+    for table in ("document_chunks", "questions", "solutions"):
+        conn.execute(
+            f"UPDATE {table} SET course_code=?, week_label=?, exercise_type=? WHERE file_id=?",
+            (file_row["course_code"], file_row["week_label"], file_row["exercise_type"], legacy_file_id),
+        )
+    conn.execute(
+        "UPDATE document_chunks SET category=? WHERE file_id=?",
+        (file_row["category"], legacy_file_id),
+    )
+    conn.execute(
+        "UPDATE files_fts SET course_code=?, week_label=?, category=? WHERE rowid=?",
+        (file_row["course_code"], file_row["week_label"], file_row["category"], legacy_file_id),
+    )
+
+
 def apply_restore_plan(
     conn: sqlite3.Connection,
     datasets: dict[str, list[dict[str, Any]]],
@@ -5289,10 +5582,12 @@ def apply_restore_plan(
         require_restore_dependency(course_id is not None)
         course_row = course_rows[course_ref]
         unit_row = unit_rows[unit_ref] if unit_ref else None
+        material_type = str(record["material_type"])
+        section = section_for_material_type(material_type)
         conn.execute(
             """
             UPDATE files SET course_id=?, week_id=?, course_code=?, course_name=?,
-              week_label=?, week_number=?, display_name=?, material_type=?, category=?,
+              week_label=?, week_number=?, section=?, display_name=?, material_type=?, category=?,
               exercise_type=?, inbox=?, active=?, removed_at=?, metadata_locked=1, material_updated_at=?
             WHERE id=?
             """,
@@ -5300,13 +5595,20 @@ def apply_restore_plan(
                 course_id, week_id, course_row["course_code"], course_row["display_name"],
                 unit_row["week_label"] if unit_row else None,
                 unit_row["week_number"] if unit_row else None,
-                record["display_name"], record["material_type"], record["category"], record["exercise_type"],
+                section, record["display_name"], material_type, record["category"], record["exercise_type"],
                 int(record["inbox"]), int(record["active"]), record["removed_at"], record["updated_at"], file_id,
             ),
         )
         require_restore_dependency(conn.execute("SELECT changes() AS c").fetchone()["c"] == 1)
         updated += 1
         wrote("after_overlay")
+        sync_restored_material_projection(
+            conn,
+            legacy_file_id=file_id,
+            material_stable_id=material_resolution[str(record["material_ref"])],
+        )
+        wrote("after_overlay_projection")
+        sync_restored_material_search_metadata(conn, legacy_file_id=file_id)
 
     note_creates = [record for record in datasets["data/notes.json"] if str(record["stable_id"]) in selected]
     for index, record in enumerate(note_creates, start=1):

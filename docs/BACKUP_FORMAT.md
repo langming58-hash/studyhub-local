@@ -182,6 +182,13 @@ Both `data/ai_history.json` and `data/connector_user_state.json` must remain
 empty in v1; non-empty records are rejected even if their JSON shape otherwise
 resembles an older draft.
 
+Incoming archives are untrusted input even when every manifest hash has been
+recomputed. The canonical validator used by both Preview and Apply therefore
+validates exact JSON types, boolean/integer separation, bounded text and
+timestamps, control characters, closed v1 enums, SHA-256 syntax, numeric
+ranges, and bounded safe source-relative paths before planning begins. It does
+not coerce strings, integers, or booleans and does not sanitize malformed input.
+
 ## Read-Only Restore Preview
 
 The desktop app selects one archive through a native picker and copies it into
@@ -243,3 +250,10 @@ service, or accepts browser-supplied paths. The private staged copy remains unti
 the user explicitly discards it. A successful commit currently has no automatic
 Undo; source relinking and audited backup-wins decisions require later focused
 work.
+
+When Apply restores a material overlay, the same transaction synchronizes the
+existing legacy compatibility row, its existing Phase-1 Material projection,
+and local derived search metadata. Section is derived from the restored
+material type, while exported category and exercise-type values remain the
+user-owned overlay. This narrow synchronization never creates or changes a
+Source, Blob, MaterialVersion, current version, byte hash, or extracted content.

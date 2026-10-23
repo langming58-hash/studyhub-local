@@ -169,6 +169,14 @@ backup-wins overwrite decisions, post-commit Undo, scheduled/cloud backup, and
 original-file backup are not implemented. The canonical contract is
 [Backup Export Format](BACKUP_FORMAT.md).
 
+Backup archives remain untrusted after ZIP and checksum verification. Preview
+and Apply share one semantic v1 validator for exact field types, bounds, enums,
+hashes, controls, and safe relative paths. Material-overlay Apply performs a
+narrow in-transaction synchronization of the existing `files` row, existing
+Phase-1 `materials` projection, and derived local search metadata. It does not
+run global reconciliation, migrate schema, rebuild content indexes, or mutate
+Source/Blob/MaterialVersion provenance and identity.
+
 Not implemented yet: production Canvas OAuth, remote Term mapping, remote
 deletion semantics, notifications, automatic/background sync, SourceAnchor, Evidence,
 DerivedArtifact/ProcessingRecipe, Entity Resolution, the Assessments target

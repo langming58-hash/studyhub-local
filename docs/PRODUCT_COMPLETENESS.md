@@ -74,7 +74,7 @@ clearly synthetic Demo fixtures.
 | Data | Reset StudyHub-owned state only | IMPLEMENTED | Confirmation required |
 | Data | Versioned user-owned metadata export | IMPLEMENTED | Canonical JSON ZIP; privacy-safe and validated |
 | Data | Restore validate/preview/explain | IMPLEMENTED | Deterministic, zero-mutation, native trusted staging |
-| Data | Restore apply/relink decisions | DESIGNED | Separate reviewed PR; no Apply control yet |
+| Data | Transactional restore apply | IMPLEMENTED | Explicit Keep current/Skip decisions; no relink or backup-wins |
 | Search | Local metadata and extracted-content search | EXISTS | Preserve |
 | Preview | PDF, Office fallback, text/code preview | EXISTS | Preserve |
 | Notes | File notes with persistence | EXISTS | Preserve |
@@ -178,6 +178,12 @@ Failure rolls back fully, and a final source-candidate check prevents applying
 against changed bytes. It never overwrites or moves an original source file,
 creates remote facts, contacts external services, or defaults to backup-wins.
 Automatic relinking and post-commit Undo remain future focused work.
+
+Both Preview and Apply treat archives as untrusted and use the same strict
+semantic v1 validator before planning. A restored material overlay atomically
+keeps the legacy compatibility row, existing Material projection, and derived
+local search metadata consistent. It never creates or changes source bytes,
+remote facts, Sources, Blobs, or MaterialVersions.
 
 ## P0 Verification
 

@@ -198,6 +198,14 @@ and makes no Canvas, OpenAI, or CredentialStore call. It never writes academic
 source files. Automatic relinking, backup-wins replacement, and post-commit Undo
 are not implemented.
 
+Archive hashes prove integrity, not trust. The shared Preview/Apply validator
+rejects semantically invalid field types, oversized text, unsafe controls,
+invalid enums and hashes, absurd numeric metadata, and unsafe source-relative
+paths before planning or database mutation. Restored material organization is
+synchronized only into the existing compatibility/domain rows and existing
+local search metadata; derived text is not imported from the archive, and no
+source bytes or remote-authoritative facts are changed.
+
 ## Public Data Boundary
 
 Public examples, fixtures, tests, screenshots, documentation, and demo assets

@@ -546,6 +546,9 @@ def main() -> int:
         def invalid_reference(payload: dict[str, Any]) -> None:
             payload["records"][0]["target_ref"] = "../invalid"
 
+        def invalid_semantic_value(payload: dict[str, Any]) -> None:
+            payload["records"][0]["sort_order"] = True
+
         invalid_archives = {
             "unsupported_version": rewrite_archive(archive, future_version),
             "checksum_mismatch": rewrite_archive(archive, checksum_mismatch),
@@ -557,6 +560,9 @@ def main() -> int:
             ),
             "invalid_stable_reference": mutate_dataset(
                 source, archive, "data/notes.json", invalid_reference
+            ),
+            "invalid_semantic_integer": mutate_dataset(
+                source, archive, "data/terms.json", invalid_semantic_value
             ),
             "path_traversal": write_archive(
                 base / "traversal.zip",
