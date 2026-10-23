@@ -190,8 +190,13 @@ Preview revalidates the archive, reads the current database query-only, and may
 hash only the explicitly referenced StudyLibrary-relative candidate needed for
 comparison. It does not scan the library, contact Canvas/OpenAI/CredentialStore,
 or mutate persistent user state. Safe preview responses omit absolute paths,
-raw provider IDs, database IDs, and hidden technical hashes. Restore apply and
-automatic relinking are not implemented.
+raw provider IDs, database IDs, and hidden technical hashes. Restore Apply uses
+the same validated in-memory archive snapshot and canonical planner inside one
+`BEGIN IMMEDIATE` transaction. It accepts no paths or replacement values,
+applies only allowlisted user-owned state, rechecks explicit source candidates,
+and makes no Canvas, OpenAI, or CredentialStore call. It never writes academic
+source files. Automatic relinking, backup-wins replacement, and post-commit Undo
+are not implemented.
 
 ## Public Data Boundary
 

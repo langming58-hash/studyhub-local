@@ -762,7 +762,7 @@ def main() -> int:
         check("all_export_entry_points_avoid_credentials", blocked == {"canvas": 0, "openai": 0, "credentials": 0}, failures)
 
         check("profile_isolation_preserved", archive_one.parent == server_one.DATA_DIR / "exports" and archive_two.parent == server_two.DATA_DIR / "exports", failures)
-        check("restore_apply_is_not_implemented", "/api/backup/restore-apply" not in (ROOT / "server.py").read_text(encoding="utf-8"), failures)
+        check("restore_apply_remains_separate_from_export", "def apply_staged_restore" in (ROOT / "server.py").read_text(encoding="utf-8"), failures)
         conn_one.close()
         conn_two.close()
 

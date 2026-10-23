@@ -22,6 +22,8 @@ const state = {
     plan: null,
     status: "idle",
     error: "",
+    decisions: {},
+    result: null,
   },
   studyMode: "practice",
   searchFiltersOpen: false,
@@ -1668,12 +1670,22 @@ function restoreClassificationLabel(classification) {
   return t(`restore.classification.${String(classification || "").toLowerCase()}`);
 }
 
+function restoreDecisionKey(action) {
+  return `${action.dataset}::${action.stable_id}`;
+}
+
+function restoreRequiredDecision(action) {
+  if (action.classification === "CONFLICT") return "KEEP_LOCAL";
+  if (["RELINK_REQUIRED", "UNRESOLVED_REFERENCE", "UNSUPPORTED_BY_V1"].includes(action.classification)) return "SKIP";
+  return "";
+}
+
 function restorePreviewMarkup() {
   const restore = state.restore;
   if (restore.status === "validating") {
     return `<p class="restore-status" role="status" aria-live="polite">${escapeHtml(t("restore.validating"))}</p>`;
   }
-  if (restore.error) {
+  if (restore.error && !restore.plan) {
     return `
       <div class="notice error" role="alert">
         <strong>${escapeHtml(t("restore.validationFailed"))}</strong>
@@ -1692,8 +1704,12 @@ function restorePreviewMarkup() {
     actions: actions.filter((action) => group.classes.includes(action.classification)),
   })).filter((group) => group.actions.length);
   const summary = plan.summary || {};
+  const requiredActions = actions.filter((action) => restoreRequiredDecision(action));
+  const decisionsComplete = requiredActions.every((action) => state.restore.decisions[restoreDecisionKey(action)] === restoreRequiredDecision(action));
+  const result = restore.result;
   return `
     <div class="restore-preview" aria-labelledby="restorePreviewTitle">
+      ${restore.error ? `<div class="notice error" role="alert"><strong>${escapeHtml(restore.error)}</strong><p>${escapeHtml(t("restore.reviewAgain"))}</p></div>` : ""}
       <div class="restore-preview-head">
         <div>
           <p class="eyebrow">${escapeHtml(t("restore.validated"))}</p>
@@ -1723,6 +1739,18 @@ function restorePreviewMarkup() {
                   <span class="restore-classification">${escapeHtml(restoreClassificationLabel(action.classification))}</span>
                   ${action.reason ? `<small>${escapeHtml(t(`restore.reason.${action.reason}`))}</small>` : ""}
                   ${(action.differing_fields || []).length ? `<small>${escapeHtml(t("restore.fieldsDiffer", { fields: action.differing_fields.join(", ") }))}</small>` : ""}
+                  ${restoreRequiredDecision(action) ? `
+                    <fieldset class="restore-decision">
+                      <legend>${escapeHtml(t("restore.decisionRequired"))}</legend>
+                      <label>
+                        <input type="radio" name="restore-${escapeHtml(action.stable_id)}"
+                          data-restore-decision="${escapeHtml(restoreDecisionKey(action))}"
+                          value="${restoreRequiredDecision(action)}"
+                          ${state.restore.decisions[restoreDecisionKey(action)] === restoreRequiredDecision(action) ? "checked" : ""}>
+                        <span>${escapeHtml(t(restoreRequiredDecision(action) === "KEEP_LOCAL" ? "restore.keepCurrent" : "restore.skipForNow"))}</span>
+                      </label>
+                    </fieldset>
+                  ` : ""}
                 </li>
               `).join("")}
             </ul>
@@ -1733,8 +1761,32 @@ function restorePreviewMarkup() {
         <p>${escapeHtml(t("restore.originalsExcluded"))}</p>
         <p>${escapeHtml(t("restore.aiExcluded"))}</p>
         <p>${escapeHtml(t("restore.canvasExcluded"))}</p>
+        <p>${escapeHtml(t("restore.undoUnavailable"))}</p>
       </div>
-      <p class="notice" role="status"><strong>${escapeHtml(t("restore.reviewOnly"))}</strong> ${escapeHtml(t("restore.applyUnavailable"))}</p>
+      ${result ? `
+        <div class="notice" role="status" aria-live="polite">
+          <strong>${escapeHtml(t("restore.complete"))}</strong>
+          <p>${escapeHtml(t("restore.resultSummary", {
+            created: result.created || 0,
+            updated: result.updated_user_state || 0,
+            kept: result.kept_local || 0,
+            skipped: result.skipped || 0,
+            noop: result.noop || 0,
+          }))}</p>
+        </div>
+      ` : ""}
+      <div class="restore-apply-panel" aria-live="polite">
+        <p>${escapeHtml(t("restore.applySummary", {
+          created: Number(summary.create || 0),
+          updated: Number(summary.update_user_state || 0),
+          kept: requiredActions.filter((action) => action.classification === "CONFLICT").length,
+          skipped: requiredActions.filter((action) => action.classification !== "CONFLICT").length,
+        }))}</p>
+        <button class="button primary" type="button" data-apply-restore="1"
+          ${decisionsComplete && restore.status !== "applying" ? "" : "disabled"}
+          aria-describedby="restoreApplyHelp">${escapeHtml(t("restore.apply"))}</button>
+        <small id="restoreApplyHelp">${escapeHtml(decisionsComplete ? t("restore.readyToApply") : t("restore.completeDecisions"))}</small>
+      </div>
     </div>
   `;
 }
@@ -2381,6 +2433,8 @@ document.addEventListener("click", async (event) => {
     state.restore.status = "validating";
     state.restore.error = "";
     state.restore.plan = null;
+    state.restore.decisions = {};
+    state.restore.result = null;
     await renderSettings();
     try {
       const restoreId = await desktopInvoke("choose_backup_archive");
@@ -2400,6 +2454,50 @@ document.addEventListener("click", async (event) => {
     await renderSettings();
     return;
   }
+  if (target.dataset.applyRestore) {
+    if (!state.restore.restoreId || !state.restore.plan) return;
+    if (!confirm(t("restore.confirmApply"))) return;
+    const plan = state.restore.plan;
+    const actions = (plan.sections || []).flatMap((section) => section.actions || []);
+    const decisions = actions.filter((action) => restoreRequiredDecision(action)).map((action) => ({
+      dataset: action.dataset,
+      stable_id: action.stable_id,
+      decision: state.restore.decisions[restoreDecisionKey(action)],
+    }));
+    state.restore.status = "applying";
+    state.restore.error = "";
+    await renderSettings();
+    try {
+      const result = await postJson("/api/backup/restore-apply", {
+        restore_id: state.restore.restoreId,
+        expected_plan_revision: plan.plan_revision,
+        decisions,
+      });
+      state.restore.result = result.applied;
+      const refreshed = await postJson("/api/backup/restore-preview", { restore_id: state.restore.restoreId });
+      state.restore.plan = refreshed.plan;
+      state.restore.decisions = {};
+      state.restore.status = "ready";
+      await loadBase();
+    } catch (error) {
+      if (error.message === "stale_restore_plan" || error.message === "stale_restore_source_state") {
+        state.restore.decisions = {};
+        state.restore.result = null;
+        try {
+          const refreshed = await postJson("/api/backup/restore-preview", { restore_id: state.restore.restoreId });
+          state.restore.plan = refreshed.plan;
+        } catch (_refreshError) {
+          state.restore.plan = null;
+        }
+        state.restore.error = t("restore.localStateChanged");
+      } else {
+        state.restore.error = t("restore.failed", { error: error.message || String(error) });
+      }
+      state.restore.status = "error";
+    }
+    await renderSettings();
+    return;
+  }
   if (target.dataset.discardRestore) {
     if (state.restore.restoreId) {
       try {
@@ -2409,7 +2507,7 @@ document.addEventListener("click", async (event) => {
         return;
       }
     }
-    state.restore = { restoreId: null, plan: null, status: "idle", error: "" };
+    state.restore = { restoreId: null, plan: null, status: "idle", error: "", decisions: {}, result: null };
     await renderSettings();
     return;
   }
@@ -2662,6 +2760,11 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  if (event.target.matches("[data-restore-decision]")) {
+    state.restore.decisions[event.target.dataset.restoreDecision] = event.target.value;
+    renderSettings();
+    return;
+  }
   if (event.target.matches("[data-material-select]")) {
     const id = Number(event.target.dataset.materialSelect);
     if (event.target.checked) state.selectedMaterialIds.add(id);

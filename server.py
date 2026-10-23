@@ -216,7 +216,9 @@ BACKUP_DATA_MEMBERS = (
 BACKUP_MEMBERS = ("manifest.json", *BACKUP_DATA_MEMBERS)
 BACKUP_STABLE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 RESTORE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+RESTORE_PLAN_REVISION_RE = re.compile(r"^restore_[0-9a-f]{24}$")
 RESTORE_PLAN_VERSION = 1
+RESTORE_MAX_DECISIONS = 100_000
 BACKUP_REQUIRED_SCHEMA: dict[str, set[str]] = {
     "schema_migrations": {"version", "name", "applied_at"},
     "terms": {"id", "stable_id", "name", "archived", "sort_order", "created_at", "updated_at"},
@@ -430,6 +432,7 @@ WHATS_NEW_DEFAULT_LIMIT = 50
 WHATS_NEW_MAX_LIMIT = 100
 WHATS_NEW_MAX_MARK_SEEN = 100
 _CANVAS_SYNC_APPLY_LOCK = threading.Lock()
+_RESTORE_APPLY_LOCK = threading.Lock()
 
 
 class CanvasConnectionError(RuntimeError):
@@ -2131,6 +2134,22 @@ def connect_backup_db_readonly() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA foreign_keys=ON")
+        validate_backup_db_schema(conn)
+        return conn
+    except Exception:
+        conn.close()
+        raise
+
+
+def connect_restore_db_writable() -> sqlite3.Connection:
+    """Open only the existing active-profile database for a restore transaction."""
+    database_path = DB_PATH.resolve()
+    if not database_path.is_file():
+        raise FileNotFoundError("StudyHub database is not initialized")
+    conn = sqlite3.connect(f"{database_path.as_uri()}?mode=rw", uri=True, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
         conn.execute("PRAGMA foreign_keys=ON")
         validate_backup_db_schema(conn)
         return conn
@@ -4271,13 +4290,18 @@ def validate_backup_snapshot(
         if set(manifest) != manifest_fields or manifest.get("minimum_restore_format_version") != BACKUP_FORMAT_VERSION:
             raise ValueError("Backup manifest schema is invalid")
         expected_features = {
-            "restore_supported": False,
             "original_files_included": False,
             "canvas_selection_included": False,
             "ai_history_included": False,
             "whats_new_acknowledgements": "reattach-only",
         }
-        if manifest.get("features") != expected_features:
+        features = manifest.get("features")
+        if (
+            not isinstance(features, dict)
+            or set(features) != {"restore_supported", *expected_features}
+            or not isinstance(features.get("restore_supported"), bool)
+            or any(features.get(key) != value for key, value in expected_features.items())
+        ):
             raise ValueError("Backup manifest features are invalid")
         entries = manifest.get("entries")
         if not isinstance(entries, dict) or set(entries) != set(BACKUP_DATA_MEMBERS):
@@ -4375,7 +4399,7 @@ def export_user_owned_backup(
         "runtime_profile": RUNTIME_PROFILE,
         "disposable_demo": RUNTIME_PROFILE == "demo-test",
         "features": {
-            "restore_supported": False,
+            "restore_supported": True,
             "original_files_included": False,
             "canvas_selection_included": False,
             "ai_history_included": False,
@@ -4600,17 +4624,24 @@ def restore_multiset_actions(
     return actions
 
 
-def build_restore_plan(
+def plan_restore_state(
     conn: sqlite3.Connection,
     manifest: dict[str, Any],
     datasets: dict[str, list[dict[str, Any]]],
-) -> dict[str, Any]:
-    if conn.in_transaction:
+    *,
+    transaction_owned_by_caller: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if transaction_owned_by_caller:
+        if not conn.in_transaction:
+            raise ValueError("Restore apply requires a caller-owned transaction")
+    elif conn.in_transaction:
         raise ValueError("Restore preview requires a clean read snapshot")
     actions: list[dict[str, Any]] = []
     source_inspection: dict[str, dict[str, Any]] = {}
+    source_candidates: dict[str, dict[str, Any]] = {}
     target_state_tokens: dict[str, str] = {}
-    conn.execute("BEGIN")
+    if not transaction_owned_by_caller:
+        conn.execute("BEGIN")
     try:
         current = project_user_owned_backup(conn)
         material_rows = conn.execute(
@@ -4633,7 +4664,8 @@ def build_restore_plan(
             """
         ).fetchall()
     finally:
-        conn.rollback()
+        if not transaction_owned_by_caller:
+            conn.rollback()
 
     current_by_member = {
         member: {str(record["stable_id"]): record for record in records}
@@ -4747,6 +4779,11 @@ def build_restore_plan(
                 "exists": observed_sha is not None,
                 "matches": bool(observed_sha and observed_sha == expected_sha),
                 "sha256": observed_sha or "",
+            }
+            source_candidates[material_ref] = {
+                "path": candidate,
+                "expected_size": expected_size,
+                "observed_sha256": observed_sha,
             }
         if location.get("kind") == "relink_required" or bool(record.get("missing")):
             if current_material is not None:
@@ -4943,7 +4980,7 @@ def build_restore_plan(
         "actions": actions,
     }
     plan_revision = "restore_" + hashlib.sha256(canonical_backup_json(revision_input)).hexdigest()[:24]
-    return {
+    plan = {
         "plan_version": RESTORE_PLAN_VERSION,
         "backup": {
             "format": BACKUP_FORMAT_NAME,
@@ -4967,10 +5004,29 @@ def build_restore_plan(
             "original_files_not_included",
             "ai_history_not_included",
             "canvas_state_not_included",
-            "review_only_apply_unavailable",
+            "post_commit_undo_unavailable",
+            "relink_unavailable",
         ],
         "plan_revision": plan_revision,
     }
+    return plan, {
+        "material_resolution": dict(material_resolution),
+        "source_candidates": source_candidates,
+    }
+
+
+def build_restore_plan(
+    conn: sqlite3.Connection,
+    manifest: dict[str, Any],
+    datasets: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    plan, _context = plan_restore_state(
+        conn,
+        manifest,
+        datasets,
+        transaction_owned_by_caller=False,
+    )
+    return plan
 
 
 def preview_staged_restore(restore_id: Any) -> dict[str, Any]:
@@ -4983,6 +5039,425 @@ def preview_staged_restore(restore_id: Any) -> dict[str, Any]:
         return build_restore_plan(conn, manifest, datasets)
     finally:
         conn.close()
+
+
+class RestoreApplyError(Exception):
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
+def normalize_restore_decisions(
+    values: Any,
+    actions: list[dict[str, Any]],
+) -> dict[tuple[str, str], str]:
+    if not isinstance(values, list) or len(values) > RESTORE_MAX_DECISIONS:
+        raise RestoreApplyError("invalid_restore_decisions")
+    action_map = {(item["dataset"], item["stable_id"]): item for item in actions}
+    required = {
+        (item["dataset"], item["stable_id"]): "KEEP_LOCAL" if item["classification"] == "CONFLICT" else "SKIP"
+        for item in actions
+        if item["classification"] in {
+            "CONFLICT", "RELINK_REQUIRED", "UNRESOLVED_REFERENCE", "UNSUPPORTED_BY_V1",
+        }
+    }
+    decisions: dict[tuple[str, str], str] = {}
+    for value in values:
+        if not isinstance(value, dict) or set(value) != {"dataset", "stable_id", "decision"}:
+            raise RestoreApplyError("invalid_restore_decisions")
+        dataset = value.get("dataset")
+        stable_id = value.get("stable_id")
+        decision = value.get("decision")
+        if not all(isinstance(item, str) for item in (dataset, stable_id, decision)):
+            raise RestoreApplyError("invalid_restore_decisions")
+        key = (dataset, stable_id)
+        if key in decisions:
+            raise RestoreApplyError("duplicate_restore_decision")
+        action = action_map.get(key)
+        if action is None:
+            raise RestoreApplyError("unknown_restore_decision_target")
+        allowed = required.get(key)
+        if allowed is None or decision != allowed:
+            raise RestoreApplyError("unsupported_restore_decision")
+        decisions[key] = decision
+    if set(decisions) != set(required):
+        raise RestoreApplyError("restore_decisions_incomplete")
+    return decisions
+
+
+def restore_action_index(plan: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    actions = [action for section in plan["sections"] for action in section["actions"]]
+    by_stable_id: dict[str, dict[str, Any]] = {}
+    for action in actions:
+        stable_id = str(action["stable_id"])
+        if stable_id in by_stable_id:
+            raise RestoreApplyError("restore_plan_identity_collision")
+        by_stable_id[stable_id] = action
+    return actions, by_stable_id
+
+
+def require_restore_dependency(condition: bool) -> None:
+    if not condition:
+        raise RestoreApplyError("restore_dependency_unresolved")
+
+
+def apply_restore_plan(
+    conn: sqlite3.Connection,
+    datasets: dict[str, list[dict[str, Any]]],
+    plan: dict[str, Any],
+    context: dict[str, Any],
+    decisions: dict[tuple[str, str], str],
+    *,
+    failure_point: str | None = None,
+) -> dict[str, int]:
+    """Apply a validated plan inside a caller-owned transaction without committing."""
+    if not conn.in_transaction:
+        raise ValueError("Restore apply helper requires a caller-owned transaction")
+    actions, actions_by_id = restore_action_index(plan)
+    safe_classes = {"CREATE", "UPDATE_USER_STATE"}
+    selected = {
+        stable_id: action
+        for stable_id, action in actions_by_id.items()
+        if action["classification"] in safe_classes
+    }
+    material_resolution = dict(context["material_resolution"])
+
+    term_rows = {
+        str(row["stable_id"]): row
+        for row in conn.execute("SELECT * FROM terms WHERE stable_id!=''").fetchall()
+    }
+    course_rows = {
+        str(row["stable_id"]): row
+        for row in conn.execute("SELECT * FROM courses WHERE stable_id!=''").fetchall()
+    }
+    unit_rows = {
+        str(row["stable_id"]): row
+        for row in conn.execute("SELECT * FROM weeks WHERE stable_id!=''").fetchall()
+    }
+    material_rows = {
+        str(row["stable_id"]): row
+        for row in conn.execute(
+            "SELECT m.stable_id, m.legacy_file_id FROM materials m WHERE m.stable_id!=''"
+        ).fetchall()
+    }
+
+    # Validate every dependency before the first mutation.
+    restorable_terms = set(term_rows) | {
+        str(record["stable_id"])
+        for record in datasets["data/terms.json"]
+        if str(record["stable_id"]) in selected
+    }
+    restorable_courses = set(course_rows)
+    for record in datasets["data/courses.json"]:
+        stable_id = str(record["stable_id"])
+        if stable_id not in selected:
+            continue
+        require_restore_dependency(record["course_kind"] == "local")
+        require_restore_dependency(record.get("term_ref") is None or record["term_ref"] in restorable_terms)
+        folder_name = f"restored-{hashlib.sha256(stable_id.encode()).hexdigest()[:24]}"
+        require_restore_dependency(
+            conn.execute("SELECT 1 FROM courses WHERE folder_name=?", (folder_name,)).fetchone() is None
+        )
+        restorable_courses.add(stable_id)
+    restorable_units = set(unit_rows)
+    for record in datasets["data/learning_units.json"]:
+        if str(record["stable_id"]) in selected:
+            require_restore_dependency(record["course_ref"] in restorable_courses)
+            parent = course_rows.get(str(record["course_ref"]))
+            if parent is not None:
+                require_restore_dependency(
+                    conn.execute(
+                        "SELECT 1 FROM weeks WHERE course_id=? AND week_label=?",
+                        (parent["id"], record["label"]),
+                    ).fetchone() is None
+                )
+            restorable_units.add(str(record["stable_id"]))
+    resolved_file_ids: dict[str, int] = {}
+    for backup_ref, resolved_ref in material_resolution.items():
+        row = material_rows.get(resolved_ref)
+        require_restore_dependency(row is not None and row["legacy_file_id"] is not None)
+        resolved_file_ids[str(backup_ref)] = int(row["legacy_file_id"])
+    for member, ref_field in (
+        ("data/material_overlays.json", "material_ref"),
+        ("data/notes.json", "target_ref"),
+        ("data/stars.json", "target_ref"),
+    ):
+        for record in datasets[member]:
+            if str(record["stable_id"]) in selected:
+                require_restore_dependency(str(record[ref_field]) in resolved_file_ids)
+    for record in datasets["data/material_overlays.json"]:
+        if str(record["stable_id"]) not in selected:
+            continue
+        require_restore_dependency(record.get("course_ref") in restorable_courses)
+        require_restore_dependency(
+            record.get("learning_unit_ref") is None or record["learning_unit_ref"] in restorable_units
+        )
+    for record in datasets["data/study_records.json"]:
+        if str(record["stable_id"]) not in selected:
+            continue
+        ref = record.get("material_ref") if record["record_type"] != "bookmark" else record.get("target_ref")
+        if ref is not None:
+            require_restore_dependency(str(ref) in resolved_file_ids)
+        course_ref = record.get("course_ref")
+        if course_ref is not None:
+            require_restore_dependency(str(course_ref) in restorable_courses)
+    existing_events = {
+        str(row["stable_id"])
+        for row in conn.execute("SELECT stable_id FROM academic_change_events").fetchall()
+    }
+    for record in datasets["data/whats_new_state.json"]:
+        if str(record["stable_id"]) in selected:
+            require_restore_dependency(str(record["event_stable_id"]) in existing_events)
+
+    created = 0
+    updated = 0
+    writes = 0
+
+    def wrote(kind: str) -> None:
+        nonlocal writes
+        writes += 1
+        if failure_point == "after_first_create" and writes == 1:
+            raise RuntimeError("synthetic_restore_failure_after_first_create")
+        if failure_point == kind:
+            raise RuntimeError(f"synthetic_restore_failure_{kind}")
+
+    for record in datasets["data/terms.json"]:
+        stable_id = str(record["stable_id"])
+        if stable_id not in selected:
+            continue
+        conn.execute(
+            "INSERT INTO terms(stable_id, name, archived, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (stable_id, record["name"], int(record["archived"]), int(record["sort_order"]), record["created_at"], record["updated_at"]),
+        )
+        term_rows[stable_id] = conn.execute("SELECT * FROM terms WHERE stable_id=?", (stable_id,)).fetchone()
+        created += 1
+        wrote("after_term")
+
+    for record in datasets["data/courses.json"]:
+        stable_id = str(record["stable_id"])
+        if stable_id not in selected:
+            continue
+        term_ref = record.get("term_ref")
+        term_id = int(term_rows[term_ref]["id"]) if term_ref else None
+        folder_name = f"restored-{hashlib.sha256(stable_id.encode()).hexdigest()[:24]}"
+        conn.execute(
+            """
+            INSERT INTO courses(stable_id, code, course_code, name, display_name, folder_name, path,
+              source_folder, source_kind, term_id, archived, active, removed_at, sort_order,
+              metadata_locked, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, '', '', 'managed', ?, ?, ?, NULL, ?, ?, ?, ?)
+            """,
+            (
+                stable_id, record["course_code"], record["course_code"], record["display_name"],
+                record["display_name"], folder_name, term_id, int(record["archived"]),
+                int(record["active"]), int(record["sort_order"]), int(record["metadata_locked"]),
+                record["created_at"], record["updated_at"],
+            ),
+        )
+        course_rows[stable_id] = conn.execute("SELECT * FROM courses WHERE stable_id=?", (stable_id,)).fetchone()
+        created += 1
+        wrote("after_course")
+
+    for record in datasets["data/learning_units.json"]:
+        stable_id = str(record["stable_id"])
+        if stable_id not in selected:
+            continue
+        course_id = int(course_rows[str(record["course_ref"])]["id"])
+        conn.execute(
+            """
+            INSERT INTO weeks(stable_id, course_id, week_label, week_number, path, has_materials,
+              file_count, kind, origin, archived, created_at, updated_at)
+            VALUES (?, ?, ?, ?, '', 0, 0, ?, 'managed', ?, ?, ?)
+            """,
+            (
+                stable_id, course_id, record["label"], record["number"], record["kind"],
+                int(record["archived"]), record["created_at"], record["updated_at"],
+            ),
+        )
+        unit_rows[stable_id] = conn.execute("SELECT * FROM weeks WHERE stable_id=?", (stable_id,)).fetchone()
+        created += 1
+        wrote("after_learning_unit")
+
+    for record in datasets["data/material_overlays.json"]:
+        if str(record["stable_id"]) not in selected:
+            continue
+        file_id = resolved_file_ids[str(record["material_ref"])]
+        course_ref = record.get("course_ref")
+        unit_ref = record.get("learning_unit_ref")
+        course_id = int(course_rows[course_ref]["id"]) if course_ref else None
+        week_id = int(unit_rows[unit_ref]["id"]) if unit_ref else None
+        require_restore_dependency(course_id is not None)
+        course_row = course_rows[course_ref]
+        unit_row = unit_rows[unit_ref] if unit_ref else None
+        conn.execute(
+            """
+            UPDATE files SET course_id=?, week_id=?, course_code=?, course_name=?,
+              week_label=?, week_number=?, display_name=?, material_type=?, category=?,
+              exercise_type=?, inbox=?, active=?, removed_at=?, metadata_locked=1, material_updated_at=?
+            WHERE id=?
+            """,
+            (
+                course_id, week_id, course_row["course_code"], course_row["display_name"],
+                unit_row["week_label"] if unit_row else None,
+                unit_row["week_number"] if unit_row else None,
+                record["display_name"], record["material_type"], record["category"], record["exercise_type"],
+                int(record["inbox"]), int(record["active"]), record["removed_at"], record["updated_at"], file_id,
+            ),
+        )
+        require_restore_dependency(conn.execute("SELECT changes() AS c").fetchone()["c"] == 1)
+        updated += 1
+        wrote("after_overlay")
+
+    note_creates = [record for record in datasets["data/notes.json"] if str(record["stable_id"]) in selected]
+    for index, record in enumerate(note_creates, start=1):
+        file_id = resolved_file_ids[str(record["target_ref"])]
+        file_row = conn.execute("SELECT course_id, week_label FROM files WHERE id=?", (file_id,)).fetchone()
+        require_restore_dependency(file_row is not None)
+        conn.execute(
+            "INSERT INTO notes(target_type, target_id, course_id, week_label, body, created_at, updated_at) VALUES ('file', ?, ?, ?, ?, ?, ?)",
+            (file_id, file_row["course_id"], file_row["week_label"], record["body"], record["created_at"], record["updated_at"]),
+        )
+        created += 1
+        wrote("midway_notes" if failure_point == "midway_notes" and index >= max(1, len(note_creates) // 2) else "after_note")
+
+    for record in datasets["data/stars.json"]:
+        if str(record["stable_id"]) in selected:
+            conn.execute(
+                "INSERT INTO stars(target_type, target_id, created_at) VALUES ('file', ?, ?)",
+                (resolved_file_ids[str(record["target_ref"])], record["created_at"]),
+            )
+            created += 1
+            wrote("after_star")
+
+    for record in datasets["data/study_records.json"]:
+        if str(record["stable_id"]) not in selected:
+            continue
+        record_type = record["record_type"]
+        if record_type == "attempt":
+            file_id = resolved_file_ids.get(str(record.get("material_ref"))) if record.get("material_ref") else None
+            conn.execute(
+                "INSERT INTO attempts(file_id, prompt, answer_text, result, created_at) VALUES (?, NULL, ?, ?, ?)",
+                (file_id, record["answer_text"], record["result"], record["created_at"]),
+            )
+        elif record_type == "wrong_question_state":
+            course_ref = record.get("course_ref")
+            course_id = int(course_rows[course_ref]["id"]) if course_ref else None
+            file_id = resolved_file_ids.get(str(record.get("material_ref"))) if record.get("material_ref") else None
+            conn.execute(
+                """
+                INSERT INTO wrong_questions(course_id, week_label, type, source_file_id, question_ref,
+                  mistake, concept, attempts, last_reviewed, mastery, created_at)
+                VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    course_id, record["learning_unit_label"], file_id, record["question_ref"],
+                    record["mistake"], record["concept"], int(record["attempt_count"]),
+                    record["last_reviewed"], record["mastery"], record["created_at"],
+                ),
+            )
+        elif record_type == "study_session":
+            course_ref = record.get("course_ref")
+            course_id = int(course_rows[course_ref]["id"]) if course_ref else None
+            conn.execute(
+                "INSERT INTO study_sessions(course_id, week_label, mode, started_at, ended_at) VALUES (?, ?, ?, ?, ?)",
+                (course_id, record["learning_unit_label"], record["mode"], record["started_at"], record["ended_at"]),
+            )
+        elif record_type == "bookmark":
+            conn.execute(
+                "INSERT INTO bookmarks(target_type, target_id, label, created_at) VALUES ('file', ?, ?, ?)",
+                (resolved_file_ids[str(record["target_ref"])], record["label"], record["created_at"]),
+            )
+        else:
+            raise RestoreApplyError("unsupported_restore_record")
+        created += 1
+        wrote("after_study_records")
+
+    if failure_point == "before_whats_new":
+        raise RuntimeError("synthetic_restore_failure_before_whats_new")
+    for record in datasets["data/whats_new_state.json"]:
+        if str(record["stable_id"]) not in selected:
+            continue
+        event = conn.execute(
+            "SELECT id FROM academic_change_events WHERE stable_id=?",
+            (record["event_stable_id"],),
+        ).fetchone()
+        require_restore_dependency(event is not None)
+        conn.execute(
+            "INSERT INTO academic_change_event_state(event_id, seen_at, updated_at) VALUES (?, ?, ?) ON CONFLICT(event_id) DO UPDATE SET seen_at=excluded.seen_at, updated_at=excluded.updated_at",
+            (event["id"], record["seen_at"], record["updated_at"]),
+        )
+        updated += 1
+        wrote("after_whats_new")
+
+    if any(str(record["stable_id"]) in selected for record in datasets["data/material_overlays.json"]):
+        refresh_course_week_counts(conn)
+    if failure_point == "before_commit":
+        raise RuntimeError("synthetic_restore_failure_before_commit")
+    return {
+        "created": created,
+        "updated_user_state": updated,
+        "kept_local": sum(1 for value in decisions.values() if value == "KEEP_LOCAL"),
+        "skipped": sum(1 for value in decisions.values() if value == "SKIP"),
+        "noop": sum(1 for action in actions if action["classification"] in {"MATCH", "NOOP"}),
+    }
+
+
+def verify_restore_source_candidates(context: dict[str, Any]) -> None:
+    for candidate in context["source_candidates"].values():
+        observed = hash_explicit_restore_candidate(candidate["path"], int(candidate["expected_size"]))
+        if observed != candidate["observed_sha256"]:
+            raise RestoreApplyError("stale_restore_source_state")
+
+
+def apply_staged_restore(
+    restore_id: Any,
+    expected_plan_revision: Any,
+    decision_values: Any,
+    *,
+    failure_point: str | None = None,
+    before_commit: Callable[[sqlite3.Connection], None] | None = None,
+    after_snapshot: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    expected = str(expected_plan_revision or "")
+    if not RESTORE_PLAN_REVISION_RE.fullmatch(expected):
+        raise RestoreApplyError("invalid_restore_plan_revision")
+    path = staged_restore_path(restore_id)
+    with _RESTORE_APPLY_LOCK:
+        snapshot = read_backup_archive_snapshot(path)
+        if after_snapshot:
+            after_snapshot()
+        _validation, manifest, datasets = validate_backup_snapshot(snapshot)
+        conn = connect_restore_db_writable()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            plan, context = plan_restore_state(
+                conn,
+                manifest,
+                datasets,
+                transaction_owned_by_caller=True,
+            )
+            if plan["plan_revision"] != expected:
+                raise RestoreApplyError("stale_restore_plan")
+            actions, _actions_by_id = restore_action_index(plan)
+            decisions = normalize_restore_decisions(decision_values, actions)
+            result = apply_restore_plan(
+                conn,
+                datasets,
+                plan,
+                context,
+                decisions,
+                failure_point=failure_point,
+            )
+            if before_commit:
+                before_commit(conn)
+            verify_restore_source_candidates(context)
+            conn.commit()
+            return {"ok": True, "applied": result}
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 def discard_staged_restore(restore_id: Any) -> dict[str, Any]:
@@ -8796,6 +9271,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.handle_backup_export()
             elif parsed.path == "/api/backup/restore-preview":
                 self.handle_backup_restore_preview()
+            elif parsed.path == "/api/backup/restore-apply":
+                self.handle_backup_restore_apply()
             elif parsed.path == "/api/backup/restore-discard":
                 self.handle_backup_restore_discard()
             elif parsed.path == "/api/whats-new/seen":
@@ -8979,6 +9456,24 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         if set(body) != {"restore_id"}:
             raise ValueError("Restore preview accepts only restore_id")
         self.send_json({"ok": True, "plan": preview_staged_restore(body.get("restore_id"))})
+
+    def handle_backup_restore_apply(self) -> None:
+        body = self.parse_body_json()
+        if set(body) != {"restore_id", "expected_plan_revision", "decisions"}:
+            raise ValueError("Restore apply accepts only restore_id, expected_plan_revision, and decisions")
+        try:
+            self.send_json(
+                apply_staged_restore(
+                    body.get("restore_id"),
+                    body.get("expected_plan_revision"),
+                    body.get("decisions"),
+                )
+            )
+        except RestoreApplyError as exc:
+            status = 409 if exc.code in {
+                "stale_restore_plan", "stale_restore_source_state", "restore_dependency_unresolved",
+            } else 400
+            self.send_json({"ok": False, "error": exc.code}, status)
 
     def handle_backup_restore_discard(self) -> None:
         body = self.parse_body_json()

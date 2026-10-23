@@ -612,6 +612,47 @@ menu {
   color: var(--muted);
 }
 
+.restore-decision {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.restore-decision legend {
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.restore-decision label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  cursor: pointer;
+}
+
+.restore-decision input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.restore-apply-panel {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.restore-apply-panel p,
+.restore-apply-panel small {
+  margin: 0;
+}
+
 .restore-classification {
   color: var(--muted);
   font-size: 13px;
