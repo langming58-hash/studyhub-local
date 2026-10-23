@@ -189,12 +189,11 @@ def main() -> int:
         style_source = (ROOT / "static/styles.css").read_text(encoding="utf-8")
         catalogs = (ROOT / "static/i18n/catalog.js").read_text(encoding="utf-8")
         check(
-            "settings_restore_preview_is_review_only",
+            "settings_restore_preview_preserves_review_boundary",
             'data-choose-backup="1"' in frontend_source
             and 'data-discard-restore="1"' in frontend_source
             and "/api/backup/restore-preview" in frontend_source
-            and "restore.applyUnavailable" in frontend_source
-            and "restore-apply" not in frontend_source,
+            and "restoreRequiredDecision" in frontend_source,
             failures,
         )
         check(
@@ -547,6 +546,9 @@ def main() -> int:
         def invalid_reference(payload: dict[str, Any]) -> None:
             payload["records"][0]["target_ref"] = "../invalid"
 
+        def invalid_semantic_value(payload: dict[str, Any]) -> None:
+            payload["records"][0]["sort_order"] = True
+
         invalid_archives = {
             "unsupported_version": rewrite_archive(archive, future_version),
             "checksum_mismatch": rewrite_archive(archive, checksum_mismatch),
@@ -558,6 +560,9 @@ def main() -> int:
             ),
             "invalid_stable_reference": mutate_dataset(
                 source, archive, "data/notes.json", invalid_reference
+            ),
+            "invalid_semantic_integer": mutate_dataset(
+                source, archive, "data/terms.json", invalid_semantic_value
             ),
             "path_traversal": write_archive(
                 base / "traversal.zip",
@@ -614,7 +619,7 @@ def main() -> int:
         check("discard_removes_only_staged_copy", status == 200 and discard.get("discarded") == discard_id and not discard_copy.exists() and archive.exists() and hashlib.sha256(archive.read_bytes()).hexdigest() == original_hash, failures)
 
         server_source = (ROOT / "server.py").read_text(encoding="utf-8")
-        check("restore_apply_not_implemented", "/api/backup/restore-apply" not in server_source, failures)
+        check("restore_apply_is_separate_narrow_endpoint", 'parsed.path == "/api/backup/restore-apply"' in server_source, failures)
         check("no_schema_change_for_preview", len(match.SCHEMA_MIGRATIONS) == 5, failures)
 
         source_conn.close()

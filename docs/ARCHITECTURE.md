@@ -148,7 +148,7 @@ absolute paths, and AI history without durable portable identities are
 excluded. The browser route accepts no destination
 path and returns safe metadata only.
 
-The desktop restore-preview boundary uses a native single-file picker to copy
+The desktop restore boundary uses a native single-file picker to copy
 an archive into the active profile's private `restore-inbox`; browser and HTTP
 surfaces receive only an opaque staging ID. Python reuses the authoritative
 archive validator over one bounded immutable archive snapshot, so bytes planned
@@ -160,9 +160,22 @@ network/credential services. It explains safe matches, candidate user-state
 updates, conflicts, missing-source relinks, and unsupported v1 omissions.
 Its revision privately binds relevant current semantic values and multiplicity,
 while excluding ignored timestamps, row IDs, runtime roots, and local paths.
-Restore apply, automatic relinking, overwrite decisions, scheduled/cloud
-backup, and original-file backup are not implemented. The canonical contract
-is [Backup Export Format](BACKUP_FORMAT.md).
+Restore Apply reuses that planner under a process-local apply lock and a caller-
+owned SQLite `BEGIN IMMEDIATE` transaction. It requires the exact approved plan
+revision and a complete set of narrow `KEEP_LOCAL`/`SKIP` decisions, applies
+only supported user-owned state, rechecks explicitly inspected source candidates,
+and commits once. Failures roll back atomically. Automatic relinking,
+backup-wins overwrite decisions, post-commit Undo, scheduled/cloud backup, and
+original-file backup are not implemented. The canonical contract is
+[Backup Export Format](BACKUP_FORMAT.md).
+
+Backup archives remain untrusted after ZIP and checksum verification. Preview
+and Apply share one semantic v1 validator for exact field types, bounds, enums,
+hashes, controls, and safe relative paths. Material-overlay Apply performs a
+narrow in-transaction synchronization of the existing `files` row, existing
+Phase-1 `materials` projection, and derived local search metadata. It does not
+run global reconciliation, migrate schema, rebuild content indexes, or mutate
+Source/Blob/MaterialVersion provenance and identity.
 
 Not implemented yet: production Canvas OAuth, remote Term mapping, remote
 deletion semantics, notifications, automatic/background sync, SourceAnchor, Evidence,

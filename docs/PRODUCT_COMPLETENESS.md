@@ -74,7 +74,7 @@ clearly synthetic Demo fixtures.
 | Data | Reset StudyHub-owned state only | IMPLEMENTED | Confirmation required |
 | Data | Versioned user-owned metadata export | IMPLEMENTED | Canonical JSON ZIP; privacy-safe and validated |
 | Data | Restore validate/preview/explain | IMPLEMENTED | Deterministic, zero-mutation, native trusted staging |
-| Data | Restore apply/relink decisions | DESIGNED | Separate reviewed PR; no Apply control yet |
+| Data | Transactional restore apply | IMPLEMENTED | Explicit Keep current/Skip decisions; no relink or backup-wins |
 | Search | Local metadata and extracted-content search | EXISTS | Preserve |
 | Preview | PDF, Office fallback, text/code preview | EXISTS | Preserve |
 | Notes | File notes with persistence | EXISTS | Preserve |
@@ -169,11 +169,21 @@ The plan revision privately binds relevant current semantic values and
 duplicate-capable record multiplicity, without including ignored timestamps,
 SQLite row IDs, runtime roots, local paths, or those private values in the API.
 
-Restore apply is not implemented. A future focused PR must revalidate and
-recompute the plan, require the expected plan revision, collect explicit
-relink/conflict decisions, and import transactionally with rollback recovery.
-It must never overwrite or move an original source file or default to
-backup-wins.
+Transactional safe Restore Apply is implemented for the supported v1
+user-owned records. It revalidates one immutable snapshot, recomputes under
+`BEGIN IMMEDIATE`, requires the expected revision and every narrow decision,
+and commits all writes together. Conflicts only support Keep current;
+unresolved/relink-required/unsupported actions only support Skip for now.
+Failure rolls back fully, and a final source-candidate check prevents applying
+against changed bytes. It never overwrites or moves an original source file,
+creates remote facts, contacts external services, or defaults to backup-wins.
+Automatic relinking and post-commit Undo remain future focused work.
+
+Both Preview and Apply treat archives as untrusted and use the same strict
+semantic v1 validator before planning. A restored material overlay atomically
+keeps the legacy compatibility row, existing Material projection, and derived
+local search metadata consistent. It never creates or changes source bytes,
+remote facts, Sources, Blobs, or MaterialVersions.
 
 ## P0 Verification
 

@@ -5,9 +5,10 @@ Status: **AUTHORITATIVE `studyhub-backup-v1` EXPORT CONTRACT**.
 StudyHub's implemented backup surface exports a privacy-safe, portable
 projection of durable `USER_OWNED` state. It is not a database dump, an
 academic-file archive, or a complete backup/restore system. StudyHub can now
-select and privately stage an archive, validate it, and produce a deterministic
-zero-mutation restore preview. Restore apply, conflict resolution, automatic
-relinking, scheduling, cloud backup, and encryption are not implemented.
+select and privately stage an archive, validate it, produce a deterministic
+zero-mutation restore preview, and transactionally apply the supported safe
+actions. Backup-wins replacement, automatic relinking, post-commit undo,
+scheduling, cloud backup, and encryption are not implemented.
 
 ## Format Identity And Versioning
 
@@ -79,7 +80,7 @@ not a fictional mapping back to SQLite row identity.
 
 - `format`, `format_version`, and `minimum_restore_format_version`
 - creation time and non-secret app/runtime profile labels
-- feature declarations, including `restore_supported: false`
+- feature declarations, including the boolean `restore_supported` capability
 - the exact data-member inventory
 - SHA-256, byte size, and record count for every data member
 - total record count
@@ -181,6 +182,13 @@ Both `data/ai_history.json` and `data/connector_user_state.json` must remain
 empty in v1; non-empty records are rejected even if their JSON shape otherwise
 resembles an older draft.
 
+Incoming archives are untrusted input even when every manifest hash has been
+recomputed. The canonical validator used by both Preview and Apply therefore
+validates exact JSON types, boolean/integer separation, bounded text and
+timestamps, control characters, closed v1 enums, SHA-256 syntax, numeric
+ranges, and bounded safe source-relative paths before planning begins. It does
+not coerce strings, integers, or booleans and does not sanitize malformed input.
+
 ## Read-Only Restore Preview
 
 The desktop app selects one archive through a native picker and copies it into
@@ -214,13 +222,38 @@ conflict, and What's New acknowledgement state can reattach only to an existing
 identical academic event. Remote facts, AI history, and Canvas connection state
 remain excluded.
 
-The Settings UI presents the complete grouped preview and omissions, but no
-Apply control. Discard removes only the private staged copy.
+The Settings UI presents the complete grouped preview and omissions. Required
+decisions are explicit: conflicts can only keep current state, while unresolved,
+relink-required, and unsupported items can only be skipped for now. Discard
+removes only the private staged copy.
 
-## Forward Apply Contract
+## Transactional Restore Apply
 
-A later focused PR must implement Relink/Conflict Decisions -> Apply -> Undo or
-rollback recovery. Apply must revalidate the staged archive, recompute the plan,
-and require the caller's expected `plan_revision` so changed target or archive
-state fails closed. It must not infer ownership from table placement, overwrite
-originals, create remote facts, or silently discard unresolved references.
+`POST /api/backup/restore-apply` accepts only an opaque staged restore ID, an
+exact expected plan revision, and decisions for actions in the recomputed plan.
+Inside one process-local restore lock it acquires and validates one immutable
+archive snapshot, opens only the existing current-profile database, starts
+`BEGIN IMMEDIATE`, and recomputes the canonical plan. A changed archive, relevant
+target state, or inspected source candidate fails closed and rolls back.
+
+Safe `CREATE` and `UPDATE_USER_STATE` actions restore allowlisted v1 terms,
+local courses, managed learning units, material overlays on resolved Materials,
+notes, stars, attempts, wrong-question state, study sessions, bookmarks, and
+acknowledgement of an existing identical academic-change event. Multiset records
+restore exact missing multiplicity. `MATCH`, `NOOP`, `KEEP_LOCAL`, and `SKIP`
+perform no write. The lower apply helper never commits or rolls back; the caller
+owns the single transaction, so any failure rolls back every restore mutation.
+
+Apply never copies or changes original academic files, creates a Material for a
+missing source, restores Canvas or AI state, contacts a network/credential
+service, or accepts browser-supplied paths. The private staged copy remains until
+the user explicitly discards it. A successful commit currently has no automatic
+Undo; source relinking and audited backup-wins decisions require later focused
+work.
+
+When Apply restores a material overlay, the same transaction synchronizes the
+existing legacy compatibility row, its existing Phase-1 Material projection,
+and local derived search metadata. Section is derived from the restored
+material type, while exported category and exercise-type values remain the
+user-owned overlay. This narrow synchronization never creates or changes a
+Source, Blob, MaterialVersion, current version, byte hash, or extracted content.

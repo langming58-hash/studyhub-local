@@ -684,6 +684,33 @@ def main() -> int:
 
         check("malformed_stable_reference_rejected", rejected(server_one, rewrite_archive(archive_one, malformed_reference)), failures)
 
+        def invalid_semantic_values(members: dict[str, bytes]) -> None:
+            payload = json.loads(members["data/terms.json"])
+            payload["records"][0]["archived"] = 1
+            raw = server_one.canonical_backup_json(payload)
+            members["data/terms.json"] = raw
+            manifest_value = json.loads(members["manifest.json"])
+            manifest_value["entries"]["data/terms.json"] = {
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "byte_size": len(raw),
+                "record_count": len(payload["records"]),
+            }
+            members["manifest.json"] = server_one.canonical_backup_json(manifest_value)
+
+        check(
+            "semantic_boolean_validation_rejects_rehashed_archive",
+            rejected(server_one, rewrite_archive(archive_one, invalid_semantic_values)),
+            failures,
+        )
+        check(
+            "exporter_and_validator_share_v1_bounds",
+            server_one.BACKUP_TERM_NAME_MAX == 120
+            and server_one.BACKUP_MATERIAL_NAME_MAX == 240
+            and server_one.BACKUP_NOTE_BODY_MAX == 10_000
+            and server_one.BACKUP_ANSWER_TEXT_MAX == 20_000,
+            failures,
+        )
+
         failed_dir = server_one.DATA_DIR / "failure-export"
         original_validator = server_one.validate_backup_archive
         server_one.validate_backup_archive = lambda _path: (_ for _ in ()).throw(ValueError("synthetic validation failure"))
@@ -762,7 +789,7 @@ def main() -> int:
         check("all_export_entry_points_avoid_credentials", blocked == {"canvas": 0, "openai": 0, "credentials": 0}, failures)
 
         check("profile_isolation_preserved", archive_one.parent == server_one.DATA_DIR / "exports" and archive_two.parent == server_two.DATA_DIR / "exports", failures)
-        check("restore_apply_is_not_implemented", "/api/backup/restore-apply" not in (ROOT / "server.py").read_text(encoding="utf-8"), failures)
+        check("restore_apply_remains_separate_from_export", "def apply_staged_restore" in (ROOT / "server.py").read_text(encoding="utf-8"), failures)
         conn_one.close()
         conn_two.close()
 
