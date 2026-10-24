@@ -75,6 +75,8 @@ clearly synthetic Demo fixtures.
 | Data | Versioned user-owned metadata export | IMPLEMENTED | Canonical JSON ZIP; privacy-safe and validated |
 | Data | Restore validate/preview/explain | IMPLEMENTED | Deterministic, zero-mutation, native trusted staging |
 | Data | Transactional restore apply | IMPLEMENTED | Explicit Keep current/Skip decisions; no relink or backup-wins |
+| Data | Explicit source relink preview | IMPLEMENTED | Native opaque capability; exact hash/size; zero mutation |
+| Data | Source relink apply | MISSING | Future focused mutating PR; re-hash required |
 | Search | Local metadata and extracted-content search | EXISTS | Preserve |
 | Preview | PDF, Office fallback, text/code preview | EXISTS | Preserve |
 | Notes | File notes with persistence | EXISTS | Preserve |
@@ -177,7 +179,13 @@ unresolved/relink-required/unsupported actions only support Skip for now.
 Failure rolls back fully, and a final source-candidate check prevents applying
 against changed bytes. It never overwrites or moves an original source file,
 creates remote facts, contacts external services, or defaults to backup-wins.
-Automatic relinking and post-commit Undo remain future focused work.
+An explicit native source picker and zero-mutation relink preview are now
+implemented. The WebView receives no absolute path; an opaque profile-private
+capability is bound to one restore and one backup local-source record. Exact
+SHA-256 and size matches become `RELINK_READY` preview state, while mismatches
+remain rejected. Current Restore Apply still requires Skip for relink-required
+records. Relink Apply, automatic source search, filename fuzzy matching,
+backup-wins, and post-commit Undo remain future focused work.
 
 Both Preview and Apply treat archives as untrusted and use the same strict
 semantic v1 validator before planning. A restored material overlay atomically

@@ -98,6 +98,7 @@ RUNTIME_DIR = configured_path("STUDYHUB_RUNTIME_DIR", APP_ROOT)
 DATA_DIR = configured_path("STUDYHUB_DATA_DIR", RUNTIME_DIR / "data")
 EXPORT_DIR = DATA_DIR / "exports"
 RESTORE_INBOX_DIR = DATA_DIR / "restore-inbox"
+RESTORE_RELINK_INBOX_DIR = DATA_DIR / "restore-relink-inbox"
 CACHE_DIR = configured_path("STUDYHUB_CACHE_DIR", RUNTIME_DIR / "cache")
 TEXT_CACHE_DIR = CACHE_DIR / "text"
 TEXT_EXTRACTION_VERSION = "extract-v2-office-paragraphs"
@@ -240,8 +241,10 @@ BACKUP_DATA_MEMBERS = (
 BACKUP_MEMBERS = ("manifest.json", *BACKUP_DATA_MEMBERS)
 BACKUP_STABLE_ID_RE = re.compile(rf"^[A-Za-z0-9][A-Za-z0-9._:-]{{0,{BACKUP_STABLE_ID_MAX - 1}}}$")
 RESTORE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+RESTORE_RELINK_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 RESTORE_PLAN_REVISION_RE = re.compile(r"^restore_[0-9a-f]{24}$")
 RESTORE_PLAN_VERSION = 1
+RESTORE_RELINK_CAPABILITY_VERSION = 1
 RESTORE_MAX_DECISIONS = 100_000
 BACKUP_REQUIRED_SCHEMA: dict[str, set[str]] = {
     "schema_migrations": {"version", "name", "applied_at"},
@@ -4708,6 +4711,136 @@ def staged_restore_path(restore_id: Any) -> Path:
     return candidate
 
 
+class RestoreRelinkError(ValueError):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+def normalize_restore_relink_id(value: Any) -> str:
+    relink_id = str(value or "")
+    if not RESTORE_RELINK_ID_RE.fullmatch(relink_id):
+        raise RestoreRelinkError("restore_relink_capability_invalid")
+    return relink_id
+
+
+def restore_relink_descriptor_path(relink_id: Any) -> Path:
+    normalized = normalize_restore_relink_id(relink_id)
+    root = RESTORE_RELINK_INBOX_DIR.resolve()
+    candidate = (root / f"{normalized}.json").resolve(strict=False)
+    if candidate.parent != root:
+        raise RestoreRelinkError("restore_relink_capability_invalid")
+    return candidate
+
+
+def load_restore_relink_capability(
+    relink_id: Any,
+    *,
+    restore_id: Any,
+    source_stable_id: Any,
+) -> dict[str, Any]:
+    normalized_restore_id = normalize_restore_id(restore_id)
+    normalized_source_id = str(source_stable_id or "")
+    if not BACKUP_STABLE_ID_RE.fullmatch(normalized_source_id):
+        raise RestoreRelinkError("restore_relink_capability_invalid")
+    path = restore_relink_descriptor_path(relink_id)
+    try:
+        metadata = path.lstat()
+        if path.is_symlink() or not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 16 * 1024:
+            raise RestoreRelinkError("restore_relink_capability_invalid")
+        if os.name != "nt" and stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise RestoreRelinkError("restore_relink_capability_invalid")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError, OSError) as exc:
+        raise RestoreRelinkError("restore_relink_capability_invalid") from exc
+    expected_keys = {
+        "capability_version",
+        "restore_id",
+        "source_stable_id",
+        "selected_path",
+        "display_name",
+        "created_at",
+    }
+    if not isinstance(payload, dict) or set(payload) != expected_keys:
+        raise RestoreRelinkError("restore_relink_capability_invalid")
+    if payload.get("capability_version") != RESTORE_RELINK_CAPABILITY_VERSION:
+        raise RestoreRelinkError("restore_relink_capability_invalid")
+    if payload.get("restore_id") != normalized_restore_id or payload.get("source_stable_id") != normalized_source_id:
+        raise RestoreRelinkError("restore_relink_capability_mismatch")
+    selected_path = payload.get("selected_path")
+    display_name = payload.get("display_name")
+    created_at = payload.get("created_at")
+    if (
+        not isinstance(selected_path, str)
+        or not selected_path
+        or len(selected_path) > BACKUP_SOURCE_PATH_MAX
+        or not isinstance(display_name, str)
+        or not display_name
+        or len(display_name) > BACKUP_SOURCE_COMPONENT_MAX
+        or not isinstance(created_at, int)
+        or isinstance(created_at, bool)
+        or created_at < 0
+    ):
+        raise RestoreRelinkError("restore_relink_capability_invalid")
+    return payload
+
+
+def validate_restore_relink_source(payload: dict[str, Any], restore_id: Any) -> Path:
+    selected = Path(str(payload["selected_path"])).expanduser()
+    if not selected.is_absolute():
+        raise RestoreRelinkError("restore_relink_capability_invalid")
+    try:
+        metadata = selected.lstat()
+    except (FileNotFoundError, OSError) as exc:
+        raise RestoreRelinkError("restore_relink_source_changed") from exc
+    if selected.is_symlink() or not stat.S_ISREG(metadata.st_mode):
+        raise RestoreRelinkError("restore_relink_source_invalid")
+    if selected.suffix.lower() not in ACADEMIC_EXTS:
+        raise RestoreRelinkError("restore_relink_source_unsupported")
+    resolved = selected.resolve(strict=True)
+    if resolved == staged_restore_path(restore_id).resolve(strict=False):
+        raise RestoreRelinkError("restore_relink_source_invalid")
+    for private_root in (RUNTIME_DIR, DATA_DIR, CACHE_DIR, LOG_DIR, canvas_remote_content_root()):
+        root = private_root.resolve(strict=False)
+        if resolved == root or root in resolved.parents:
+            raise RestoreRelinkError("restore_relink_source_private")
+    if resolved.name != payload["display_name"]:
+        raise RestoreRelinkError("restore_relink_capability_invalid")
+    return resolved
+
+
+def hash_restore_relink_source(path: Path) -> tuple[int, str]:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise RestoreRelinkError("restore_relink_source_changed") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > BACKUP_MAX_SOURCE_BYTES:
+            raise RestoreRelinkError("restore_relink_source_invalid")
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            while True:
+                block = handle.read(1024 * 1024)
+                if not block:
+                    break
+                digest.update(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        path_after = path.lstat()
+    except OSError as exc:
+        raise RestoreRelinkError("restore_relink_source_changed") from exc
+    before_state = (before.st_size, before.st_mtime_ns, getattr(before, "st_ino", 0), getattr(before, "st_dev", 0))
+    after_state = (after.st_size, after.st_mtime_ns, getattr(after, "st_ino", 0), getattr(after, "st_dev", 0))
+    path_state = (path_after.st_size, path_after.st_mtime_ns, getattr(path_after, "st_ino", 0), getattr(path_after, "st_dev", 0))
+    if before_state != after_state or after_state != path_state or path.is_symlink():
+        raise RestoreRelinkError("restore_relink_source_changed")
+    return int(after.st_size), digest.hexdigest()
+
+
 def read_validated_backup_archive(path: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     try:
         snapshot = read_backup_archive_snapshot(path)
@@ -5280,6 +5413,127 @@ def preview_staged_restore(restore_id: Any) -> dict[str, Any]:
         conn.close()
 
 
+def preview_restore_relink_candidate(
+    restore_id: Any,
+    expected_plan_revision: Any,
+    source_stable_id: Any,
+    relink_id: Any,
+) -> dict[str, Any]:
+    normalized_restore_id = normalize_restore_id(restore_id)
+    expected_revision = str(expected_plan_revision or "")
+    normalized_source_id = str(source_stable_id or "")
+    if not RESTORE_PLAN_REVISION_RE.fullmatch(expected_revision):
+        raise RestoreRelinkError("invalid_restore_plan_revision")
+    if not BACKUP_STABLE_ID_RE.fullmatch(normalized_source_id):
+        raise RestoreRelinkError("restore_relink_source_invalid")
+
+    snapshot = read_backup_archive_snapshot(staged_restore_path(normalized_restore_id))
+    _validation, manifest, datasets = validate_backup_snapshot(snapshot)
+    conn = connect_backup_db_readonly()
+    try:
+        plan, _context = plan_restore_state(
+            conn,
+            manifest,
+            datasets,
+            transaction_owned_by_caller=False,
+        )
+    finally:
+        conn.close()
+    if plan["plan_revision"] != expected_revision:
+        raise RestoreRelinkError("stale_restore_plan")
+
+    action = next(
+        (
+            item
+            for section in plan["sections"]
+            if section["dataset"] == "local_sources"
+            for item in section["actions"]
+            if item["stable_id"] == normalized_source_id
+        ),
+        None,
+    )
+    if action is None or action["classification"] != "RELINK_REQUIRED":
+        raise RestoreRelinkError("restore_relink_source_not_required")
+    backup_source = next(
+        (item for item in datasets["data/local_sources.json"] if item["stable_id"] == normalized_source_id),
+        None,
+    )
+    if backup_source is None:
+        raise RestoreRelinkError("restore_relink_source_invalid")
+
+    capability = load_restore_relink_capability(
+        relink_id,
+        restore_id=normalized_restore_id,
+        source_stable_id=normalized_source_id,
+    )
+    selected = validate_restore_relink_source(capability, normalized_restore_id)
+    observed_size, observed_sha = hash_restore_relink_source(selected)
+    expected_size = int(backup_source["byte_size"])
+    expected_sha = str(backup_source["sha256"])
+    exact_match = observed_size == expected_size and secrets.compare_digest(observed_sha, expected_sha)
+    relink_revision_input = {
+        "version": "restore-relink-preview-v1",
+        "restore_plan_revision": plan["plan_revision"],
+        "source_stable_id": normalized_source_id,
+        "expected": {"sha256": expected_sha, "byte_size": expected_size},
+        "observed": {"sha256": observed_sha, "byte_size": observed_size},
+    }
+    relink_revision = "relink_" + hashlib.sha256(
+        canonical_backup_json(relink_revision_input)
+    ).hexdigest()[:24]
+    return {
+        "source_stable_id": normalized_source_id,
+        "expected_source": safe_backup_text(str(backup_source.get("display_name") or action["label"]), limit=240),
+        "selected_file": safe_backup_text(str(capability["display_name"]), limit=BACKUP_SOURCE_COMPONENT_MAX),
+        "candidate_byte_size": observed_size,
+        "exact_match": exact_match,
+        "status": "RELINK_READY" if exact_match else "RELINK_MISMATCH",
+        "reason": "exact_source_match" if exact_match else "candidate_content_mismatch",
+        "relink_revision": relink_revision,
+        "apply_available": False,
+    }
+
+
+def discard_restore_relink_capability(
+    restore_id: Any,
+    source_stable_id: Any,
+    relink_id: Any,
+) -> dict[str, Any]:
+    load_restore_relink_capability(
+        relink_id,
+        restore_id=restore_id,
+        source_stable_id=source_stable_id,
+    )
+    descriptor = restore_relink_descriptor_path(relink_id)
+    descriptor.unlink()
+    return {"ok": True, "discarded": normalize_restore_relink_id(relink_id)}
+
+
+def discard_restore_relink_capabilities_for_restore(restore_id: Any) -> int:
+    normalized_restore_id = normalize_restore_id(restore_id)
+    removed = 0
+    root = RESTORE_RELINK_INBOX_DIR.resolve()
+    if not root.is_dir():
+        return removed
+    for candidate in root.glob("*.json"):
+        try:
+            metadata = candidate.lstat()
+            if (
+                candidate.is_symlink()
+                or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_size > 16 * 1024
+                or candidate.resolve().parent != root
+            ):
+                continue
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+            if isinstance(payload, dict) and payload.get("restore_id") == normalized_restore_id:
+                candidate.unlink()
+                removed += 1
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+    return removed
+
+
 class RestoreApplyError(Exception):
     def __init__(self, code: str):
         self.code = code
@@ -5767,6 +6021,7 @@ def discard_staged_restore(restore_id: Any) -> dict[str, Any]:
     if not path.is_file() or path.is_symlink():
         raise FileNotFoundError("Staged backup not found")
     path.unlink()
+    discard_restore_relink_capabilities_for_restore(restore_id)
     return {"ok": True, "discarded": normalize_restore_id(restore_id)}
 
 
@@ -9573,6 +9828,10 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.handle_backup_export()
             elif parsed.path == "/api/backup/restore-preview":
                 self.handle_backup_restore_preview()
+            elif parsed.path == "/api/backup/restore-relink-preview":
+                self.handle_backup_restore_relink_preview()
+            elif parsed.path == "/api/backup/restore-relink-discard":
+                self.handle_backup_restore_relink_discard()
             elif parsed.path == "/api/backup/restore-apply":
                 self.handle_backup_restore_apply()
             elif parsed.path == "/api/backup/restore-discard":
@@ -9758,6 +10017,44 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         if set(body) != {"restore_id"}:
             raise ValueError("Restore preview accepts only restore_id")
         self.send_json({"ok": True, "plan": preview_staged_restore(body.get("restore_id"))})
+
+    def handle_backup_restore_relink_preview(self) -> None:
+        body = self.parse_body_json()
+        expected = {"restore_id", "expected_plan_revision", "source_stable_id", "relink_id"}
+        if set(body) != expected:
+            raise ValueError(
+                "Restore relink preview accepts only restore_id, expected_plan_revision, source_stable_id, and relink_id"
+            )
+        try:
+            result = preview_restore_relink_candidate(
+                body.get("restore_id"),
+                body.get("expected_plan_revision"),
+                body.get("source_stable_id"),
+                body.get("relink_id"),
+            )
+        except RestoreRelinkError as exc:
+            status = 409 if exc.code in {"stale_restore_plan", "restore_relink_source_changed"} else 400
+            self.send_error_json(status, exc.code)
+            return
+        self.send_json({"ok": True, "relink": result})
+
+    def handle_backup_restore_relink_discard(self) -> None:
+        body = self.parse_body_json()
+        expected = {"restore_id", "source_stable_id", "relink_id"}
+        if set(body) != expected:
+            raise ValueError(
+                "Restore relink discard accepts only restore_id, source_stable_id, and relink_id"
+            )
+        try:
+            result = discard_restore_relink_capability(
+                body.get("restore_id"),
+                body.get("source_stable_id"),
+                body.get("relink_id"),
+            )
+        except RestoreRelinkError as exc:
+            self.send_error_json(400, exc.code)
+            return
+        self.send_json(result)
 
     def handle_backup_restore_apply(self) -> None:
         body = self.parse_body_json()
