@@ -245,6 +245,7 @@ RESTORE_RELINK_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 RESTORE_PLAN_REVISION_RE = re.compile(r"^restore_[0-9a-f]{24}$")
 RESTORE_PLAN_VERSION = 1
 RESTORE_RELINK_CAPABILITY_VERSION = 1
+RESTORE_RELINK_PREVIEW_VERSION = "restore-relink-preview-v1"
 RESTORE_MAX_DECISIONS = 100_000
 BACKUP_REQUIRED_SCHEMA: dict[str, set[str]] = {
     "schema_migrations": {"version", "name", "applied_at"},
@@ -5472,7 +5473,7 @@ def preview_restore_relink_candidate(
     expected_sha = str(backup_source["sha256"])
     exact_match = observed_size == expected_size and secrets.compare_digest(observed_sha, expected_sha)
     relink_revision_input = {
-        "version": "restore-relink-preview-v1",
+        "version": RESTORE_RELINK_PREVIEW_VERSION,
         "restore_plan_revision": plan["plan_revision"],
         "source_stable_id": normalized_source_id,
         "expected": {"sha256": expected_sha, "byte_size": expected_size},
