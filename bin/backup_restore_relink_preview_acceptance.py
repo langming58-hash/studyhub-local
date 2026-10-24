@@ -174,7 +174,13 @@ def main() -> int:
         )
         after_db = db_snapshot(target_conn)
         check("exact_sha_and_size_ready", exact["status"] == "RELINK_READY" and exact["exact_match"] is True, failures)
-        check("relink_ready_is_preview_only", exact["apply_available"] is False, failures)
+        check(
+            "relink_ready_exposes_revision_bound_apply_plan",
+            exact["apply_available"] is True
+            and isinstance(exact.get("plan"), dict)
+            and exact["plan"]["plan_revision"].startswith("restore_"),
+            failures,
+        )
         check("response_contains_no_absolute_path", str(base) not in json.dumps(exact) and "selected_path" not in exact, failures)
         check("selected_original_untouched", hashlib.sha256(exact_file.read_bytes()).hexdigest() == exact_original_hash, failures)
         check("zero_database_mutation", before_db == after_db, failures)

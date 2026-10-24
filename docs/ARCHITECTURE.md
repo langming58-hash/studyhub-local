@@ -165,25 +165,29 @@ file picker creates a profile-private EPHEMERAL descriptor and exposes only an
 opaque capability to the WebView. Python verifies capability ownership,
 recomputes the current canonical plan, rejects stale revisions, and compares
 the candidate's streamed SHA-256 and size with the validated backup source.
-`RELINK_READY` is explanatory preview state only: it never changes a Source,
-Material, file row, original byte, or index.
+`RELINK_READY` is a revision-bound preview state: preview never changes a
+Source, Material, file row, original byte, or index, but it can authorize one
+explicit `RELINK` decision for the exact current capability.
 
 Restore Apply reuses the canonical planner under a process-local apply lock and
 a caller-owned SQLite `BEGIN IMMEDIATE` transaction. It requires the exact approved plan
-revision and a complete set of narrow `KEEP_LOCAL`/`SKIP` decisions, applies
-only supported user-owned state, rechecks explicitly inspected source candidates,
-and commits once. Failures roll back atomically. Relink Apply, automatic source
-search, backup-wins overwrite decisions, post-commit Undo, scheduled/cloud backup, and
-original-file backup are not implemented. The canonical contract is
+revision and a complete set of narrow `KEEP_LOCAL`/`SKIP`/`RELINK` decisions,
+applies only supported user-owned state, rechecks explicitly inspected source
+candidates, and commits once. Exact relink reuses the canonical ingestion/domain
+projection by reference and consumes its private capability only after commit.
+Failures roll back atomically. Automatic source search, backup-wins overwrite
+decisions, post-commit Undo, scheduled/cloud backup, and original-file backup
+are not implemented. The canonical contract is
 [Backup Export Format](BACKUP_FORMAT.md).
 
 Backup archives remain untrusted after ZIP and checksum verification. Preview
 and Apply share one semantic v1 validator for exact field types, bounds, enums,
 hashes, controls, and safe relative paths. Material-overlay Apply performs a
 narrow in-transaction synchronization of the existing `files` row, existing
-Phase-1 `materials` projection, and derived local search metadata. It does not
-run global reconciliation, migrate schema, rebuild content indexes, or mutate
-Source/Blob/MaterialVersion provenance and identity.
+Phase-1 `materials` projection, and derived local search metadata. Explicit
+relink may create the single missing canonical Source/Blob/MaterialVersion graph
+or update the existing user-owned Source locator while preserving stable
+Material identity. It does not run global reconciliation or migrate schema.
 
 Not implemented yet: production Canvas OAuth, remote Term mapping, remote
 deletion semantics, notifications, automatic/background sync, SourceAnchor, Evidence,

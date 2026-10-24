@@ -216,7 +216,11 @@ def main() -> int:
         catalog = (ROOT / "static/i18n/catalog.js").read_text(encoding="utf-8")
         check("pr29_merge_foundation_present", "read_backup_archive_snapshot" in server_source and "plan_restore_state" in server_source, failures)
         check("apply_endpoint_present", 'parsed.path == "/api/backup/restore-apply"' in server_source, failures)
-        check("browser_arbitrary_path_absent", "Restore apply accepts only restore_id, expected_plan_revision, and decisions" in server_source, failures)
+        check(
+            "browser_arbitrary_path_absent",
+            "Restore apply accepts only restore_id, expected_plan_revision, decisions, and opaque relinks" in server_source,
+            failures,
+        )
         check("expected_revision_required", 'expected_plan_revision' in server_source and "RESTORE_PLAN_REVISION_RE" in server_source, failures)
         check("begin_immediate_present", 'conn.execute("BEGIN IMMEDIATE")' in server_source, failures)
         check("process_local_lock_present", "_RESTORE_APPLY_LOCK = threading.Lock()" in server_source, failures)
