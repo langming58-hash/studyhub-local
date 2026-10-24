@@ -74,9 +74,9 @@ clearly synthetic Demo fixtures.
 | Data | Reset StudyHub-owned state only | IMPLEMENTED | Confirmation required |
 | Data | Versioned user-owned metadata export | IMPLEMENTED | Canonical JSON ZIP; privacy-safe and validated |
 | Data | Restore validate/preview/explain | IMPLEMENTED | Deterministic, zero-mutation, native trusted staging |
-| Data | Transactional restore apply | IMPLEMENTED | Explicit Keep current/Skip decisions; no relink or backup-wins |
+| Data | Transactional restore apply | IMPLEMENTED | Explicit Keep current/Skip/verified Relink decisions; no backup-wins |
 | Data | Explicit source relink preview | IMPLEMENTED | Native opaque capability; exact hash/size; zero mutation |
-| Data | Source relink apply | MISSING | Future focused mutating PR; re-hash required |
+| Data | Source relink apply | IMPLEMENTED | Exact capability only; re-hash before commit; original remains user-owned |
 | Search | Local metadata and extracted-content search | EXISTS | Preserve |
 | Preview | PDF, Office fallback, text/code preview | EXISTS | Preserve |
 | Notes | File notes with persistence | EXISTS | Preserve |
@@ -175,7 +175,8 @@ Transactional safe Restore Apply is implemented for the supported v1
 user-owned records. It revalidates one immutable snapshot, recomputes under
 `BEGIN IMMEDIATE`, requires the expected revision and every narrow decision,
 and commits all writes together. Conflicts only support Keep current;
-unresolved/relink-required/unsupported actions only support Skip for now.
+unresolved and unsupported actions support Skip, while an exact current relink
+capability enables a narrow explicit Relink decision.
 Failure rolls back fully, and a final source-candidate check prevents applying
 against changed bytes. It never overwrites or moves an original source file,
 creates remote facts, contacts external services, or defaults to backup-wins.
@@ -183,15 +184,17 @@ An explicit native source picker and zero-mutation relink preview are now
 implemented. The WebView receives no absolute path; an opaque profile-private
 capability is bound to one restore and one backup local-source record. Exact
 SHA-256 and size matches become `RELINK_READY` preview state, while mismatches
-remain rejected. Current Restore Apply still requires Skip for relink-required
-records. Relink Apply, automatic source search, filename fuzzy matching,
-backup-wins, and post-commit Undo remain future focused work.
+remain rejected. Apply rechecks the capability binding, archive, plan, relink
+revision, SHA-256, size, and file identity before committing the canonical
+user-owned projection and search metadata. Automatic source search, filename
+fuzzy matching, backup-wins, and post-commit Undo remain future focused work.
 
 Both Preview and Apply treat archives as untrusted and use the same strict
 semantic v1 validator before planning. A restored material overlay atomically
 keeps the legacy compatibility row, existing Material projection, and derived
-local search metadata consistent. It never creates or changes source bytes,
-remote facts, Sources, Blobs, or MaterialVersions.
+local search metadata consistent. Relink may create one missing canonical
+Source/Blob/MaterialVersion graph, but never changes source bytes or remote
+facts and never creates a parallel source model.
 
 ## P0 Verification
 

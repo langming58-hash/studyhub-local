@@ -192,10 +192,10 @@ comparison. It does not scan the library, contact Canvas/OpenAI/CredentialStore,
 or mutate persistent user state. Safe preview responses omit absolute paths,
 raw provider IDs, database IDs, and hidden technical hashes. Restore Apply uses
 the same validated in-memory archive snapshot and canonical planner inside one
-`BEGIN IMMEDIATE` transaction. It accepts no paths or replacement values,
-applies only allowlisted user-owned state, rechecks explicit source candidates,
-and makes no Canvas, OpenAI, or CredentialStore call. It never writes academic
-source files.
+`BEGIN IMMEDIATE` transaction. It accepts no paths, hashes, sizes, or
+replacement values, applies only allowlisted user-owned state, rechecks explicit
+source candidates, and makes no Canvas, OpenAI, or CredentialStore call. It
+never writes academic source files.
 
 For explicit relink preview, Tauri keeps the selected absolute path only in a
 profile-private, permission-restricted EPHEMERAL descriptor. The WebView and
@@ -204,8 +204,10 @@ safe basenames and match status. Python rejects descriptors from another
 restore/source/profile, symlinks, unsupported files, StudyHub runtime/cache
 content, and retained Canvas copies. Exact SHA-256 and size verification is
 zero-mutation, and discarding a capability never deletes the selected original.
-Relink Apply, automatic relinking, backup-wins replacement, and post-commit Undo
-are not implemented.
+Relink Apply reopens only that private capability, re-verifies the binding and
+bytes inside the restore transaction, keeps the original user-owned and in
+place, and consumes the descriptor only after success. Automatic relinking,
+backup-wins replacement, and post-commit Undo are not implemented.
 
 Archive hashes prove integrity, not trust. The shared Preview/Apply validator
 rejects semantically invalid field types, oversized text, unsafe controls,

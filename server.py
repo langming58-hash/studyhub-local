@@ -5003,12 +5003,14 @@ def plan_restore_state(
     datasets: dict[str, list[dict[str, Any]]],
     *,
     transaction_owned_by_caller: bool,
+    relink_material_refs: set[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if transaction_owned_by_caller:
         if not conn.in_transaction:
             raise ValueError("Restore apply requires a caller-owned transaction")
     elif conn.in_transaction:
         raise ValueError("Restore preview requires a clean read snapshot")
+    relink_material_refs = set(relink_material_refs or ())
     actions: list[dict[str, Any]] = []
     source_inspection: dict[str, dict[str, Any]] = {}
     source_candidates: dict[str, dict[str, Any]] = {}
@@ -5159,7 +5161,7 @@ def plan_restore_state(
                 "observed_sha256": observed_sha,
             }
         if location.get("kind") == "relink_required" or bool(record.get("missing")):
-            if current_material is not None:
+            if current_material is not None or material_ref in relink_material_refs:
                 material_resolution[material_ref] = material_ref
             classification, reason = "RELINK_REQUIRED", "source_requires_explicit_relink"
         elif observed_sha is None:
@@ -5179,7 +5181,9 @@ def plan_restore_state(
             classification, reason = "MATCH", ""
         else:
             classification, reason = "RELINK_REQUIRED", "matching_file_is_not_registered"
-        if classification in {"CONFLICT", "RELINK_REQUIRED", "UNRESOLVED_REFERENCE"}:
+        if classification in {"CONFLICT", "UNRESOLVED_REFERENCE"} or (
+            classification == "RELINK_REQUIRED" and material_ref not in relink_material_refs
+        ):
             material_failure[material_ref] = classification
         actions.append(restore_action("local_sources", record, classification, label=label, reason=reason))
 
@@ -5349,6 +5353,7 @@ def plan_restore_state(
             member: manifest["entries"][member]["sha256"] for member in sorted(manifest["entries"])
         },
         "source_inspection": source_inspection,
+        "relink_material_refs": sorted(relink_material_refs),
         "relevant_target_state": target_state_tokens,
         "actions": actions,
     }
@@ -5385,6 +5390,7 @@ def plan_restore_state(
     return plan, {
         "material_resolution": dict(material_resolution),
         "source_candidates": source_candidates,
+        "relink_material_refs": sorted(relink_material_refs),
     }
 
 
@@ -5420,6 +5426,8 @@ def preview_restore_relink_candidate(
     source_stable_id: Any,
     relink_id: Any,
 ) -> dict[str, Any]:
+    if RUNTIME_PROFILE == "demo-test":
+        raise RestoreRelinkError("restore_relink_unavailable")
     normalized_restore_id = normalize_restore_id(restore_id)
     expected_revision = str(expected_plan_revision or "")
     normalized_source_id = str(source_stable_id or "")
@@ -5472,16 +5480,27 @@ def preview_restore_relink_candidate(
     expected_size = int(backup_source["byte_size"])
     expected_sha = str(backup_source["sha256"])
     exact_match = observed_size == expected_size and secrets.compare_digest(observed_sha, expected_sha)
-    relink_revision_input = {
-        "version": RESTORE_RELINK_PREVIEW_VERSION,
-        "restore_plan_revision": plan["plan_revision"],
-        "source_stable_id": normalized_source_id,
-        "expected": {"sha256": expected_sha, "byte_size": expected_size},
-        "observed": {"sha256": observed_sha, "byte_size": observed_size},
-    }
-    relink_revision = "relink_" + hashlib.sha256(
-        canonical_backup_json(relink_revision_input)
-    ).hexdigest()[:24]
+    effective_plan = plan
+    if exact_match:
+        conn = connect_backup_db_readonly()
+        try:
+            effective_plan, _effective_context = plan_restore_state(
+                conn,
+                manifest,
+                datasets,
+                transaction_owned_by_caller=False,
+                relink_material_refs={str(backup_source["material_ref"])},
+            )
+        finally:
+            conn.close()
+    relink_revision = restore_relink_revision(
+        effective_plan["plan_revision"],
+        normalized_source_id,
+        expected_sha,
+        expected_size,
+        observed_sha,
+        observed_size,
+    )
     return {
         "source_stable_id": normalized_source_id,
         "expected_source": safe_backup_text(str(backup_source.get("display_name") or action["label"]), limit=240),
@@ -5491,7 +5510,8 @@ def preview_restore_relink_candidate(
         "status": "RELINK_READY" if exact_match else "RELINK_MISMATCH",
         "reason": "exact_source_match" if exact_match else "candidate_content_mismatch",
         "relink_revision": relink_revision,
-        "apply_available": False,
+        "apply_available": exact_match,
+        "plan": effective_plan if exact_match else None,
     }
 
 
@@ -5541,15 +5561,72 @@ class RestoreApplyError(Exception):
         super().__init__(code)
 
 
+def restore_relink_revision(
+    plan_revision: str,
+    source_stable_id: str,
+    expected_sha: str,
+    expected_size: int,
+    observed_sha: str,
+    observed_size: int,
+) -> str:
+    payload = {
+        "version": RESTORE_RELINK_PREVIEW_VERSION,
+        "restore_plan_revision": plan_revision,
+        "source_stable_id": source_stable_id,
+        "expected": {"sha256": expected_sha, "byte_size": expected_size},
+        "observed": {"sha256": observed_sha, "byte_size": observed_size},
+    }
+    return "relink_" + hashlib.sha256(canonical_backup_json(payload)).hexdigest()[:24]
+
+
+def normalize_restore_relinks(values: Any) -> list[dict[str, str]]:
+    if not isinstance(values, list) or len(values) > RESTORE_MAX_DECISIONS:
+        raise RestoreApplyError("invalid_restore_relinks")
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, dict) or set(value) != {"source_stable_id", "relink_id", "relink_revision"}:
+            raise RestoreApplyError("invalid_restore_relinks")
+        source_id = value.get("source_stable_id")
+        relink_id = value.get("relink_id")
+        revision = value.get("relink_revision")
+        if (
+            not isinstance(source_id, str)
+            or not BACKUP_STABLE_ID_RE.fullmatch(source_id)
+            or not isinstance(relink_id, str)
+            or not RESTORE_RELINK_ID_RE.fullmatch(relink_id)
+            or not isinstance(revision, str)
+            or not re.fullmatch(r"relink_[0-9a-f]{24}", revision)
+            or source_id in seen
+        ):
+            raise RestoreApplyError("invalid_restore_relinks")
+        seen.add(source_id)
+        normalized.append(
+            {"source_stable_id": source_id, "relink_id": relink_id, "relink_revision": revision}
+        )
+    return normalized
+
+
 def normalize_restore_decisions(
     values: Any,
     actions: list[dict[str, Any]],
+    *,
+    relink_source_ids: set[str] | None = None,
 ) -> dict[tuple[str, str], str]:
     if not isinstance(values, list) or len(values) > RESTORE_MAX_DECISIONS:
         raise RestoreApplyError("invalid_restore_decisions")
     action_map = {(item["dataset"], item["stable_id"]): item for item in actions}
+    relink_source_ids = set(relink_source_ids or ())
     required = {
-        (item["dataset"], item["stable_id"]): "KEEP_LOCAL" if item["classification"] == "CONFLICT" else "SKIP"
+        (item["dataset"], item["stable_id"]): (
+            "KEEP_LOCAL"
+            if item["classification"] == "CONFLICT"
+            else "RELINK"
+            if item["classification"] == "RELINK_REQUIRED"
+            and item["dataset"] == "local_sources"
+            and item["stable_id"] in relink_source_ids
+            else "SKIP"
+        )
         for item in actions
         if item["classification"] in {
             "CONFLICT", "RELINK_REQUIRED", "UNRESOLVED_REFERENCE", "UNSUPPORTED_BY_V1",
@@ -5656,6 +5733,7 @@ def apply_restore_plan(
     context: dict[str, Any],
     decisions: dict[tuple[str, str], str],
     *,
+    relink_candidates: dict[str, dict[str, Any]] | None = None,
     failure_point: str | None = None,
 ) -> dict[str, int]:
     """Apply a validated plan inside a caller-owned transaction without committing."""
@@ -5668,6 +5746,8 @@ def apply_restore_plan(
         for stable_id, action in actions_by_id.items()
         if action["classification"] in safe_classes
     }
+    relink_candidates = dict(relink_candidates or {})
+    relink_materials = {str(candidate["material_ref"]) for candidate in relink_candidates.values()}
     material_resolution = dict(context["material_resolution"])
 
     term_rows = {
@@ -5723,8 +5803,10 @@ def apply_restore_plan(
     resolved_file_ids: dict[str, int] = {}
     for backup_ref, resolved_ref in material_resolution.items():
         row = material_rows.get(resolved_ref)
-        require_restore_dependency(row is not None and row["legacy_file_id"] is not None)
-        resolved_file_ids[str(backup_ref)] = int(row["legacy_file_id"])
+        if row is not None and row["legacy_file_id"] is not None:
+            resolved_file_ids[str(backup_ref)] = int(row["legacy_file_id"])
+        else:
+            require_restore_dependency(str(backup_ref) in relink_materials)
     for member, ref_field in (
         ("data/material_overlays.json", "material_ref"),
         ("data/notes.json", "target_ref"),
@@ -5732,7 +5814,9 @@ def apply_restore_plan(
     ):
         for record in datasets[member]:
             if str(record["stable_id"]) in selected:
-                require_restore_dependency(str(record[ref_field]) in resolved_file_ids)
+                require_restore_dependency(
+                    str(record[ref_field]) in resolved_file_ids or str(record[ref_field]) in relink_materials
+                )
     for record in datasets["data/material_overlays.json"]:
         if str(record["stable_id"]) not in selected:
             continue
@@ -5740,12 +5824,32 @@ def apply_restore_plan(
         require_restore_dependency(
             record.get("learning_unit_ref") is None or record["learning_unit_ref"] in restorable_units
         )
+    overlay_by_material = {
+        str(record["material_ref"]): record for record in datasets["data/material_overlays.json"]
+    }
+    source_by_stable_id = {
+        str(record["stable_id"]): record for record in datasets["data/local_sources.json"]
+    }
+    for source_id, candidate in relink_candidates.items():
+        source_record = source_by_stable_id.get(source_id)
+        require_restore_dependency(source_record is not None)
+        material_ref = str(source_record["material_ref"])
+        overlay = overlay_by_material.get(material_ref)
+        require_restore_dependency(overlay is not None)
+        require_restore_dependency(overlay.get("course_ref") in restorable_courses)
+        require_restore_dependency(
+            overlay.get("learning_unit_ref") is None or overlay["learning_unit_ref"] in restorable_units
+        )
+        require_restore_dependency(
+            decisions.get(("local_sources", source_id)) == "RELINK"
+            and str(candidate["material_ref"]) == material_ref
+        )
     for record in datasets["data/study_records.json"]:
         if str(record["stable_id"]) not in selected:
             continue
         ref = record.get("material_ref") if record["record_type"] != "bookmark" else record.get("target_ref")
         if ref is not None:
-            require_restore_dependency(str(ref) in resolved_file_ids)
+            require_restore_dependency(str(ref) in resolved_file_ids or str(ref) in relink_materials)
         course_ref = record.get("course_ref")
         if course_ref is not None:
             require_restore_dependency(str(course_ref) in restorable_courses)
@@ -5825,6 +5929,99 @@ def apply_restore_plan(
         unit_rows[stable_id] = conn.execute("SELECT * FROM weeks WHERE stable_id=?", (stable_id,)).fetchone()
         created += 1
         wrote("after_learning_unit")
+
+    for source_id, candidate in relink_candidates.items():
+        source_record = source_by_stable_id[source_id]
+        material_ref = str(source_record["material_ref"])
+        overlay = overlay_by_material[material_ref]
+        selected_path = Path(candidate["path"])
+        identity = candidate["identity"]
+        course_row = course_rows[str(overlay["course_ref"])]
+        unit_ref = overlay.get("learning_unit_ref")
+        unit_row = unit_rows[str(unit_ref)] if unit_ref else None
+        existing_material = material_rows.get(material_ref)
+        path_owner = conn.execute(
+            "SELECT stable_id FROM files WHERE original_path=?",
+            (str(selected_path),),
+        ).fetchone()
+        require_restore_dependency(path_owner is None or str(path_owner["stable_id"]) == material_ref)
+        if existing_material is not None:
+            file_id = int(existing_material["legacy_file_id"])
+            conn.execute(
+                """
+                UPDATE files SET original_path=?, absolute_path=?, filename=?, import_mode='reference',
+                  source='user', source_label='User-owned original', source_type='Local Reference',
+                  active=1, source_missing=0, missing_at=NULL, removed_at=NULL
+                WHERE id=? AND stable_id=?
+                """,
+                (str(selected_path), str(selected_path), selected_path.name, file_id, material_ref),
+            )
+            require_restore_dependency(conn.execute("SELECT changes() AS c").fetchone()["c"] == 1)
+            index_material_content(conn, file_id, selected_path, force=True, identity=identity)
+            source_row = conn.execute(
+                """
+                SELECT s.id FROM sources s
+                JOIN material_versions mv ON mv.source_id=s.id
+                JOIN materials m ON m.id=mv.material_id
+                WHERE m.stable_id=? AND mv.id=m.current_version_id
+                """,
+                (material_ref,),
+            ).fetchone()
+            require_restore_dependency(source_row is not None)
+            conn.execute(
+                """
+                UPDATE sources SET provider_kind='local', authority='USER_OWNED',
+                  source_label='User-owned original', source_type='Local Reference',
+                  import_mode='reference', local_locator=?, connector_id='', remote_id='',
+                  remote_url='', remote_updated_at='', fetched_at='', updated_at=? WHERE id=?
+                """,
+                (str(selected_path), now_iso(), source_row["id"]),
+            )
+        else:
+            material_type = str(overlay["material_type"])
+            result = ingest_material_candidate(
+                conn,
+                IngestionCandidate(
+                    path=selected_path,
+                    course_id=int(course_row["id"]),
+                    week_id=int(unit_row["id"]) if unit_row else None,
+                    course_code=str(course_row["course_code"]),
+                    course_name=str(course_row["display_name"]),
+                    week_label=str(unit_row["week_label"]) if unit_row else "",
+                    week_number=unit_row["week_number"] if unit_row else None,
+                    section=section_for_material_type(material_type),
+                    category=str(overlay["category"]),
+                    exercise_type=str(overlay["exercise_type"]),
+                    material_type=material_type,
+                    source="user",
+                    source_label="User-owned original",
+                    source_type="Local Reference",
+                    rel_path=selected_path.name,
+                    import_mode="reference",
+                    is_official=0,
+                    is_solution=is_solution_file(selected_path, str(overlay["category"])),
+                    is_question_source=is_question_source_file(
+                        selected_path,
+                        section_for_material_type(material_type),
+                        str(overlay["category"]),
+                    ),
+                    inbox=int(overlay["inbox"]),
+                    metadata_locked=1,
+                    display_name=str(overlay["display_name"]),
+                    stable_id=material_ref,
+                    force_index=True,
+                    identity=identity,
+                ),
+            )
+            require_restore_dependency(result.material_stable_id == material_ref)
+            file_id = result.legacy_file_id
+            material_rows[material_ref] = conn.execute(
+                "SELECT stable_id, legacy_file_id FROM materials WHERE stable_id=?",
+                (material_ref,),
+            ).fetchone()
+            created += 1
+        resolved_file_ids[material_ref] = file_id
+        wrote("after_relink")
 
     for record in datasets["data/material_overlays.json"]:
         if str(record["stable_id"]) not in selected:
@@ -5955,6 +6152,7 @@ def apply_restore_plan(
         "updated_user_state": updated,
         "kept_local": sum(1 for value in decisions.values() if value == "KEEP_LOCAL"),
         "skipped": sum(1 for value in decisions.values() if value == "SKIP"),
+        "relinked": sum(1 for value in decisions.values() if value == "RELINK"),
         "noop": sum(1 for action in actions if action["classification"] in {"MATCH", "NOOP"}),
     }
 
@@ -5966,10 +6164,70 @@ def verify_restore_source_candidates(context: dict[str, Any]) -> None:
             raise RestoreApplyError("stale_restore_source_state")
 
 
+def prepare_restore_relinks(
+    restore_id: str,
+    values: Any,
+    datasets: dict[str, list[dict[str, Any]]],
+) -> dict[str, dict[str, Any]]:
+    if RUNTIME_PROFILE == "demo-test" and values:
+        raise RestoreApplyError("restore_relink_unavailable")
+    requested = normalize_restore_relinks(values)
+    sources = {str(record["stable_id"]): record for record in datasets["data/local_sources.json"]}
+    prepared: dict[str, dict[str, Any]] = {}
+    for item in requested:
+        source_id = item["source_stable_id"]
+        source_record = sources.get(source_id)
+        if source_record is None:
+            raise RestoreApplyError("restore_relink_source_invalid")
+        try:
+            capability = load_restore_relink_capability(
+                item["relink_id"],
+                restore_id=restore_id,
+                source_stable_id=source_id,
+            )
+            selected = validate_restore_relink_source(capability, restore_id)
+            observed_size, observed_sha = hash_restore_relink_source(selected)
+        except RestoreRelinkError as exc:
+            raise RestoreApplyError(exc.code) from exc
+        expected_size = int(source_record["byte_size"])
+        expected_sha = str(source_record["sha256"])
+        if observed_size != expected_size or not secrets.compare_digest(observed_sha, expected_sha):
+            raise RestoreApplyError("restore_relink_candidate_mismatch")
+        identity = identify_ingestion_path(selected)
+        if identity.size != observed_size or not secrets.compare_digest(identity.sha256, observed_sha):
+            raise RestoreApplyError("restore_relink_source_changed")
+        prepared[source_id] = {
+            "source_stable_id": source_id,
+            "material_ref": str(source_record["material_ref"]),
+            "relink_id": item["relink_id"],
+            "relink_revision": item["relink_revision"],
+            "path": selected,
+            "identity": identity,
+            "expected_size": expected_size,
+            "expected_sha256": expected_sha,
+        }
+    return prepared
+
+
+def verify_prepared_restore_relinks(prepared: dict[str, dict[str, Any]]) -> None:
+    for candidate in prepared.values():
+        try:
+            observed_size, observed_sha = hash_restore_relink_source(Path(candidate["path"]))
+        except RestoreRelinkError as exc:
+            raise RestoreApplyError(exc.code) from exc
+        if (
+            observed_size != int(candidate["expected_size"])
+            or not secrets.compare_digest(observed_sha, str(candidate["expected_sha256"]))
+            or not identity_matches_path(Path(candidate["path"]), candidate["identity"])
+        ):
+            raise RestoreApplyError("restore_relink_source_changed")
+
+
 def apply_staged_restore(
     restore_id: Any,
     expected_plan_revision: Any,
     decision_values: Any,
+    relink_values: Any = None,
     *,
     failure_point: str | None = None,
     before_commit: Callable[[sqlite3.Connection], None] | None = None,
@@ -5978,40 +6236,90 @@ def apply_staged_restore(
     expected = str(expected_plan_revision or "")
     if not RESTORE_PLAN_REVISION_RE.fullmatch(expected):
         raise RestoreApplyError("invalid_restore_plan_revision")
-    path = staged_restore_path(restore_id)
+    normalized_restore_id = normalize_restore_id(restore_id)
+    path = staged_restore_path(normalized_restore_id)
     with _RESTORE_APPLY_LOCK:
         snapshot = read_backup_archive_snapshot(path)
         if after_snapshot:
             after_snapshot()
         _validation, manifest, datasets = validate_backup_snapshot(snapshot)
+        prepared = prepare_restore_relinks(
+            normalized_restore_id,
+            [] if relink_values is None else relink_values,
+            datasets,
+        )
+        cache_state = {
+            expected_text_cache_path(str(candidate["expected_sha256"])): expected_text_cache_path(
+                str(candidate["expected_sha256"])
+            ).exists()
+            for candidate in prepared.values()
+        }
         conn = connect_restore_db_writable()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            plan, context = plan_restore_state(
+            base_plan, _base_context = plan_restore_state(
                 conn,
                 manifest,
                 datasets,
                 transaction_owned_by_caller=True,
             )
+            base_actions, _base_by_id = restore_action_index(base_plan)
+            base_action_map = {(item["dataset"], item["stable_id"]): item for item in base_actions}
+            for source_id in prepared:
+                action = base_action_map.get(("local_sources", source_id))
+                if action is None or action["classification"] != "RELINK_REQUIRED":
+                    raise RestoreApplyError("restore_relink_source_not_required")
+            plan, context = plan_restore_state(
+                conn,
+                manifest,
+                datasets,
+                transaction_owned_by_caller=True,
+                relink_material_refs={str(item["material_ref"]) for item in prepared.values()},
+            )
             if plan["plan_revision"] != expected:
                 raise RestoreApplyError("stale_restore_plan")
+            for source_id, candidate in prepared.items():
+                computed = restore_relink_revision(
+                    plan["plan_revision"],
+                    source_id,
+                    str(candidate["expected_sha256"]),
+                    int(candidate["expected_size"]),
+                    str(candidate["expected_sha256"]),
+                    int(candidate["expected_size"]),
+                )
+                if not secrets.compare_digest(computed, str(candidate["relink_revision"])):
+                    raise RestoreApplyError("stale_restore_relink_revision")
             actions, _actions_by_id = restore_action_index(plan)
-            decisions = normalize_restore_decisions(decision_values, actions)
+            decisions = normalize_restore_decisions(
+                decision_values,
+                actions,
+                relink_source_ids=set(prepared),
+            )
             result = apply_restore_plan(
                 conn,
                 datasets,
                 plan,
                 context,
                 decisions,
+                relink_candidates=prepared,
                 failure_point=failure_point,
             )
             if before_commit:
                 before_commit(conn)
             verify_restore_source_candidates(context)
+            verify_prepared_restore_relinks(prepared)
             conn.commit()
+            for candidate in prepared.values():
+                try:
+                    restore_relink_descriptor_path(candidate["relink_id"]).unlink()
+                except FileNotFoundError:
+                    pass
             return {"ok": True, "applied": result}
         except Exception:
             conn.rollback()
+            for cache_path, existed in cache_state.items():
+                if not existed:
+                    cache_path.unlink(missing_ok=True)
             raise
         finally:
             conn.close()
@@ -10059,19 +10367,28 @@ class StudyHubHandler(BaseHTTPRequestHandler):
 
     def handle_backup_restore_apply(self) -> None:
         body = self.parse_body_json()
-        if set(body) != {"restore_id", "expected_plan_revision", "decisions"}:
-            raise ValueError("Restore apply accepts only restore_id, expected_plan_revision, and decisions")
+        if set(body) not in (
+            {"restore_id", "expected_plan_revision", "decisions"},
+            {"restore_id", "expected_plan_revision", "decisions", "relinks"},
+        ):
+            raise ValueError(
+                "Restore apply accepts only restore_id, expected_plan_revision, decisions, and opaque relinks"
+            )
         try:
             self.send_json(
                 apply_staged_restore(
                     body.get("restore_id"),
                     body.get("expected_plan_revision"),
                     body.get("decisions"),
+                    body.get("relinks", []),
                 )
             )
         except RestoreApplyError as exc:
             status = 409 if exc.code in {
-                "stale_restore_plan", "stale_restore_source_state", "restore_dependency_unresolved",
+                "stale_restore_plan", "stale_restore_source_state", "stale_restore_relink_revision",
+                "restore_relink_source_changed", "restore_relink_candidate_mismatch",
+                "restore_relink_capability_invalid", "restore_relink_capability_mismatch",
+                "restore_dependency_unresolved",
             } else 400
             self.send_json({"ok": False, "error": exc.code}, status)
 
