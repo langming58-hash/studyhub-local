@@ -10,6 +10,9 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
 #[cfg(not(debug_assertions))]
 use tauri::path::BaseDirectory;
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
@@ -34,6 +37,12 @@ const DEVELOPMENT_IDENTIFIER: &str = "io.studyhublocal.desktop.dev";
 const DEMO_IDENTIFIER: &str = "io.studyhublocal.desktop.demo";
 const MAX_BACKUP_ARCHIVE_BYTES: u64 = 20 * 1024 * 1024;
 static RESTORE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+const RESTORE_RELINK_CAPABILITY_VERSION: u8 = 1;
+const SUPPORTED_ACADEMIC_EXTENSIONS: &[&str] = &[
+    "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "tsv", "txt", "md",
+    "py", "ipynb", "r", "html", "htm", "xhtml", "xml", "svg", "png", "jpg", "jpeg",
+    "webp",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RuntimeProfile {
@@ -553,6 +562,161 @@ async fn choose_backup_archive(
     .map_err(|_| "StudyHub could not open the backup picker.".to_string())?
 }
 
+fn json_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            value if value <= '\u{001f}' => {
+                escaped.push_str(&format!("\\u{:04x}", value as u32));
+            }
+            value => escaped.push(value),
+        }
+    }
+    escaped.push('"');
+    escaped
+}
+
+fn valid_restore_context(restore_id: &str, source_stable_id: &str) -> bool {
+    restore_id.len() == 32
+        && restore_id.chars().all(|value| value.is_ascii_hexdigit() && !value.is_ascii_uppercase())
+        && !source_stable_id.is_empty()
+        && source_stable_id.len() <= 200
+        && source_stable_id
+            .chars()
+            .enumerate()
+            .all(|(index, value)| {
+                value.is_ascii_alphanumeric()
+                    || (index > 0 && matches!(value, '.' | '_' | ':' | '-'))
+            })
+}
+
+fn next_relink_id() -> Result<String, String> {
+    #[cfg(unix)]
+    {
+        let mut random = [0_u8; 16];
+        File::open("/dev/urandom")
+            .and_then(|mut source| source.read_exact(&mut random))
+            .map_err(|_| "StudyHub secure random source is unavailable.".to_string())?;
+        return Ok(random.iter().map(|value| format!("{value:02x}")).collect());
+    }
+    #[cfg(not(unix))]
+    Err("StudyHub secure random source is unavailable.".to_string())
+}
+
+fn create_restore_relink_capability(
+    source: &Path,
+    data_dir: &Path,
+    profile: RuntimeProfile,
+    restore_id: &str,
+    source_stable_id: &str,
+) -> Result<(String, String, u64), String> {
+    if !profile.allows_external_sources() {
+        return Err("Demo/Test mode cannot select external restore sources.".to_string());
+    }
+    if !valid_restore_context(restore_id, source_stable_id) {
+        return Err("Restore relink context is invalid.".to_string());
+    }
+    let metadata = std::fs::symlink_metadata(source)
+        .map_err(|_| "StudyHub could not inspect the selected restore source.".to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("Choose one regular academic file.".to_string());
+    }
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| "That file type is not supported.".to_string())?;
+    if !SUPPORTED_ACADEMIC_EXTENSIONS.contains(&extension.as_str()) {
+        return Err("That file type is not supported.".to_string());
+    }
+    let display_name = source
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "StudyHub could not read the selected file name.".to_string())?
+        .to_string();
+    let selected_path = source
+        .to_str()
+        .ok_or_else(|| "StudyHub could not read the selected restore source path.".to_string())?;
+    if !source.is_absolute() {
+        return Err("Choose an absolute restore source path.".to_string());
+    }
+
+    let inbox = data_dir.join("restore-relink-inbox");
+    std::fs::create_dir_all(&inbox)
+        .map_err(|_| "StudyHub could not prepare private relink staging.".to_string())?;
+    #[cfg(unix)]
+    std::fs::set_permissions(&inbox, std::fs::Permissions::from_mode(0o700))
+        .map_err(|_| "StudyHub could not secure private relink staging.".to_string())?;
+    let relink_id = next_relink_id()?;
+    let descriptor = inbox.join(format!("{relink_id}.json"));
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let body = format!(
+        "{{\"capability_version\":{},\"restore_id\":{},\"source_stable_id\":{},\"selected_path\":{},\"display_name\":{},\"created_at\":{}}}",
+        RESTORE_RELINK_CAPABILITY_VERSION,
+        json_string(restore_id),
+        json_string(source_stable_id),
+        json_string(selected_path),
+        json_string(&display_name),
+        created_at,
+    );
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut output = options
+        .open(&descriptor)
+        .map_err(|_| "StudyHub could not create a private relink capability.".to_string())?;
+    if output.write_all(body.as_bytes()).is_err() || output.sync_all().is_err() {
+        let _ = std::fs::remove_file(&descriptor);
+        return Err("StudyHub could not save the private relink capability.".to_string());
+    }
+    Ok((relink_id, display_name, metadata.len()))
+}
+
+#[tauri::command]
+async fn choose_restore_relink_file(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BackendState>,
+    restore_id: String,
+    source_stable_id: String,
+) -> Result<Option<(String, String, u64)>, String> {
+    if !state.config.profile.allows_external_sources() {
+        return Err("Demo/Test mode cannot select external restore sources.".to_string());
+    }
+    let data_dir = state.config.data_dir.clone();
+    let profile = state.config.profile;
+    tauri::async_runtime::spawn_blocking(move || {
+        let selected = app
+            .dialog()
+            .file()
+            .add_filter("Study material", SUPPORTED_ACADEMIC_EXTENSIONS)
+            .blocking_pick_file();
+        selected
+            .map(|path| {
+                create_restore_relink_capability(
+                    Path::new(&path.to_string()),
+                    &data_dir,
+                    profile,
+                    &restore_id,
+                    &source_stable_id,
+                )
+            })
+            .transpose()
+    })
+    .await
+    .map_err(|_| "StudyHub could not open the restore source picker.".to_string())?
+}
+
 #[tauri::command]
 async fn restart_backend(
     app: tauri::AppHandle,
@@ -703,6 +867,7 @@ pub fn run() {
             choose_study_folder,
             choose_study_files,
             choose_backup_archive,
+            choose_restore_relink_file,
             canvas_connection_status,
             configure_canvas_development_connection,
             remove_canvas_connection,
@@ -845,5 +1010,62 @@ mod tests {
         .is_err());
         assert!(!root.join("profile-data/restore-inbox").exists());
         std::fs::remove_dir_all(root).expect("remove synthetic deny root");
+    }
+
+    #[test]
+    fn native_relink_capability_is_opaque_private_and_non_mutating() {
+        let root = env::temp_dir().join(format!("studyhub-relink-stage-{}", next_restore_id()));
+        let source = root.join("replacement.pdf");
+        let data_dir = root.join("profile-data");
+        std::fs::create_dir_all(&root).expect("create synthetic relink root");
+        let original = b"synthetic academic bytes";
+        std::fs::write(&source, original).expect("write synthetic source");
+        let (relink_id, display_name, byte_size) = create_restore_relink_capability(
+            &source,
+            &data_dir,
+            RuntimeProfile::Development,
+            "0123456789abcdef0123456789abcdef",
+            "source:test-relink",
+        )
+        .expect("create relink capability");
+        assert_eq!(relink_id.len(), 32);
+        assert_eq!(display_name, "replacement.pdf");
+        assert_eq!(byte_size, original.len() as u64);
+        assert_eq!(std::fs::read(&source).expect("read original"), original);
+        let descriptor = data_dir
+            .join("restore-relink-inbox")
+            .join(format!("{relink_id}.json"));
+        let descriptor_text = std::fs::read_to_string(&descriptor).expect("read descriptor");
+        assert!(descriptor_text.contains("source:test-relink"));
+        assert!(descriptor_text.contains("replacement.pdf"));
+        #[cfg(unix)]
+        assert_eq!(
+            std::fs::metadata(&descriptor)
+                .expect("descriptor metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        std::fs::remove_dir_all(root).expect("remove synthetic relink root");
+    }
+
+    #[test]
+    fn demo_test_relink_capability_is_denied_before_descriptor_creation() {
+        let root = env::temp_dir().join(format!("studyhub-relink-deny-{}", next_restore_id()));
+        let source = root.join("replacement.pdf");
+        let data_dir = root.join("profile-data");
+        std::fs::create_dir_all(&root).expect("create synthetic relink deny root");
+        std::fs::write(&source, b"synthetic academic bytes").expect("write synthetic source");
+        assert!(create_restore_relink_capability(
+            &source,
+            &data_dir,
+            RuntimeProfile::DemoTest,
+            "0123456789abcdef0123456789abcdef",
+            "source:test-relink",
+        )
+        .is_err());
+        assert!(!data_dir.join("restore-relink-inbox").exists());
+        std::fs::remove_dir_all(root).expect("remove synthetic relink deny root");
     }
 }

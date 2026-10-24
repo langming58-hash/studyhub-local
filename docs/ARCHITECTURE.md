@@ -160,12 +160,20 @@ network/credential services. It explains safe matches, candidate user-state
 updates, conflicts, missing-source relinks, and unsupported v1 omissions.
 Its revision privately binds relevant current semantic values and multiplicity,
 while excluding ignored timestamps, row IDs, runtime roots, and local paths.
-Restore Apply reuses that planner under a process-local apply lock and a caller-
-owned SQLite `BEGIN IMMEDIATE` transaction. It requires the exact approved plan
+Explicit relink preview now extends that read-only boundary. A native single-
+file picker creates a profile-private EPHEMERAL descriptor and exposes only an
+opaque capability to the WebView. Python verifies capability ownership,
+recomputes the current canonical plan, rejects stale revisions, and compares
+the candidate's streamed SHA-256 and size with the validated backup source.
+`RELINK_READY` is explanatory preview state only: it never changes a Source,
+Material, file row, original byte, or index.
+
+Restore Apply reuses the canonical planner under a process-local apply lock and
+a caller-owned SQLite `BEGIN IMMEDIATE` transaction. It requires the exact approved plan
 revision and a complete set of narrow `KEEP_LOCAL`/`SKIP` decisions, applies
 only supported user-owned state, rechecks explicitly inspected source candidates,
-and commits once. Failures roll back atomically. Automatic relinking,
-backup-wins overwrite decisions, post-commit Undo, scheduled/cloud backup, and
+and commits once. Failures roll back atomically. Relink Apply, automatic source
+search, backup-wins overwrite decisions, post-commit Undo, scheduled/cloud backup, and
 original-file backup are not implemented. The canonical contract is
 [Backup Export Format](BACKUP_FORMAT.md).
 

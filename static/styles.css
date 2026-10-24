@@ -612,6 +612,18 @@ menu {
   color: var(--muted);
 }
 
+.restore-relink {
+  grid-column: 1 / -1;
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  padding: 8px 0 2px;
+}
+
+.restore-relink p {
+  margin: 0;
+}
+
 .restore-decision {
   grid-column: 1 / -1;
   margin: 4px 0 0;

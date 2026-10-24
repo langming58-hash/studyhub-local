@@ -20,6 +20,7 @@
     "allow-choose-study-folder",
     "allow-choose-study-files",
     "allow-choose-backup-archive",
+    "allow-choose-restore-relink-file",
     "allow-canvas-connection-status",
     "allow-configure-canvas-development-connection",
     "allow-remove-canvas-connection",

@@ -6,8 +6,9 @@ StudyHub's implemented backup surface exports a privacy-safe, portable
 projection of durable `USER_OWNED` state. It is not a database dump, an
 academic-file archive, or a complete backup/restore system. StudyHub can now
 select and privately stage an archive, validate it, produce a deterministic
-zero-mutation restore preview, and transactionally apply the supported safe
-actions. Backup-wins replacement, automatic relinking, post-commit undo,
+zero-mutation restore preview, explicitly verify a user-selected exact relink
+candidate, and transactionally apply the supported safe actions. Relink Apply,
+backup-wins replacement, automatic relinking, post-commit undo,
 scheduling, cloud backup, and encryption are not implemented.
 
 ## Format Identity And Versioning
@@ -108,7 +109,8 @@ A user-owned source under the configured StudyLibrary may use a normalized,
 non-absolute, traversal-safe library-relative path plus safe display metadata,
 known SHA-256, and byte size. An external referenced original is represented as
 `relink_required` with a safe basename and logical Material relationship. The
-absolute source path is never exported. No relinking is attempted in v1.
+absolute source path is never exported. Relink preview can verify an explicitly
+selected original, but no relink mutation is attempted in v1.
 
 ## Explicit Exclusions
 
@@ -224,8 +226,37 @@ remain excluded.
 
 The Settings UI presents the complete grouped preview and omissions. Required
 decisions are explicit: conflicts can only keep current state, while unresolved,
-relink-required, and unsupported items can only be skipped for now. Discard
-removes only the private staged copy.
+relink-required, and unsupported items can only be skipped for now. For a
+relink-required local source, the desktop app can explicitly choose one
+replacement original and verify exact SHA-256 and byte-size identity without
+changing restore state. Discard removes only private staged state.
+
+## Explicit Source Relink Preview
+
+The Tauri desktop boundary accepts only the opaque restore ID and backup local-
+source stable ID before opening a native single-file picker. It stores the
+selected absolute path in a profile-private, permission-restricted EPHEMERAL
+descriptor under `restore-relink-inbox/`; browser JavaScript receives only an
+opaque relink ID and safe display metadata. Demo/Test cannot select external
+files.
+
+`POST /api/backup/restore-relink-preview` accepts only the restore ID, expected
+RestorePlan revision, source stable ID, and opaque relink ID. It validates one
+immutable archive snapshot, recomputes the canonical plan query-only, verifies
+capability ownership and private-path containment, and streams the selected
+regular file through SHA-256. Only exact size and hash equality returns
+`RELINK_READY`; every content mismatch returns `RELINK_MISMATCH`. The derived
+revision binds the current plan and expected/observed content identity, not the
+absolute path, random capability ID, or time.
+
+Relink preview does not copy, move, rename, chmod, write, or delete the selected
+original and performs no database, index, network, Canvas, OpenAI, or credential
+operation. Discard removes only the private descriptor. Discarding its staged
+restore invalidates associated descriptors. Otherwise a descriptor remains
+private EPHEMERAL state until explicitly discarded; there is no background
+cleanup daemon or cross-profile fallback. A future mutating relink operation
+must re-hash immediately before Apply; a prior `RELINK_READY` is not permanent
+authorization.
 
 ## Transactional Restore Apply
 
@@ -248,8 +279,9 @@ Apply never copies or changes original academic files, creates a Material for a
 missing source, restores Canvas or AI state, contacts a network/credential
 service, or accepts browser-supplied paths. The private staged copy remains until
 the user explicitly discards it. A successful commit currently has no automatic
-Undo; source relinking and audited backup-wins decisions require later focused
-work.
+Undo; source relink Apply and audited backup-wins decisions require later
+focused work. Existing Apply continues to require `SKIP` for every
+`RELINK_REQUIRED` action, even when an exact candidate has been previewed.
 
 When Apply restores a material overlay, the same transaction synchronizes the
 existing legacy compatibility row, its existing Phase-1 Material projection,

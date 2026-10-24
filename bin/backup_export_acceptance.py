@@ -169,6 +169,10 @@ def seed_state(server: Any, root: Path, id_base: int, *, reverse_insert_order: b
     remote_file_id = id_base + 7
     timestamp = "2026-04-01T00:00:00+00:00"
     conn.execute(
+        "UPDATE terms SET created_at=?, updated_at=? WHERE stable_id='term_imported'",
+        (timestamp, timestamp),
+    )
+    conn.execute(
         "INSERT INTO terms(id, stable_id, name, archived, sort_order, created_at, updated_at) VALUES (?, 'term_syn_alpha', 'Synthetic Term', 0, 4, ?, ?)",
         (term_id, timestamp, timestamp),
     )

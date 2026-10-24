@@ -195,7 +195,16 @@ the same validated in-memory archive snapshot and canonical planner inside one
 `BEGIN IMMEDIATE` transaction. It accepts no paths or replacement values,
 applies only allowlisted user-owned state, rechecks explicit source candidates,
 and makes no Canvas, OpenAI, or CredentialStore call. It never writes academic
-source files. Automatic relinking, backup-wins replacement, and post-commit Undo
+source files.
+
+For explicit relink preview, Tauri keeps the selected absolute path only in a
+profile-private, permission-restricted EPHEMERAL descriptor. The WebView and
+localhost API exchange an opaque capability ID; public responses contain only
+safe basenames and match status. Python rejects descriptors from another
+restore/source/profile, symlinks, unsupported files, StudyHub runtime/cache
+content, and retained Canvas copies. Exact SHA-256 and size verification is
+zero-mutation, and discarding a capability never deletes the selected original.
+Relink Apply, automatic relinking, backup-wins replacement, and post-commit Undo
 are not implemented.
 
 Archive hashes prove integrity, not trust. The shared Preview/Apply validator

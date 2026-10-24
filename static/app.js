@@ -24,6 +24,7 @@ const state = {
     error: "",
     decisions: {},
     result: null,
+    relinks: {},
   },
   studyMode: "practice",
   searchFiltersOpen: false,
@@ -1680,6 +1681,41 @@ function restoreRequiredDecision(action) {
   return "";
 }
 
+function restoreRelinkMarkup(action) {
+  if (action.dataset !== "local_sources" || action.classification !== "RELINK_REQUIRED") return "";
+  const selection = state.restore.relinks[action.stable_id] || {};
+  const busy = selection.status === "checking";
+  const result = selection.result;
+  const statusText = busy
+    ? t("restore.relinkChecking")
+    : result?.exact_match
+      ? `${t("restore.exactSourceMatch")} · ${t("restore.readyForRelinking")}`
+      : result
+        ? t("restore.fileDoesNotMatch")
+        : selection.error
+          ? selection.error
+          : "";
+  return `
+    <div class="restore-relink" role="group" aria-label="${escapeHtml(t("restore.chooseReplacementFile"))}">
+      ${result ? `<p><strong>${escapeHtml(t("restore.selectedFile"))}:</strong> ${escapeHtml(result.selected_file || "")}</p>` : ""}
+      ${statusText ? `<p class="muted" role="status" aria-live="polite">${escapeHtml(statusText)}</p>` : ""}
+      ${result?.exact_match ? `<p class="muted">${escapeHtml(t("restore.relinkNotApplied"))}</p>` : ""}
+      <div class="button-row">
+        <button class="button secondary" type="button"
+          data-choose-restore-relink="${escapeHtml(action.stable_id)}"
+          aria-label="${escapeHtml(result ? t("restore.chooseAnotherFile") : t("restore.chooseReplacementFile"))}"
+          ${busy ? "disabled aria-busy=\"true\"" : ""}>
+          ${escapeHtml(result ? t("restore.chooseAnotherFile") : t("restore.chooseFile"))}
+        </button>
+        ${selection.relinkId ? `<button class="button secondary" type="button"
+          data-discard-restore-relink="${escapeHtml(action.stable_id)}"
+          aria-label="${escapeHtml(t("restore.discardSelectedFile"))}"
+          ${busy ? "disabled" : ""}>${escapeHtml(t("restore.discardSelectedFile"))}</button>` : ""}
+      </div>
+    </div>
+  `;
+}
+
 function restorePreviewMarkup() {
   const restore = state.restore;
   if (restore.status === "validating") {
@@ -1739,6 +1775,7 @@ function restorePreviewMarkup() {
                   <span class="restore-classification">${escapeHtml(restoreClassificationLabel(action.classification))}</span>
                   ${action.reason ? `<small>${escapeHtml(t(`restore.reason.${action.reason}`))}</small>` : ""}
                   ${(action.differing_fields || []).length ? `<small>${escapeHtml(t("restore.fieldsDiffer", { fields: action.differing_fields.join(", ") }))}</small>` : ""}
+                  ${restoreRelinkMarkup(action)}
                   ${restoreRequiredDecision(action) ? `
                     <fieldset class="restore-decision">
                       <legend>${escapeHtml(t("restore.decisionRequired"))}</legend>
@@ -2435,6 +2472,7 @@ document.addEventListener("click", async (event) => {
     state.restore.plan = null;
     state.restore.decisions = {};
     state.restore.result = null;
+    state.restore.relinks = {};
     await renderSettings();
     try {
       const restoreId = await desktopInvoke("choose_backup_archive");
@@ -2450,6 +2488,80 @@ document.addEventListener("click", async (event) => {
     } catch (error) {
       state.restore.status = "error";
       state.restore.error = error.message || String(error);
+    }
+    await renderSettings();
+    return;
+  }
+  if (target.dataset.chooseRestoreRelink) {
+    const sourceStableId = target.dataset.chooseRestoreRelink;
+    if (!state.restore.restoreId || !state.restore.plan || !sourceStableId) return;
+    const previous = state.restore.relinks[sourceStableId] || {};
+    state.restore.relinks[sourceStableId] = { ...previous, status: "checking", error: "" };
+    await renderSettings();
+    try {
+      const selected = await desktopInvoke("choose_restore_relink_file", {
+        restoreId: state.restore.restoreId,
+        sourceStableId,
+      });
+      if (!selected) {
+        state.restore.relinks[sourceStableId] = previous;
+        await renderSettings();
+        return;
+      }
+      const relinkId = selected[0];
+      const response = await postJson("/api/backup/restore-relink-preview", {
+        restore_id: state.restore.restoreId,
+        expected_plan_revision: state.restore.plan.plan_revision,
+        source_stable_id: sourceStableId,
+        relink_id: relinkId,
+      });
+      if (previous.relinkId && previous.relinkId !== relinkId) {
+        await postJson("/api/backup/restore-relink-discard", {
+          restore_id: state.restore.restoreId,
+          source_stable_id: sourceStableId,
+          relink_id: previous.relinkId,
+        }).catch(() => {});
+      }
+      state.restore.relinks[sourceStableId] = {
+        relinkId,
+        status: "ready",
+        error: "",
+        result: response.relink,
+      };
+    } catch (error) {
+      const code = error.message || String(error);
+      const messages = {
+        restore_relink_source_changed: t("restore.sourceFileChanged"),
+        restore_relink_capability_invalid: t("restore.relinkSelectionExpired"),
+        restore_relink_capability_mismatch: t("restore.relinkSelectionExpired"),
+        stale_restore_plan: t("restore.localStateChanged"),
+      };
+      state.restore.relinks[sourceStableId] = {
+        ...previous,
+        status: "error",
+        error: messages[code] || code,
+      };
+    }
+    await renderSettings();
+    return;
+  }
+  if (target.dataset.discardRestoreRelink) {
+    const sourceStableId = target.dataset.discardRestoreRelink;
+    const selection = state.restore.relinks[sourceStableId];
+    if (!state.restore.restoreId || !selection?.relinkId) return;
+    try {
+      await postJson("/api/backup/restore-relink-discard", {
+        restore_id: state.restore.restoreId,
+        source_stable_id: sourceStableId,
+        relink_id: selection.relinkId,
+      });
+      delete state.restore.relinks[sourceStableId];
+    } catch (error) {
+      state.restore.relinks[sourceStableId] = {
+        ...selection,
+        status: "error",
+        error: error.message || String(error),
+      };
     }
     await renderSettings();
     return;
@@ -2477,11 +2589,13 @@ document.addEventListener("click", async (event) => {
       const refreshed = await postJson("/api/backup/restore-preview", { restore_id: state.restore.restoreId });
       state.restore.plan = refreshed.plan;
       state.restore.decisions = {};
+      state.restore.relinks = {};
       state.restore.status = "ready";
       await loadBase();
     } catch (error) {
       if (error.message === "stale_restore_plan" || error.message === "stale_restore_source_state") {
         state.restore.decisions = {};
+        state.restore.relinks = {};
         state.restore.result = null;
         try {
           const refreshed = await postJson("/api/backup/restore-preview", { restore_id: state.restore.restoreId });
@@ -2507,7 +2621,7 @@ document.addEventListener("click", async (event) => {
         return;
       }
     }
-    state.restore = { restoreId: null, plan: null, status: "idle", error: "", decisions: {}, result: null };
+    state.restore = { restoreId: null, plan: null, status: "idle", error: "", decisions: {}, result: null, relinks: {} };
     await renderSettings();
     return;
   }

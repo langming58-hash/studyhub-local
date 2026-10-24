@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-choose-restore-relink-file"
+description = "Enables the choose_restore_relink_file command without any pre-configured scope."
+commands.allow = ["choose_restore_relink_file"]
+
+[[permission]]
+identifier = "deny-choose-restore-relink-file"
+description = "Denies the choose_restore_relink_file command without any pre-configured scope."
+commands.deny = ["choose_restore_relink_file"]

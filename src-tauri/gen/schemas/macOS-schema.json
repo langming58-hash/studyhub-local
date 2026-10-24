@@ -357,6 +357,12 @@
           "markdownDescription": "Enables the choose_backup_archive command without any pre-configured scope."
         },
         {
+          "description": "Enables the choose_restore_relink_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-choose-restore-relink-file",
+          "markdownDescription": "Enables the choose_restore_relink_file command without any pre-configured scope."
+        },
+        {
           "description": "Enables the choose_study_files command without any pre-configured scope.",
           "type": "string",
           "const": "allow-choose-study-files",
@@ -409,6 +415,12 @@
           "type": "string",
           "const": "deny-choose-backup-archive",
           "markdownDescription": "Denies the choose_backup_archive command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the choose_restore_relink_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-choose-restore-relink-file",
+          "markdownDescription": "Denies the choose_restore_relink_file command without any pre-configured scope."
         },
         {
           "description": "Denies the choose_study_files command without any pre-configured scope.",
