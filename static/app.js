@@ -1677,6 +1677,10 @@ function restoreDecisionKey(action) {
 
 function restoreRequiredDecision(action) {
   if (action.classification === "CONFLICT") return "KEEP_LOCAL";
+  if (action.classification === "RELINK_REQUIRED" && action.dataset === "local_sources") {
+    const relink = state.restore.relinks[action.stable_id]?.result;
+    if (relink?.exact_match && relink?.apply_available) return "RELINK";
+  }
   if (["RELINK_REQUIRED", "UNRESOLVED_REFERENCE", "UNSUPPORTED_BY_V1"].includes(action.classification)) return "SKIP";
   return "";
 }
@@ -1784,7 +1788,13 @@ function restorePreviewMarkup() {
                           data-restore-decision="${escapeHtml(restoreDecisionKey(action))}"
                           value="${restoreRequiredDecision(action)}"
                           ${state.restore.decisions[restoreDecisionKey(action)] === restoreRequiredDecision(action) ? "checked" : ""}>
-                        <span>${escapeHtml(t(restoreRequiredDecision(action) === "KEEP_LOCAL" ? "restore.keepCurrent" : "restore.skipForNow"))}</span>
+                        <span>${escapeHtml(t(
+                          restoreRequiredDecision(action) === "KEEP_LOCAL"
+                            ? "restore.keepCurrent"
+                            : restoreRequiredDecision(action) === "RELINK"
+                              ? "restore.applyRelink"
+                              : "restore.skipForNow"
+                        ))}</span>
                       </label>
                     </fieldset>
                   ` : ""}
@@ -2509,11 +2519,23 @@ document.addEventListener("click", async (event) => {
         return;
       }
       const relinkId = selected[0];
+      const activeRelinks = Object.entries(state.restore.relinks)
+        .filter(([activeSourceId, selection]) => (
+          activeSourceId !== sourceStableId
+          && selection?.result?.exact_match
+          && selection?.result?.apply_available
+        ))
+        .map(([activeSourceId, selection]) => ({
+          source_stable_id: activeSourceId,
+          relink_id: selection.relinkId,
+          relink_revision: selection.result.relink_revision,
+        }));
       const response = await postJson("/api/backup/restore-relink-preview", {
         restore_id: state.restore.restoreId,
         expected_plan_revision: state.restore.plan.plan_revision,
         source_stable_id: sourceStableId,
         relink_id: relinkId,
+        active_relinks: activeRelinks,
       });
       if (previous.relinkId && previous.relinkId !== relinkId) {
         await postJson("/api/backup/restore-relink-discard", {
@@ -2528,6 +2550,10 @@ document.addEventListener("click", async (event) => {
         error: "",
         result: response.relink,
       };
+      if (response.relink?.plan) {
+        state.restore.plan = response.relink.plan;
+        state.restore.decisions[restoreDecisionKey({ dataset: "local_sources", stable_id: sourceStableId })] = "RELINK";
+      }
     } catch (error) {
       const code = error.message || String(error);
       const messages = {
@@ -2576,6 +2602,17 @@ document.addEventListener("click", async (event) => {
       stable_id: action.stable_id,
       decision: state.restore.decisions[restoreDecisionKey(action)],
     }));
+    const relinks = Object.entries(state.restore.relinks)
+      .filter(([sourceStableId, selection]) => (
+        selection?.result?.exact_match
+        && selection?.result?.apply_available
+        && state.restore.decisions[`local_sources::${sourceStableId}`] === "RELINK"
+      ))
+      .map(([sourceStableId, selection]) => ({
+        source_stable_id: sourceStableId,
+        relink_id: selection.relinkId,
+        relink_revision: selection.result.relink_revision,
+      }));
     state.restore.status = "applying";
     state.restore.error = "";
     await renderSettings();
@@ -2584,6 +2621,7 @@ document.addEventListener("click", async (event) => {
         restore_id: state.restore.restoreId,
         expected_plan_revision: plan.plan_revision,
         decisions,
+        relinks,
       });
       state.restore.result = result.applied;
       const refreshed = await postJson("/api/backup/restore-preview", { restore_id: state.restore.restoreId });

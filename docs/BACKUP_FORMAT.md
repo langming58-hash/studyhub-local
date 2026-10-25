@@ -110,7 +110,8 @@ non-absolute, traversal-safe library-relative path plus safe display metadata,
 known SHA-256, and byte size. An external referenced original is represented as
 `relink_required` with a safe basename and logical Material relationship. The
 absolute source path is never exported. Relink preview can verify an explicitly
-selected original, but no relink mutation is attempted in v1.
+selected original, and transactional Apply can attach that exact user-owned
+file by reference without copying or mutating it.
 
 ## Explicit Exclusions
 
@@ -225,11 +226,13 @@ identical academic event. Remote facts, AI history, and Canvas connection state
 remain excluded.
 
 The Settings UI presents the complete grouped preview and omissions. Required
-decisions are explicit: conflicts can only keep current state, while unresolved,
-relink-required, and unsupported items can only be skipped for now. For a
+decisions are explicit: conflicts can only keep current state, while unresolved
+and unsupported items can only be skipped. For a
 relink-required local source, the desktop app can explicitly choose one
 replacement original and verify exact SHA-256 and byte-size identity without
-changing restore state. Discard removes only private staged state.
+changing restore state. An exact current capability enables an explicit
+`RELINK` decision; otherwise relink-required records remain skippable only.
+Discard removes only private staged state.
 
 ## Explicit Source Relink Preview
 
@@ -241,27 +244,31 @@ opaque relink ID and safe display metadata. Demo/Test cannot select external
 files.
 
 `POST /api/backup/restore-relink-preview` accepts only the restore ID, expected
-RestorePlan revision, source stable ID, and opaque relink ID. It validates one
+base RestorePlan revision, source stable ID, opaque relink ID, and any already
+approved opaque relink capabilities. It validates one
 immutable archive snapshot, recomputes the canonical plan query-only, verifies
-capability ownership and private-path containment, and streams the selected
-regular file through SHA-256. Only exact size and hash equality returns
+every capability's ownership and private-path containment, and streams each
+selected regular file through SHA-256. Only exact size and hash equality returns
 `RELINK_READY`; every content mismatch returns `RELINK_MISMATCH`. The derived
-revision binds the current plan and expected/observed content identity, not the
-absolute path, random capability ID, or time.
+per-source revision binds the immutable archive/local-state snapshot and that
+source's expected/observed content identity, not the transient accumulated
+selection set, absolute path, random capability ID, or time. Adding another
+exact source therefore preserves earlier ready candidates while the returned
+effective plan reflects the full cumulative selection.
 
 Relink preview does not copy, move, rename, chmod, write, or delete the selected
 original and performs no database, index, network, Canvas, OpenAI, or credential
 operation. Discard removes only the private descriptor. Discarding its staged
 restore invalidates associated descriptors. Otherwise a descriptor remains
-private EPHEMERAL state until explicitly discarded; there is no background
-cleanup daemon or cross-profile fallback. A future mutating relink operation
-must re-hash immediately before Apply; a prior `RELINK_READY` is not permanent
-authorization.
+private EPHEMERAL state until explicitly discarded or successfully applied;
+there is no background cleanup daemon or cross-profile fallback.
 
 ## Transactional Restore Apply
 
 `POST /api/backup/restore-apply` accepts only an opaque staged restore ID, an
-exact expected plan revision, and decisions for actions in the recomputed plan.
+exact expected plan revision, decisions for actions in the recomputed plan,
+and optional opaque relink IDs plus their preview revisions. It never accepts a
+path, hash, byte size, or caller-supplied file identity.
 Inside one process-local restore lock it acquires and validates one immutable
 archive snapshot, opens only the existing current-profile database, starts
 `BEGIN IMMEDIATE`, and recomputes the canonical plan. A changed archive, relevant
@@ -275,13 +282,17 @@ restore exact missing multiplicity. `MATCH`, `NOOP`, `KEEP_LOCAL`, and `SKIP`
 perform no write. The lower apply helper never commits or rolls back; the caller
 owns the single transaction, so any failure rolls back every restore mutation.
 
-Apply never copies or changes original academic files, creates a Material for a
-missing source, restores Canvas or AI state, contacts a network/credential
-service, or accepts browser-supplied paths. The private staged copy remains until
-the user explicitly discards it. A successful commit currently has no automatic
-Undo; source relink Apply and audited backup-wins decisions require later
-focused work. Existing Apply continues to require `SKIP` for every
-`RELINK_REQUIRED` action, even when an exact candidate has been previewed.
+For an explicit `RELINK`, Apply reloads the profile-private capability, verifies
+its restore/source binding, re-hashes the regular file, recomputes the immutable
+base plan and cumulative effective plan under `BEGIN IMMEDIATE`, rechecks each
+independent relink revision, and verifies every file again
+immediately before commit. It updates or creates the one canonical user-owned
+Source/Material projection and derived search index by reference. It never
+copies, moves, deletes, or rewrites the original. Successful Apply consumes the
+private descriptor; failed Apply preserves a still-valid descriptor and rolls
+back database/index changes. Apply does not restore Canvas or AI state or
+contact a network/credential service. A successful commit currently has no
+automatic Undo, and audited backup-wins decisions remain unimplemented.
 
 When Apply restores a material overlay, the same transaction synchronizes the
 existing legacy compatibility row, its existing Phase-1 Material projection,

@@ -149,7 +149,12 @@ def main() -> int:
         check("native_picker_command_exists", "choose_restore_relink_file" in rust and '"choose_restore_relink_file"' in build_rs, failures)
         check("native_picker_minimum_permission", '"allow-choose-restore-relink-file"' in capability, failures)
         check("browser_receives_no_absolute_path", "selected_path" not in frontend and "selected_path" not in rust.split("Ok((relink_id", 1)[-1], failures)
-        check("http_endpoint_accepts_no_path", "Restore relink preview accepts only restore_id, expected_plan_revision, source_stable_id, and relink_id" in (ROOT / "server.py").read_text(encoding="utf-8"), failures)
+        check(
+            "http_endpoint_accepts_only_opaque_relinks",
+            "opaque active_relinks" in (ROOT / "server.py").read_text(encoding="utf-8")
+            and "active_relinks: activeRelinks" in frontend,
+            failures,
+        )
         check("opaque_relink_id_only", len("1" * 32) == 32 and "/api/backup/restore-relink-preview" in frontend, failures)
 
         network_calls = {"canvas": 0, "openai": 0, "credential": 0, "index": 0}
@@ -174,7 +179,13 @@ def main() -> int:
         )
         after_db = db_snapshot(target_conn)
         check("exact_sha_and_size_ready", exact["status"] == "RELINK_READY" and exact["exact_match"] is True, failures)
-        check("relink_ready_is_preview_only", exact["apply_available"] is False, failures)
+        check(
+            "relink_ready_exposes_revision_bound_apply_plan",
+            exact["apply_available"] is True
+            and isinstance(exact.get("plan"), dict)
+            and exact["plan"]["plan_revision"].startswith("restore_"),
+            failures,
+        )
         check("response_contains_no_absolute_path", str(base) not in json.dumps(exact) and "selected_path" not in exact, failures)
         check("selected_original_untouched", hashlib.sha256(exact_file.read_bytes()).hexdigest() == exact_original_hash, failures)
         check("zero_database_mutation", before_db == after_db, failures)
