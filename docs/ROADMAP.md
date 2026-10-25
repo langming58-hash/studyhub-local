@@ -61,8 +61,9 @@ enhancement and is not a V1 completion blocker.
 - complete human keyboard and VoiceOver validation
 - extend the implemented privacy-safe v1 export, zero-mutation restore/relink
   preview, stale-checked transactional safe Apply, and exact source relink Apply
-  with separately reviewed audited backup-wins decisions and post-commit
-  recovery/Undo
+  from the implemented private atomic Restore-operation recorder into a
+  separately reviewed read-only Undo Preview, then audited Undo Apply;
+  backup-wins remains a separate later decision
 - improve signed/notarized desktop distribution and dependency handling
 
 Each item requires a focused design and migration PR. This roadmap does not

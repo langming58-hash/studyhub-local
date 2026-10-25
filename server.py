@@ -247,6 +247,30 @@ RESTORE_PLAN_VERSION = 1
 RESTORE_RELINK_CAPABILITY_VERSION = 1
 RESTORE_RELINK_PREVIEW_VERSION = "restore-relink-preview-v1"
 RESTORE_MAX_DECISIONS = 100_000
+RESTORE_CHANGESET_FORMAT_VERSION = 1
+RESTORE_CHANGESET_MAX_IMAGE_BYTES = 1 * 1024 * 1024
+RESTORE_CHANGESET_MAX_TOTAL_BYTES = 50 * 1024 * 1024
+RESTORE_OPERATION_ID_RE = re.compile(r"^restoreop_[0-9a-f]{32}$")
+RESTORE_CHANGE_KINDS = ("INSERT", "UPDATE", "CACHE_CREATE")
+RESTORE_CHANGE_ENTITY_KINDS = (
+    "term",
+    "course",
+    "learning_unit",
+    "file",
+    "legacy_file_version",
+    "blob",
+    "source",
+    "material",
+    "material_version",
+    "note",
+    "star",
+    "attempt",
+    "wrong_question",
+    "bookmark",
+    "study_session",
+    "academic_change_event_state",
+    "text_cache_artifact",
+)
 BACKUP_REQUIRED_SCHEMA: dict[str, set[str]] = {
     "schema_migrations": {"version", "name", "applied_at"},
     "terms": {"id", "stable_id", "name", "archived", "sort_order", "created_at", "updated_at"},
@@ -2441,12 +2465,59 @@ def phase2_academic_change_journal_migration(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def phase2_restore_operation_changeset_migration(conn: sqlite3.Connection) -> None:
+    change_kinds = ", ".join(f"'{value}'" for value in RESTORE_CHANGE_KINDS)
+    entity_kinds = ", ".join(f"'{value}'" for value in RESTORE_CHANGE_ENTITY_KINDS)
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS restore_operations (
+          id INTEGER PRIMARY KEY,
+          operation_id TEXT NOT NULL UNIQUE,
+          format_version INTEGER NOT NULL,
+          restore_plan_revision TEXT NOT NULL,
+          schema_fingerprint TEXT NOT NULL,
+          changeset_digest TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('APPLIED', 'UNDONE')),
+          change_count INTEGER NOT NULL,
+          insert_count INTEGER NOT NULL,
+          update_count INTEGER NOT NULL,
+          artifact_count INTEGER NOT NULL,
+          committed_at TEXT NOT NULL,
+          undone_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """,
+        f"""
+        CREATE TABLE IF NOT EXISTS restore_operation_changes (
+          id INTEGER PRIMARY KEY,
+          restore_operation_id INTEGER NOT NULL REFERENCES restore_operations(id) ON DELETE RESTRICT,
+          sequence INTEGER NOT NULL,
+          change_kind TEXT NOT NULL CHECK(change_kind IN ({change_kinds})),
+          entity_kind TEXT NOT NULL CHECK(entity_kind IN ({entity_kinds})),
+          locator_json TEXT NOT NULL,
+          before_json TEXT,
+          after_json TEXT,
+          before_token TEXT NOT NULL,
+          after_token TEXT NOT NULL,
+          metadata_json TEXT NOT NULL DEFAULT '{{}}',
+          UNIQUE(restore_operation_id, sequence)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_restore_operations_status ON restore_operations(status, committed_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_restore_operation_changes_operation ON restore_operation_changes(restore_operation_id, sequence)",
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+
 SCHEMA_MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "phase1_domain_foundation", phase1_domain_foundation_migration),
     (2, "phase2_canvas_course_selection", phase2_canvas_course_selection_migration),
     (3, "phase2_canvas_file_sync_baseline", phase2_canvas_file_sync_baseline_migration),
     (4, "phase2_canvas_file_acquisition", phase2_canvas_file_acquisition_migration),
     (5, "phase2_academic_change_journal", phase2_academic_change_journal_migration),
+    (6, "phase2_restore_operation_changeset", phase2_restore_operation_changeset_migration),
 )
 
 
@@ -5709,6 +5780,323 @@ def require_restore_dependency(condition: bool) -> None:
         raise RestoreApplyError("restore_dependency_unresolved")
 
 
+@dataclass(frozen=True)
+class RestoreReversibleEntitySpec:
+    entity_kind: str
+    table: str
+    primary_key: str
+    columns: tuple[str, ...]
+
+
+# This is deliberately a closed, restore-specific contract. Derived indexes,
+# extraction output, counts, and AI state are rebuilt or synchronized instead.
+RESTORE_REVERSIBLE_ENTITY_SPECS = (
+    RestoreReversibleEntitySpec(
+        "term", "terms", "id",
+        ("id", "stable_id", "name", "archived", "sort_order", "created_at", "updated_at"),
+    ),
+    RestoreReversibleEntitySpec(
+        "course", "courses", "id",
+        (
+            "id", "stable_id", "code", "course_code", "name", "display_name", "folder_name",
+            "path", "source_folder", "source_kind", "term_id", "archived", "removed_at",
+            "sort_order", "metadata_locked", "created_at", "updated_at",
+        ),
+    ),
+    RestoreReversibleEntitySpec(
+        "learning_unit", "weeks", "id",
+        (
+            "id", "stable_id", "course_id", "week_label", "week_number", "path", "kind",
+            "origin", "archived", "removed_at", "created_at", "updated_at",
+        ),
+    ),
+    RestoreReversibleEntitySpec(
+        "file", "files", "id",
+        (
+            "id", "stable_id", "course_id", "week_id", "course_code", "course_name",
+            "week_label", "week_number", "section", "category", "exercise_type", "filename",
+            "display_name", "original_path", "absolute_path", "rel_path", "source", "source_label",
+            "source_type", "import_mode", "hash", "sha256", "size", "file_size", "modified_at",
+            "extension", "file_extension", "mime_type", "is_official", "is_solution",
+            "is_question_source", "material_type", "inbox", "metadata_locked", "source_missing",
+            "active", "missing_at", "removed_at", "material_created_at", "material_updated_at",
+        ),
+    ),
+    RestoreReversibleEntitySpec(
+        "legacy_file_version", "file_versions", "id",
+        ("id", "file_id", "stable_id", "sha256", "file_size", "modified_at", "active"),
+    ),
+    RestoreReversibleEntitySpec(
+        "blob", "blobs", "id",
+        (
+            "id", "stable_id", "sha256", "byte_size", "mime_type", "extension",
+            "local_locator", "created_at", "updated_at",
+        ),
+    ),
+    RestoreReversibleEntitySpec(
+        "source", "sources", "id",
+        (
+            "id", "stable_id", "provider_kind", "authority", "source_label", "source_type",
+            "import_mode", "local_locator", "connector_id", "account_id", "remote_id", "remote_url",
+            "remote_updated_at", "fetched_at", "created_at", "updated_at",
+        ),
+    ),
+    RestoreReversibleEntitySpec(
+        "material", "materials", "id",
+        (
+            "id", "stable_id", "legacy_file_id", "course_id", "week_id", "course_code",
+            "course_name", "week_label", "week_number", "material_type", "display_name", "active",
+            "removed_at", "current_version_id", "created_at", "updated_at",
+        ),
+    ),
+    RestoreReversibleEntitySpec(
+        "material_version", "material_versions", "id",
+        (
+            "id", "stable_id", "material_id", "source_id", "blob_id", "legacy_file_id",
+            "legacy_file_version_id", "sha256", "byte_size", "modified_at", "active",
+            "source_missing", "created_at", "updated_at",
+        ),
+    ),
+    RestoreReversibleEntitySpec(
+        "note", "notes", "id",
+        ("id", "target_type", "target_id", "course_id", "week_label", "body", "created_at", "updated_at"),
+    ),
+    RestoreReversibleEntitySpec(
+        "star", "stars", "id", ("id", "target_type", "target_id", "created_at"),
+    ),
+    RestoreReversibleEntitySpec(
+        "attempt", "attempts", "id", ("id", "file_id", "prompt", "answer_text", "result", "created_at"),
+    ),
+    RestoreReversibleEntitySpec(
+        "wrong_question", "wrong_questions", "id",
+        (
+            "id", "course_id", "week_label", "type", "source_file_id", "question_ref", "mistake",
+            "concept", "attempts", "last_reviewed", "mastery", "created_at",
+        ),
+    ),
+    RestoreReversibleEntitySpec(
+        "bookmark", "bookmarks", "id", ("id", "target_type", "target_id", "label", "created_at"),
+    ),
+    RestoreReversibleEntitySpec(
+        "study_session", "study_sessions", "id",
+        ("id", "course_id", "week_label", "mode", "started_at", "ended_at"),
+    ),
+    RestoreReversibleEntitySpec(
+        "academic_change_event_state", "academic_change_event_state", "event_id",
+        ("event_id", "seen_at", "updated_at"),
+    ),
+)
+
+
+def restore_changeset_schema_fingerprint() -> str:
+    contract = {
+        "format_version": RESTORE_CHANGESET_FORMAT_VERSION,
+        "entities": [
+            {
+                "entity_kind": spec.entity_kind,
+                "table": spec.table,
+                "primary_key": spec.primary_key,
+                "columns": list(spec.columns),
+            }
+            for spec in RESTORE_REVERSIBLE_ENTITY_SPECS
+        ],
+        "artifact_kinds": ["text_cache_artifact"],
+        "schema_migrations": [
+            {"version": version, "name": name}
+            for version, name, _migration in SCHEMA_MIGRATIONS
+        ],
+    }
+    return "restore_schema_" + hashlib.sha256(canonical_backup_json(contract)).hexdigest()[:24]
+
+
+def capture_restore_reversible_state(
+    conn: sqlite3.Connection,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Capture only the closed durable Restore contract inside its transaction."""
+    snapshot: dict[str, dict[str, dict[str, Any]]] = {}
+    for spec in RESTORE_REVERSIBLE_ENTITY_SPECS:
+        column_list = ", ".join(spec.columns)
+        rows = conn.execute(
+            f"SELECT {column_list} FROM {spec.table} ORDER BY {spec.primary_key}"
+        ).fetchall()
+        snapshot[spec.entity_kind] = {
+            str(row[spec.primary_key]): {column: row[column] for column in spec.columns}
+            for row in rows
+        }
+    return snapshot
+
+
+def restore_change_image_json(value: dict[str, Any] | None) -> str | None:
+    if value is None:
+        return None
+    raw = canonical_backup_json(value)
+    if len(raw) > RESTORE_CHANGESET_MAX_IMAGE_BYTES:
+        raise RestoreApplyError("restore_changeset_too_large")
+    return raw.decode("utf-8")
+
+
+def restore_change_state_token(entity_kind: str, value: dict[str, Any] | None) -> str:
+    return restore_state_token(
+        {
+            "entity_kind": entity_kind,
+            "presence": "PRESENT" if value is not None else "ABSENT",
+            "value": value,
+        }
+    )
+
+
+def build_restore_operation_changes(
+    before: dict[str, dict[str, dict[str, Any]]],
+    after: dict[str, dict[str, dict[str, Any]]],
+    *,
+    cache_state: dict[Path, bool],
+) -> list[dict[str, Any]]:
+    changes: list[dict[str, Any]] = []
+    total_bytes = 0
+    specs = {spec.entity_kind: spec for spec in RESTORE_REVERSIBLE_ENTITY_SPECS}
+    for entity_kind in (spec.entity_kind for spec in RESTORE_REVERSIBLE_ENTITY_SPECS):
+        spec = specs[entity_kind]
+        before_rows = before[entity_kind]
+        after_rows = after[entity_kind]
+        keys = sorted(set(before_rows) | set(after_rows), key=lambda value: int(value))
+        for key in keys:
+            before_row = before_rows.get(key)
+            after_row = after_rows.get(key)
+            if before_row == after_row:
+                continue
+            if before_row is not None and after_row is None:
+                raise RestoreApplyError("restore_changeset_unexpected_delete")
+            change_kind = "INSERT" if before_row is None else "UPDATE"
+            locator = {"primary_key": int(key)}
+            stable_id = (after_row or before_row or {}).get("stable_id")
+            if stable_id:
+                locator["stable_id"] = str(stable_id)
+            locator_json = restore_change_image_json(locator)
+            before_json = restore_change_image_json(before_row)
+            after_json = restore_change_image_json(after_row)
+            metadata_json = "{}"
+            total_bytes += sum(len(value.encode("utf-8")) for value in (locator_json, before_json, after_json, metadata_json) if value)
+            changes.append(
+                {
+                    "change_kind": change_kind,
+                    "entity_kind": entity_kind,
+                    "locator_json": locator_json,
+                    "before_json": before_json,
+                    "after_json": after_json,
+                    "before_token": restore_change_state_token(entity_kind, before_row),
+                    "after_token": restore_change_state_token(entity_kind, after_row),
+                    "metadata_json": metadata_json,
+                }
+            )
+
+    cache_root = TEXT_CACHE_DIR.resolve(strict=False)
+    for path, existed_before in sorted(cache_state.items(), key=lambda item: item[0].name):
+        resolved = path.resolve(strict=False)
+        if existed_before or not resolved.is_file() or resolved.is_symlink():
+            continue
+        try:
+            relative = resolved.relative_to(cache_root)
+        except ValueError as exc:
+            raise RestoreApplyError("restore_cache_identity_invalid") from exc
+        if len(relative.parts) != 1 or not re.fullmatch(
+            r"[0-9a-f]{64}-[A-Za-z0-9._-]{1,80}\.txt",
+            relative.name,
+        ):
+            raise RestoreApplyError("restore_cache_identity_invalid")
+        artifact = {"relative_cache_id": relative.as_posix()}
+        locator_json = restore_change_image_json(artifact)
+        after_json = restore_change_image_json(artifact)
+        metadata_json = restore_change_image_json({"created_by_restore": True}) or "{}"
+        total_bytes += sum(len(value.encode("utf-8")) for value in (locator_json, after_json, metadata_json))
+        changes.append(
+            {
+                "change_kind": "CACHE_CREATE",
+                "entity_kind": "text_cache_artifact",
+                "locator_json": locator_json,
+                "before_json": None,
+                "after_json": after_json,
+                "before_token": restore_change_state_token("text_cache_artifact", None),
+                "after_token": restore_change_state_token("text_cache_artifact", artifact),
+                "metadata_json": metadata_json,
+            }
+        )
+    if total_bytes > RESTORE_CHANGESET_MAX_TOTAL_BYTES:
+        raise RestoreApplyError("restore_changeset_too_large")
+    for sequence, change in enumerate(changes, start=1):
+        change["sequence"] = sequence
+    return changes
+
+
+def restore_changeset_digest(changes: list[dict[str, Any]]) -> str:
+    digest_input = {
+        "format_version": RESTORE_CHANGESET_FORMAT_VERSION,
+        "schema_fingerprint": restore_changeset_schema_fingerprint(),
+        "changes": changes,
+    }
+    return hashlib.sha256(canonical_backup_json(digest_input)).hexdigest()
+
+
+def record_restore_operation(
+    conn: sqlite3.Connection,
+    restore_plan_revision: str,
+    changes: list[dict[str, Any]],
+) -> str | None:
+    if not conn.in_transaction:
+        raise ValueError("Restore operation recorder requires a caller-owned transaction")
+    if not changes:
+        return None
+    operation_id = "restoreop_" + secrets.token_hex(16)
+    committed_at = now_iso()
+    digest = restore_changeset_digest(changes)
+    schema_fingerprint = restore_changeset_schema_fingerprint()
+    conn.execute(
+        """
+        INSERT INTO restore_operations(
+          operation_id, format_version, restore_plan_revision, schema_fingerprint,
+          changeset_digest, status, change_count, insert_count, update_count,
+          artifact_count, committed_at, undone_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'APPLIED', ?, ?, ?, ?, ?, NULL, ?, ?)
+        """,
+        (
+            operation_id,
+            RESTORE_CHANGESET_FORMAT_VERSION,
+            restore_plan_revision,
+            schema_fingerprint,
+            digest,
+            len(changes),
+            sum(change["change_kind"] == "INSERT" for change in changes),
+            sum(change["change_kind"] == "UPDATE" for change in changes),
+            sum(change["change_kind"] == "CACHE_CREATE" for change in changes),
+            committed_at,
+            committed_at,
+            committed_at,
+        ),
+    )
+    private_operation_pk = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+    for change in changes:
+        conn.execute(
+            """
+            INSERT INTO restore_operation_changes(
+              restore_operation_id, sequence, change_kind, entity_kind, locator_json,
+              before_json, after_json, before_token, after_token, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                private_operation_pk,
+                change["sequence"],
+                change["change_kind"],
+                change["entity_kind"],
+                change["locator_json"],
+                change["before_json"],
+                change["after_json"],
+                change["before_token"],
+                change["after_token"],
+                change["metadata_json"],
+            ),
+        )
+    return operation_id
+
+
 def sync_restored_material_projection(
     conn: sqlite3.Connection,
     *,
@@ -5772,7 +6160,7 @@ def apply_restore_plan(
     *,
     relink_candidates: dict[str, dict[str, Any]] | None = None,
     failure_point: str | None = None,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Apply a validated plan inside a caller-owned transaction without committing."""
     if not conn.in_transaction:
         raise ValueError("Restore apply helper requires a caller-owned transaction")
@@ -6340,6 +6728,7 @@ def apply_staged_restore(
                 actions,
                 relink_source_ids=set(prepared),
             )
+            reversible_before = capture_restore_reversible_state(conn)
             result = apply_restore_plan(
                 conn,
                 datasets,
@@ -6353,12 +6742,27 @@ def apply_staged_restore(
                 before_commit(conn)
             verify_restore_source_candidates(context)
             verify_prepared_restore_relinks(prepared)
+            reversible_after = capture_restore_reversible_state(conn)
+            operation_changes = build_restore_operation_changes(
+                reversible_before,
+                reversible_after,
+                cache_state=cache_state,
+            )
+            operation_id = record_restore_operation(
+                conn,
+                base_plan["plan_revision"],
+                operation_changes,
+            )
+            if failure_point == "after_restore_operation_recorded":
+                raise RuntimeError("synthetic_restore_failure_after_restore_operation_recorded")
             conn.commit()
             for candidate in prepared.values():
                 try:
                     restore_relink_descriptor_path(candidate["relink_id"]).unlink()
                 except FileNotFoundError:
                     pass
+            if operation_id is not None:
+                result["restore_operation_id"] = operation_id
             return {"ok": True, "applied": result}
         except Exception:
             conn.rollback()

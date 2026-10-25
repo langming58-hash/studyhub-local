@@ -180,9 +180,18 @@ revision and a complete set of narrow `KEEP_LOCAL`/`SKIP`/`RELINK` decisions,
 applies only supported user-owned state, rechecks explicitly inspected source
 candidates, and commits once. Exact relink reuses the canonical ingestion/domain
 projection by reference and consumes its private capability only after commit.
-Failures roll back atomically. Automatic source search, backup-wins overwrite
-decisions, post-commit Undo, scheduled/cloud backup, and original-file backup
-are not implemented. The canonical contract is
+The same transaction now records a private, versioned Restore operation only
+when Apply makes at least one reversible durable mutation. Its closed ChangeSet
+contains exact pre/post images for allowlisted user-owned, compatibility, and
+canonical-domain rows plus safe relative identity for a Restore-created text
+cache artifact. Derived FTS, chunks, questions, solutions, and course/week
+counts are intentionally excluded from the inverse contract. A failed or no-op
+Restore leaves no operation record. Failures roll back atomically.
+
+This recorder is a foundation, not an Undo feature: there is no Undo Preview or
+Undo Apply API yet. Automatic source search, backup-wins overwrite decisions,
+post-commit Undo, scheduled/cloud backup, and original-file backup are not
+implemented. The canonical contract is
 [Backup Export Format](BACKUP_FORMAT.md).
 
 Backup archives remain untrusted after ZIP and checksum verification. Preview

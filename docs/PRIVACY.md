@@ -209,6 +209,15 @@ bytes inside the restore transaction, keeps the original user-owned and in
 place, and consumes the descriptor only after success. Automatic relinking,
 backup-wins replacement, and post-commit Undo are not implemented.
 
+Successful mutating Restore Apply now records a private runtime-local ChangeSet
+atomically with the restored state. These records can contain note bodies,
+internal row IDs, and private source locators, so `restore_operations` and
+`restore_operation_changes` are excluded from backup v1, MCP, diagnostics,
+logs, and public APIs. Public Restore results expose only the opaque operation
+ID alongside existing safe counts. Exact row images and locators never enter
+the browser response. Derived indexes and extracted text are not serialized
+into this private inverse contract.
+
 Archive hashes prove integrity, not trust. The shared Preview/Apply validator
 rejects semantically invalid field types, oversized text, unsafe controls,
 invalid enums and hashes, absurd numeric metadata, and unsafe source-relative
