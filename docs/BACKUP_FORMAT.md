@@ -244,13 +244,17 @@ opaque relink ID and safe display metadata. Demo/Test cannot select external
 files.
 
 `POST /api/backup/restore-relink-preview` accepts only the restore ID, expected
-RestorePlan revision, source stable ID, and opaque relink ID. It validates one
+base RestorePlan revision, source stable ID, opaque relink ID, and any already
+approved opaque relink capabilities. It validates one
 immutable archive snapshot, recomputes the canonical plan query-only, verifies
-capability ownership and private-path containment, and streams the selected
-regular file through SHA-256. Only exact size and hash equality returns
+every capability's ownership and private-path containment, and streams each
+selected regular file through SHA-256. Only exact size and hash equality returns
 `RELINK_READY`; every content mismatch returns `RELINK_MISMATCH`. The derived
-revision binds the current plan and expected/observed content identity, not the
-absolute path, random capability ID, or time.
+per-source revision binds the immutable archive/local-state snapshot and that
+source's expected/observed content identity, not the transient accumulated
+selection set, absolute path, random capability ID, or time. Adding another
+exact source therefore preserves earlier ready candidates while the returned
+effective plan reflects the full cumulative selection.
 
 Relink preview does not copy, move, rename, chmod, write, or delete the selected
 original and performs no database, index, network, Canvas, OpenAI, or credential
@@ -279,8 +283,9 @@ perform no write. The lower apply helper never commits or rolls back; the caller
 owns the single transaction, so any failure rolls back every restore mutation.
 
 For an explicit `RELINK`, Apply reloads the profile-private capability, verifies
-its restore/source binding, re-hashes the regular file, recomputes the effective
-plan and relink revisions under `BEGIN IMMEDIATE`, and verifies the file again
+its restore/source binding, re-hashes the regular file, recomputes the immutable
+base plan and cumulative effective plan under `BEGIN IMMEDIATE`, rechecks each
+independent relink revision, and verifies every file again
 immediately before commit. It updates or creates the one canonical user-owned
 Source/Material projection and derived search index by reference. It never
 copies, moves, deletes, or rewrites the original. Successful Apply consumes the

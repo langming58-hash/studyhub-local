@@ -5004,6 +5004,7 @@ def plan_restore_state(
     *,
     transaction_owned_by_caller: bool,
     relink_material_refs: set[str] | None = None,
+    base_plan_revision: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if transaction_owned_by_caller:
         if not conn.in_transaction:
@@ -5357,7 +5358,10 @@ def plan_restore_state(
         "relevant_target_state": target_state_tokens,
         "actions": actions,
     }
-    plan_revision = "restore_" + hashlib.sha256(canonical_backup_json(revision_input)).hexdigest()[:24]
+    computed_plan_revision = "restore_" + hashlib.sha256(canonical_backup_json(revision_input)).hexdigest()[:24]
+    if base_plan_revision is not None and not RESTORE_PLAN_REVISION_RE.fullmatch(base_plan_revision):
+        raise ValueError("Invalid base restore plan revision")
+    plan_revision = base_plan_revision or computed_plan_revision
     plan = {
         "plan_version": RESTORE_PLAN_VERSION,
         "backup": {
@@ -5425,6 +5429,7 @@ def preview_restore_relink_candidate(
     expected_plan_revision: Any,
     source_stable_id: Any,
     relink_id: Any,
+    active_relink_values: Any = None,
 ) -> dict[str, Any]:
     if RUNTIME_PROFILE == "demo-test":
         raise RestoreRelinkError("restore_relink_unavailable")
@@ -5450,6 +5455,34 @@ def preview_restore_relink_candidate(
         conn.close()
     if plan["plan_revision"] != expected_revision:
         raise RestoreRelinkError("stale_restore_plan")
+
+    try:
+        active_relinks = prepare_restore_relinks(
+            normalized_restore_id,
+            [] if active_relink_values is None else active_relink_values,
+            datasets,
+        )
+    except RestoreApplyError as exc:
+        raise RestoreRelinkError(exc.code) from exc
+    if normalized_source_id in active_relinks:
+        raise RestoreRelinkError("restore_relink_source_duplicate")
+
+    base_actions, _base_by_id = restore_action_index(plan)
+    base_action_map = {(item["dataset"], item["stable_id"]): item for item in base_actions}
+    for active_source_id, candidate in active_relinks.items():
+        active_action = base_action_map.get(("local_sources", active_source_id))
+        if active_action is None or active_action["classification"] != "RELINK_REQUIRED":
+            raise RestoreRelinkError("restore_relink_source_not_required")
+        computed = restore_relink_revision(
+            plan["plan_revision"],
+            active_source_id,
+            str(candidate["expected_sha256"]),
+            int(candidate["expected_size"]),
+            str(candidate["expected_sha256"]),
+            int(candidate["expected_size"]),
+        )
+        if not secrets.compare_digest(computed, str(candidate["relink_revision"])):
+            raise RestoreRelinkError("stale_restore_relink_revision")
 
     action = next(
         (
@@ -5489,12 +5522,16 @@ def preview_restore_relink_candidate(
                 manifest,
                 datasets,
                 transaction_owned_by_caller=False,
-                relink_material_refs={str(backup_source["material_ref"])},
+                relink_material_refs={
+                    str(candidate["material_ref"]) for candidate in active_relinks.values()
+                }
+                | {str(backup_source["material_ref"])},
+                base_plan_revision=plan["plan_revision"],
             )
         finally:
             conn.close()
     relink_revision = restore_relink_revision(
-        effective_plan["plan_revision"],
+        plan["plan_revision"],
         normalized_source_id,
         expected_sha,
         expected_size,
@@ -5830,6 +5867,7 @@ def apply_restore_plan(
     source_by_stable_id = {
         str(record["stable_id"]): record for record in datasets["data/local_sources.json"]
     }
+    relinks_applied = 0
     for source_id, candidate in relink_candidates.items():
         source_record = source_by_stable_id.get(source_id)
         require_restore_dependency(source_record is not None)
@@ -6021,7 +6059,13 @@ def apply_restore_plan(
             ).fetchone()
             created += 1
         resolved_file_ids[material_ref] = file_id
+        relinks_applied += 1
         wrote("after_relink")
+        if failure_point == "after_first_relink" and relinks_applied == 1:
+            raise RuntimeError("synthetic_restore_failure_after_first_relink")
+
+    if failure_point == "after_all_relinks" and relink_candidates:
+        raise RuntimeError("synthetic_restore_failure_after_all_relinks")
 
     for record in datasets["data/material_overlays.json"]:
         if str(record["stable_id"]) not in selected:
@@ -6263,6 +6307,8 @@ def apply_staged_restore(
                 datasets,
                 transaction_owned_by_caller=True,
             )
+            if base_plan["plan_revision"] != expected:
+                raise RestoreApplyError("stale_restore_plan")
             base_actions, _base_by_id = restore_action_index(base_plan)
             base_action_map = {(item["dataset"], item["stable_id"]): item for item in base_actions}
             for source_id in prepared:
@@ -6275,12 +6321,11 @@ def apply_staged_restore(
                 datasets,
                 transaction_owned_by_caller=True,
                 relink_material_refs={str(item["material_ref"]) for item in prepared.values()},
+                base_plan_revision=base_plan["plan_revision"],
             )
-            if plan["plan_revision"] != expected:
-                raise RestoreApplyError("stale_restore_plan")
             for source_id, candidate in prepared.items():
                 computed = restore_relink_revision(
-                    plan["plan_revision"],
+                    base_plan["plan_revision"],
                     source_id,
                     str(candidate["expected_sha256"]),
                     int(candidate["expected_size"]),
@@ -10330,9 +10375,9 @@ class StudyHubHandler(BaseHTTPRequestHandler):
     def handle_backup_restore_relink_preview(self) -> None:
         body = self.parse_body_json()
         expected = {"restore_id", "expected_plan_revision", "source_stable_id", "relink_id"}
-        if set(body) != expected:
+        if set(body) not in (expected, expected | {"active_relinks"}):
             raise ValueError(
-                "Restore relink preview accepts only restore_id, expected_plan_revision, source_stable_id, and relink_id"
+                "Restore relink preview accepts only restore_id, expected_plan_revision, source_stable_id, relink_id, and opaque active_relinks"
             )
         try:
             result = preview_restore_relink_candidate(
@@ -10340,6 +10385,7 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 body.get("expected_plan_revision"),
                 body.get("source_stable_id"),
                 body.get("relink_id"),
+                body.get("active_relinks", []),
             )
         except RestoreRelinkError as exc:
             status = 409 if exc.code in {"stale_restore_plan", "restore_relink_source_changed"} else 400

@@ -149,7 +149,12 @@ def main() -> int:
         check("native_picker_command_exists", "choose_restore_relink_file" in rust and '"choose_restore_relink_file"' in build_rs, failures)
         check("native_picker_minimum_permission", '"allow-choose-restore-relink-file"' in capability, failures)
         check("browser_receives_no_absolute_path", "selected_path" not in frontend and "selected_path" not in rust.split("Ok((relink_id", 1)[-1], failures)
-        check("http_endpoint_accepts_no_path", "Restore relink preview accepts only restore_id, expected_plan_revision, source_stable_id, and relink_id" in (ROOT / "server.py").read_text(encoding="utf-8"), failures)
+        check(
+            "http_endpoint_accepts_only_opaque_relinks",
+            "opaque active_relinks" in (ROOT / "server.py").read_text(encoding="utf-8")
+            and "active_relinks: activeRelinks" in frontend,
+            failures,
+        )
         check("opaque_relink_id_only", len("1" * 32) == 32 and "/api/backup/restore-relink-preview" in frontend, failures)
 
         network_calls = {"canvas": 0, "openai": 0, "credential": 0, "index": 0}

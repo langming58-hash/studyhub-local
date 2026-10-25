@@ -2519,11 +2519,23 @@ document.addEventListener("click", async (event) => {
         return;
       }
       const relinkId = selected[0];
+      const activeRelinks = Object.entries(state.restore.relinks)
+        .filter(([activeSourceId, selection]) => (
+          activeSourceId !== sourceStableId
+          && selection?.result?.exact_match
+          && selection?.result?.apply_available
+        ))
+        .map(([activeSourceId, selection]) => ({
+          source_stable_id: activeSourceId,
+          relink_id: selection.relinkId,
+          relink_revision: selection.result.relink_revision,
+        }));
       const response = await postJson("/api/backup/restore-relink-preview", {
         restore_id: state.restore.restoreId,
         expected_plan_revision: state.restore.plan.plan_revision,
         source_stable_id: sourceStableId,
         relink_id: relinkId,
+        active_relinks: activeRelinks,
       });
       if (previous.relinkId && previous.relinkId !== relinkId) {
         await postJson("/api/backup/restore-relink-discard", {

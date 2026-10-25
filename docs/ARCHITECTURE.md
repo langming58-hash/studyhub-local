@@ -168,6 +168,11 @@ the candidate's streamed SHA-256 and size with the validated backup source.
 `RELINK_READY` is a revision-bound preview state: preview never changes a
 Source, Material, file row, original byte, or index, but it can authorize one
 explicit `RELINK` decision for the exact current capability.
+The base plan revision binds the immutable archive and relevant local-state
+snapshot; each source candidate has its own revision against that base.
+Previously ready opaque capabilities are revalidated and accumulated when the
+user selects another source, so selection order does not invalidate unrelated
+candidates or weaken stale-state protection.
 
 Restore Apply reuses the canonical planner under a process-local apply lock and
 a caller-owned SQLite `BEGIN IMMEDIATE` transaction. It requires the exact approved plan
