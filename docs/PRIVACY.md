@@ -221,15 +221,20 @@ the ChangeSet. Images contain only the closed reversible field contract, while
 derived indexes and extracted text are not serialized into this private inverse
 contract.
 
-Read-only Undo Preview consumes only the opaque Restore-operation ID. It
+Undo Preview consumes only the opaque Restore-operation ID. It
 validates the private ChangeSet and exact current postimages in a query-only
 snapshot, then checks only the affected operation graph for later durable
 dependencies. Public Preview and latest-operation responses contain a safe
 status, opaque revision, timestamp, and aggregate counts only. They never
 contain private row images, locators, database keys, hashes, source paths, note
 or answer text, or controlled cache identities. Preview does not read or modify
-the user's original source files, does not touch cache artifacts, and cannot
-apply an inverse. Undo Apply remains not implemented.
+the user's original source files and does not touch cache artifacts. Undo Apply
+accepts only the opaque operation ID and opaque expected revision, then repeats
+ChangeSet, postimage, and dependency validation inside the serialized write
+transaction. It restores only StudyHub-owned durable rows and affected derived
+state. User-owned originals remain outside mutation authority. Cache cleanup is
+restricted to a validated private relative cache identity and happens only
+after the durable commit; failures are best-effort and never expose the identity.
 
 Archive hashes prove integrity, not trust. The shared Preview/Apply validator
 rejects semantically invalid field types, oversized text, unsafe controls,

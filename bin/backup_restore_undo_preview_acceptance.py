@@ -629,7 +629,6 @@ def main() -> int:
             ),
             failures,
         )
-        source_text = (ROOT / "server.py").read_text(encoding="utf-8")
         original_urlopen = target.urllib.request.urlopen
         original_canvas = target.with_canvas_connector
 
@@ -650,9 +649,8 @@ def main() -> int:
         demo_conn.commit()
         demo_conn.close()
         check(
-            "no_undo_apply_network_or_credential_surface",
-            "/api/backup/restore-undo-apply" not in source_text
-            and isolated.get("undo_available") is True
+            "undo_preview_network_and_credential_isolation",
+            isolated.get("undo_available") is True
             and demo.latest_restore_undo_operation() == {"operation": None}
             and "with_canvas_connector" not in target.preview_restore_undo.__code__.co_names
             and "credential" not in target.preview_restore_undo.__code__.co_names,
