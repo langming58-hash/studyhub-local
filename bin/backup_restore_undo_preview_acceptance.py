@@ -483,6 +483,130 @@ def main() -> int:
             failures,
         )
 
+        empty_target, empty_conn, _empty_restore_id, _empty_source_id, empty_selected, empty_request = relink_fixture(
+            base, "undo-preview-empty-target", seed_target=False
+        )
+        empty_original = empty_selected.read_bytes()
+        empty_result = empty_target.apply_staged_restore(
+            empty_request["restore_id"],
+            empty_request["expected_plan_revision"],
+            empty_request["decisions"],
+            empty_request["relinks"],
+        )
+        empty_operation_id = empty_result["applied"]["restore_operation_id"]
+        empty_operation, empty_changes = operation_rows(empty_conn, empty_operation_id)
+        empty_kinds = {
+            change["entity_kind"]
+            for change in empty_changes
+            if change["change_kind"] == "INSERT"
+        }
+        required_graph = {
+            "term", "course", "learning_unit", "file", "legacy_file_version",
+            "blob", "source", "material", "material_version",
+        }
+        external_reads = 0
+        original_hash_helper = empty_target.hash_restore_relink_source
+
+        def external_hash_trap(_path: Path) -> tuple[str, int]:
+            nonlocal external_reads
+            external_reads += 1
+            raise AssertionError("Undo Preview must not rehash an external original")
+
+        empty_target.hash_restore_relink_source = external_hash_trap
+        try:
+            empty_ready = empty_target.preview_restore_undo(empty_operation_id)
+            empty_ready_repeat = empty_target.preview_restore_undo(empty_operation_id)
+            material_image = json.loads(
+                next(
+                    change["after_json"]
+                    for change in empty_changes
+                    if change["entity_kind"] == "material"
+                )
+            )
+            source_image = json.loads(
+                next(
+                    change["after_json"]
+                    for change in empty_changes
+                    if change["entity_kind"] == "source"
+                )
+            )
+            external_sha = "2" * 64
+            empty_conn.execute(
+                "INSERT INTO blobs(stable_id, sha256, byte_size, mime_type, extension, local_locator, "
+                "created_at, updated_at) VALUES "
+                "('blob_external_undo_dependency', ?, 1, 'text/plain', '.txt', '', '', '')",
+                (external_sha,),
+            )
+            external_blob_id = int(empty_conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+            empty_conn.execute(
+                "INSERT INTO material_versions(stable_id, material_id, source_id, blob_id, sha256, "
+                "byte_size, active, source_missing, created_at, updated_at) VALUES "
+                "('matver_external_undo_dependency', ?, ?, ?, ?, 1, 0, 0, '', '')",
+                (material_image["id"], source_image["id"], external_blob_id, external_sha),
+            )
+            external_version_id = int(empty_conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+            empty_conn.commit()
+            empty_blocked = empty_target.preview_restore_undo(empty_operation_id)
+            empty_conn.execute("DELETE FROM material_versions WHERE id=?", (external_version_id,))
+            empty_conn.execute("DELETE FROM blobs WHERE id=?", (external_blob_id,))
+            empty_conn.commit()
+            empty_recovered = empty_target.preview_restore_undo(empty_operation_id)
+            empty_cache_change = next(
+                (
+                    change
+                    for change in empty_changes
+                    if change["entity_kind"] == "text_cache_artifact"
+                ),
+                None,
+            )
+            empty_cache_id = ""
+            if empty_cache_change is not None:
+                empty_cache_id = json.loads(empty_cache_change["after_json"])["relative_cache_id"]
+                (empty_target.TEXT_CACHE_DIR / empty_cache_id).unlink(missing_ok=True)
+            empty_cache_absent = empty_target.preview_restore_undo(empty_operation_id)
+        finally:
+            empty_target.hash_restore_relink_source = original_hash_helper
+        empty_public = json.dumps(
+            [empty_ready, empty_blocked, empty_recovered, empty_cache_absent], sort_keys=True
+        )
+        check(
+            "empty_target_operation_records_complete_canonical_insert_graph",
+            required_graph.issubset(empty_kinds)
+            and empty_operation["insert_count"] >= len(required_graph),
+            failures,
+        )
+        check(
+            "empty_target_operation_owned_graph_is_ready",
+            empty_ready.get("undo_available") is True
+            and empty_ready_repeat == empty_ready
+            and empty_target.RESTORE_UNDO_REVISION_RE.fullmatch(
+                empty_ready.get("undo_revision", "")
+            ) is not None,
+            failures,
+        )
+        check(
+            "external_canonical_dependency_blocks_then_recovers_exact_revision",
+            empty_blocked.get("undo_available") is False
+            and empty_blocked.get("reason") == "DEPENDENCY_CHANGED"
+            and empty_recovered.get("undo_available") is True
+            and empty_recovered.get("undo_revision") == empty_ready.get("undo_revision"),
+            failures,
+        )
+        check(
+            "empty_target_external_original_remains_outside_undo_authority",
+            external_reads == 0
+            and empty_selected.read_bytes() == empty_original,
+            failures,
+        )
+        check(
+            "empty_target_cache_absence_remains_ready_and_private",
+            empty_cache_change is not None
+            and empty_cache_absent.get("undo_available") is True
+            and empty_cache_absent.get("undo_revision") == empty_ready.get("undo_revision")
+            and empty_cache_id not in empty_public,
+            failures,
+        )
+
         output = io.StringIO()
         with redirect_stdout(output), redirect_stderr(output):
             public = target.preview_restore_undo(operation_id)
@@ -538,6 +662,7 @@ def main() -> int:
         source_conn.close()
         conn.close()
         relink_conn.close()
+        empty_conn.close()
 
     if failures:
         print("Backup restore Undo Preview acceptance: FAIL")
