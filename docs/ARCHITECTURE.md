@@ -182,11 +182,14 @@ candidates, and commits once. Exact relink reuses the canonical ingestion/domain
 projection by reference and consumes its private capability only after commit.
 The same transaction now records a private, versioned Restore operation only
 when Apply makes at least one reversible durable mutation. Its closed ChangeSet
-contains exact pre/post images for allowlisted user-owned, compatibility, and
-canonical-domain rows plus safe relative identity for a Restore-created text
-cache artifact. Derived FTS, chunks, questions, solutions, and course/week
-counts are intentionally excluded from the inverse contract. A failed or no-op
-Restore leaves no operation record. Failures roll back atomically.
+contains exact pre/post images of the closed reversible field contract for only
+the rows reachable from the validated RestorePlan, explicit decisions, and
+relinks, plus safe relative identity for a Restore-created text cache artifact.
+It does not snapshot unrelated durable tables. Derived FTS, chunks, questions,
+solutions, and course/week counts are intentionally excluded from the inverse
+contract. Its bounded private journal budget is derived from the existing
+backup envelope so recording does not reduce supported Restore size. A failed
+or no-op Restore leaves no operation record. Failures roll back atomically.
 
 This recorder is a foundation, not an Undo feature: there is no Undo Preview or
 Undo Apply API yet. Automatic source search, backup-wins overwrite decisions,

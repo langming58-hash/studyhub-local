@@ -215,8 +215,11 @@ internal row IDs, and private source locators, so `restore_operations` and
 `restore_operation_changes` are excluded from backup v1, MCP, diagnostics,
 logs, and public APIs. Public Restore results expose only the opaque operation
 ID alongside existing safe counts. Exact row images and locators never enter
-the browser response. Derived indexes and extracted text are not serialized
-into this private inverse contract.
+the browser response. Capture is limited to rows in the validated Restore
+mutation scope; unrelated durable rows and note bodies are not enumerated into
+the ChangeSet. Images contain only the closed reversible field contract, while
+derived indexes and extracted text are not serialized into this private inverse
+contract.
 
 Archive hashes prove integrity, not trust. The shared Preview/Apply validator
 rejects semantically invalid field types, oversized text, unsafe controls,

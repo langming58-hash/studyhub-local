@@ -249,7 +249,12 @@ RESTORE_RELINK_PREVIEW_VERSION = "restore-relink-preview-v1"
 RESTORE_MAX_DECISIONS = 100_000
 RESTORE_CHANGESET_FORMAT_VERSION = 1
 RESTORE_CHANGESET_MAX_IMAGE_BYTES = 1 * 1024 * 1024
-RESTORE_CHANGESET_MAX_TOTAL_BYTES = 50 * 1024 * 1024
+# A valid backup may contain 50 MiB of canonical JSON. The inverse journal can
+# contain both before and after images, escaped JSON, locators, and tokens. Keep
+# it bounded without shrinking the already-supported Restore envelope.
+RESTORE_CHANGESET_MAX_TOTAL_BYTES = (
+    4 * BACKUP_MAX_UNCOMPRESSED_BYTES + 512 * BACKUP_MAX_RECORDS
+)
 RESTORE_OPERATION_ID_RE = re.compile(r"^restoreop_[0-9a-f]{32}$")
 RESTORE_CHANGE_KINDS = ("INSERT", "UPDATE", "CACHE_CREATE")
 RESTORE_CHANGE_ENTITY_KINDS = (
@@ -5888,9 +5893,13 @@ RESTORE_REVERSIBLE_ENTITY_SPECS = (
 )
 
 
-def restore_changeset_schema_fingerprint() -> str:
+def restore_changeset_schema_fingerprint(
+    entity_specs: tuple[RestoreReversibleEntitySpec, ...] | None = None,
+) -> str:
+    entity_specs = entity_specs or RESTORE_REVERSIBLE_ENTITY_SPECS
     contract = {
         "format_version": RESTORE_CHANGESET_FORMAT_VERSION,
+        "change_kinds": list(RESTORE_CHANGE_KINDS),
         "entities": [
             {
                 "entity_kind": spec.entity_kind,
@@ -5898,31 +5907,281 @@ def restore_changeset_schema_fingerprint() -> str:
                 "primary_key": spec.primary_key,
                 "columns": list(spec.columns),
             }
-            for spec in RESTORE_REVERSIBLE_ENTITY_SPECS
+            for spec in entity_specs
         ],
-        "artifact_kinds": ["text_cache_artifact"],
-        "schema_migrations": [
-            {"version": version, "name": name}
-            for version, name, _migration in SCHEMA_MIGRATIONS
-        ],
+        "locator_contract": "private-primary-key-plus-optional-stable-id-v1",
+        "artifact_contract": {
+            "entity_kind": "text_cache_artifact",
+            "change_kind": "CACHE_CREATE",
+            "locator": "single-relative-cache-id-v1",
+        },
     }
     return "restore_schema_" + hashlib.sha256(canonical_backup_json(contract)).hexdigest()[:24]
 
 
-def capture_restore_reversible_state(
-    conn: sqlite3.Connection,
-) -> dict[str, dict[str, dict[str, Any]]]:
-    """Capture only the closed durable Restore contract inside its transaction."""
-    snapshot: dict[str, dict[str, dict[str, Any]]] = {}
+@dataclass(frozen=True)
+class RestoreMutationScope:
+    stable_ids: dict[str, frozenset[str]]
+    append_boundaries: dict[str, int]
+    material_stable_ids: frozenset[str]
+    event_ids: frozenset[int]
+    relink_source_stable_ids: frozenset[str]
+    relink_blob_sha256s: frozenset[str]
+    relink_material_version_stable_ids: frozenset[str]
+
+
+def restore_entity_spec(entity_kind: str) -> RestoreReversibleEntitySpec:
     for spec in RESTORE_REVERSIBLE_ENTITY_SPECS:
-        column_list = ", ".join(spec.columns)
-        rows = conn.execute(
-            f"SELECT {column_list} FROM {spec.table} ORDER BY {spec.primary_key}"
-        ).fetchall()
-        snapshot[spec.entity_kind] = {
-            str(row[spec.primary_key]): {column: row[column] for column in spec.columns}
-            for row in rows
+        if spec.entity_kind == entity_kind:
+            return spec
+    raise RestoreApplyError("restore_changeset_contract_invalid")
+
+
+def restore_rows_matching(
+    conn: sqlite3.Connection,
+    entity_kind: str,
+    where_sql: str,
+    parameters: tuple[Any, ...],
+) -> dict[str, dict[str, Any]]:
+    spec = restore_entity_spec(entity_kind)
+    column_list = ", ".join(spec.columns)
+    rows = conn.execute(
+        f"SELECT {column_list} FROM {spec.table} WHERE {where_sql} ORDER BY {spec.primary_key}",
+        parameters,
+    ).fetchall()
+    return {
+        str(row[spec.primary_key]): {column: row[column] for column in spec.columns}
+        for row in rows
+    }
+
+
+def merge_restore_rows(
+    snapshot: dict[str, dict[str, dict[str, Any]]],
+    entity_kind: str,
+    rows: dict[str, dict[str, Any]],
+) -> None:
+    snapshot.setdefault(entity_kind, {}).update(rows)
+
+
+def restore_rows_for_values(
+    conn: sqlite3.Connection,
+    entity_kind: str,
+    column: str,
+    values: set[Any] | frozenset[Any],
+) -> dict[str, dict[str, Any]]:
+    if not values:
+        return {}
+    ordered = sorted(values, key=str)
+    placeholders = ",".join("?" for _value in ordered)
+    return restore_rows_matching(
+        conn,
+        entity_kind,
+        f"{column} IN ({placeholders})",
+        tuple(ordered),
+    )
+
+
+def plan_restore_mutation_scope(
+    conn: sqlite3.Connection,
+    datasets: dict[str, list[dict[str, Any]]],
+    plan: dict[str, Any],
+    context: dict[str, Any],
+    relink_candidates: dict[str, dict[str, Any]],
+) -> RestoreMutationScope:
+    """Derive the maximum row scope this exact validated Restore may mutate."""
+    _actions, actions_by_id = restore_action_index(plan)
+    selected = {
+        stable_id
+        for stable_id, action in actions_by_id.items()
+        if action["classification"] in {"CREATE", "UPDATE_USER_STATE"}
+    }
+    stable_ids: dict[str, frozenset[str]] = {}
+    for entity_kind, member in (
+        ("term", "data/terms.json"),
+        ("course", "data/courses.json"),
+        ("learning_unit", "data/learning_units.json"),
+    ):
+        stable_ids[entity_kind] = frozenset(
+            str(record["stable_id"])
+            for record in datasets[member]
+            if str(record["stable_id"]) in selected
+        )
+
+    material_resolution = dict(context["material_resolution"])
+    material_refs = {
+        str(record["material_ref"])
+        for record in datasets["data/material_overlays.json"]
+        if str(record["stable_id"]) in selected
+    }
+    material_refs.update(str(candidate["material_ref"]) for candidate in relink_candidates.values())
+    material_stable_ids = frozenset(
+        str(material_resolution.get(material_ref, material_ref))
+        for material_ref in material_refs
+    )
+
+    event_stable_ids = {
+        str(record["event_stable_id"])
+        for record in datasets["data/whats_new_state.json"]
+        if str(record["stable_id"]) in selected
+    }
+    event_ids: set[int] = set()
+    if event_stable_ids:
+        ordered_events = sorted(event_stable_ids)
+        placeholders = ",".join("?" for _value in ordered_events)
+        event_ids = {
+            int(row["id"])
+            for row in conn.execute(
+                f"SELECT id FROM academic_change_events WHERE stable_id IN ({placeholders})",
+                tuple(ordered_events),
+            ).fetchall()
         }
+
+    append_members = {
+        "note": ("data/notes.json", None),
+        "star": ("data/stars.json", None),
+        "attempt": ("data/study_records.json", "attempt"),
+        "wrong_question": ("data/study_records.json", "wrong_question_state"),
+        "bookmark": ("data/study_records.json", "bookmark"),
+        "study_session": ("data/study_records.json", "study_session"),
+    }
+    append_boundaries: dict[str, int] = {}
+    for entity_kind, (member, record_type) in append_members.items():
+        if any(
+            str(record["stable_id"]) in selected
+            and (record_type is None or record.get("record_type") == record_type)
+            for record in datasets[member]
+        ):
+            spec = restore_entity_spec(entity_kind)
+            append_boundaries[entity_kind] = int(
+                conn.execute(
+                    f"SELECT COALESCE(MAX({spec.primary_key}), 0) AS boundary FROM {spec.table}"
+                ).fetchone()["boundary"]
+            )
+
+    relink_source_stable_ids = frozenset(
+        deterministic_stable_id(
+            "source",
+            f"{candidate['material_ref']}|reference|{Path(candidate['path']).resolve()}",
+        )
+        for candidate in relink_candidates.values()
+    )
+    relink_blob_sha256s = frozenset(
+        str(candidate["expected_sha256"]) for candidate in relink_candidates.values()
+    )
+    relink_material_version_stable_ids = frozenset(
+        domain_material_version_stable_id(
+            str(candidate["material_ref"]),
+            str(candidate["expected_sha256"]),
+        )
+        for candidate in relink_candidates.values()
+    )
+    return RestoreMutationScope(
+        stable_ids=stable_ids,
+        append_boundaries=append_boundaries,
+        material_stable_ids=material_stable_ids,
+        event_ids=frozenset(event_ids),
+        relink_source_stable_ids=relink_source_stable_ids,
+        relink_blob_sha256s=relink_blob_sha256s,
+        relink_material_version_stable_ids=relink_material_version_stable_ids,
+    )
+
+
+def capture_restore_targeted_state(
+    conn: sqlite3.Connection,
+    scope: RestoreMutationScope,
+    *,
+    include_appended_rows: bool,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Capture only rows reachable from this Restore's validated mutation scope."""
+    snapshot = {spec.entity_kind: {} for spec in RESTORE_REVERSIBLE_ENTITY_SPECS}
+    for entity_kind, stable_ids in scope.stable_ids.items():
+        merge_restore_rows(
+            snapshot,
+            entity_kind,
+            restore_rows_for_values(conn, entity_kind, "stable_id", stable_ids),
+        )
+
+    material_rows = restore_rows_for_values(
+        conn, "material", "stable_id", scope.material_stable_ids
+    )
+    merge_restore_rows(snapshot, "material", material_rows)
+    material_ids = {int(row["id"]) for row in material_rows.values()}
+    legacy_file_ids = {
+        int(row["legacy_file_id"])
+        for row in material_rows.values()
+        if row.get("legacy_file_id") is not None
+    }
+    file_rows = restore_rows_for_values(conn, "file", "id", legacy_file_ids)
+    merge_restore_rows(snapshot, "file", file_rows)
+    file_ids = {int(row["id"]) for row in file_rows.values()}
+    merge_restore_rows(
+        snapshot,
+        "legacy_file_version",
+        restore_rows_for_values(conn, "legacy_file_version", "file_id", file_ids),
+    )
+
+    material_version_rows = restore_rows_for_values(
+        conn, "material_version", "material_id", material_ids
+    )
+    merge_restore_rows(snapshot, "material_version", material_version_rows)
+    merge_restore_rows(
+        snapshot,
+        "material_version",
+        restore_rows_for_values(
+            conn,
+            "material_version",
+            "stable_id",
+            scope.relink_material_version_stable_ids,
+        ),
+    )
+    all_material_versions = snapshot["material_version"].values()
+    source_ids = {
+        int(row["source_id"])
+        for row in all_material_versions
+        if row.get("source_id") is not None
+    }
+    blob_ids = {
+        int(row["blob_id"])
+        for row in all_material_versions
+        if row.get("blob_id") is not None
+    }
+    merge_restore_rows(snapshot, "source", restore_rows_for_values(conn, "source", "id", source_ids))
+    merge_restore_rows(
+        snapshot,
+        "source",
+        restore_rows_for_values(
+            conn, "source", "stable_id", scope.relink_source_stable_ids
+        ),
+    )
+    merge_restore_rows(snapshot, "blob", restore_rows_for_values(conn, "blob", "id", blob_ids))
+    merge_restore_rows(
+        snapshot,
+        "blob",
+        restore_rows_for_values(conn, "blob", "sha256", scope.relink_blob_sha256s),
+    )
+    merge_restore_rows(
+        snapshot,
+        "academic_change_event_state",
+        restore_rows_for_values(
+            conn,
+            "academic_change_event_state",
+            "event_id",
+            scope.event_ids,
+        ),
+    )
+    if include_appended_rows:
+        for entity_kind, boundary in scope.append_boundaries.items():
+            spec = restore_entity_spec(entity_kind)
+            merge_restore_rows(
+                snapshot,
+                entity_kind,
+                restore_rows_matching(
+                    conn,
+                    entity_kind,
+                    f"{spec.primary_key} > ?",
+                    (boundary,),
+                ),
+            )
     return snapshot
 
 
@@ -6728,7 +6987,18 @@ def apply_staged_restore(
                 actions,
                 relink_source_ids=set(prepared),
             )
-            reversible_before = capture_restore_reversible_state(conn)
+            mutation_scope = plan_restore_mutation_scope(
+                conn,
+                datasets,
+                plan,
+                context,
+                prepared,
+            )
+            reversible_before = capture_restore_targeted_state(
+                conn,
+                mutation_scope,
+                include_appended_rows=False,
+            )
             result = apply_restore_plan(
                 conn,
                 datasets,
@@ -6742,7 +7012,11 @@ def apply_staged_restore(
                 before_commit(conn)
             verify_restore_source_candidates(context)
             verify_prepared_restore_relinks(prepared)
-            reversible_after = capture_restore_reversible_state(conn)
+            reversible_after = capture_restore_targeted_state(
+                conn,
+                mutation_scope,
+                include_appended_rows=True,
+            )
             operation_changes = build_restore_operation_changes(
                 reversible_before,
                 reversible_after,

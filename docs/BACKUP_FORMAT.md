@@ -298,15 +298,23 @@ When a successful Apply makes reversible mutations, it also writes a private
 versioned Restore operation and ordered ChangeSet inside that same transaction.
 The operation has a server-generated opaque public-safe identity, immutable
 digest, schema fingerprint, safe counts, and `APPLIED` status. Change rows use a
-closed entity/change-kind allowlist and exact private before/post images. They
-are runtime-local recovery data, not portable backup content.
+closed entity/change-kind allowlist and exact private before/post images of the
+closed reversible field contract. Capture is targeted from the validated plan,
+decisions, and relinks; it never scans unrelated durable rows merely to diff the
+database. The fingerprint binds the ChangeSet format, reversible fields,
+locators, change kinds, and artifact contract rather than unrelated schema
+migrations. These rows are runtime-local recovery data, not portable backup
+content.
 
 The ChangeSet excludes rebuildable FTS, chunks, parsed questions/solutions,
 course/week counts, and extracted cache contents. Relink-created cache state is
 represented only by a controlled relative cache identity and only when Restore
 created the artifact. A Restore containing only `MATCH`, `NOOP`, `KEEP_LOCAL`,
 or `SKIP` writes no operation. Read-only Undo Preview and mutating Undo Apply
-remain unimplemented.
+remain unimplemented. The private journal remains bounded with capacity derived
+from backup v1's maximum uncompressed size, record count, dual pre/post images,
+and serialization overhead; an incomplete ChangeSet always aborts Restore
+atomically rather than truncating recovery data.
 
 When Apply restores a material overlay, the same transaction synchronizes the
 existing legacy compatibility row, its existing Phase-1 Material projection,
