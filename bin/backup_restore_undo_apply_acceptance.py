@@ -302,6 +302,80 @@ def main() -> int:
             corrupt_later.get("reason") == "LATER_RESTORE_OVERLAP",
             failures,
         )
+        overlapping_change = next(
+            change
+            for change in changes_b
+            if change["entity_kind"] == "file" and change["change_kind"] == "UPDATE"
+        )
+        history_conn.execute(
+            "UPDATE restore_operation_changes SET entity_kind='study_session' WHERE id=?",
+            (overlapping_change["id"],),
+        )
+        history_conn.commit()
+        corrupt_entity_rows = history_conn.execute(
+            "SELECT * FROM restore_operation_changes WHERE restore_operation_id=? ORDER BY sequence",
+            (row_b["id"],),
+        ).fetchall()
+        corrupt_entity_before = logical_dump(history_conn)
+        corrupt_entity_preview = history.preview_restore_undo(operation_a)
+        corrupt_entity_apply = expect_code(
+            lambda: history.apply_restore_undo(operation_a, preview_a["undo_revision"]),
+            "LATER_RESTORE_OVERLAP",
+        )
+        check(
+            "corrupt_later_entity_kind_cannot_escape_validation",
+            corrupt_entity_preview.get("reason") == "LATER_RESTORE_OVERLAP"
+            and corrupt_entity_apply
+            and logical_dump(history_conn) == corrupt_entity_before
+            and history_conn.execute(
+                "SELECT status FROM restore_operations WHERE id=?", (row_a["id"],)
+            ).fetchone()["status"] == "APPLIED"
+            and history_conn.execute(
+                "SELECT status FROM restore_operations WHERE id=?", (row_b["id"],)
+            ).fetchone()["status"] == "APPLIED"
+            and [
+                dict(row)
+                for row in history_conn.execute(
+                    "SELECT * FROM restore_operation_changes "
+                    "WHERE restore_operation_id=? ORDER BY sequence",
+                    (row_b["id"],),
+                ).fetchall()
+            ] == [dict(row) for row in corrupt_entity_rows]
+            and history_original.read_bytes() == history_bytes
+            and tree_digest(history.CACHE_DIR) == history_cache_before,
+            failures,
+        )
+        history_conn.execute(
+            "UPDATE restore_operation_changes SET entity_kind='file' WHERE id=?",
+            (overlapping_change["id"],),
+        )
+        history_conn.commit()
+
+        history_conn.execute(
+            "UPDATE restore_operations SET status='UNDONE', undone_at=NULL WHERE id=?",
+            (row_b["id"],),
+        )
+        history_conn.commit()
+        corrupt_status_before = logical_dump(history_conn)
+        corrupt_status_preview = history.preview_restore_undo(operation_a)
+        corrupt_status_apply = expect_code(
+            lambda: history.apply_restore_undo(operation_a, preview_a["undo_revision"]),
+            "LATER_RESTORE_OVERLAP",
+        )
+        check(
+            "corrupt_later_status_cannot_escape_validation",
+            corrupt_status_preview.get("reason") == "LATER_RESTORE_OVERLAP"
+            and corrupt_status_apply
+            and logical_dump(history_conn) == corrupt_status_before
+            and history_original.read_bytes() == history_bytes
+            and tree_digest(history.CACHE_DIR) == history_cache_before,
+            failures,
+        )
+        history_conn.execute(
+            "UPDATE restore_operations SET status='APPLIED', undone_at=NULL WHERE id=?",
+            (row_b["id"],),
+        )
+        history_conn.commit()
         restored_history_before = logical_dump(history_conn)
         rejected = expect_code(
             lambda: history.apply_restore_undo(operation_a, preview_a["undo_revision"]),

@@ -6816,24 +6816,11 @@ def restore_undo_later_operation_overlap_state(
         for change in changes
         if change.entity_kind != "text_cache_artifact"
     }
-    candidate_kinds = sorted({entity_kind for entity_kind, _primary_key in candidate_identities})
-    if not candidate_kinds:
-        return []
-    placeholders = ",".join("?" for _kind in candidate_kinds)
     later_operation_rows = conn.execute(
-        "SELECT DISTINCT ro.id FROM restore_operations ro "
-        "JOIN restore_operation_changes roc ON roc.restore_operation_id=ro.id "
-        f"WHERE ro.id>? AND ro.status='APPLIED' AND roc.entity_kind IN ({placeholders}) "
-        "ORDER BY ro.id",
-        (operation["id"], *candidate_kinds),
+        "SELECT * FROM restore_operations WHERE id>? ORDER BY id",
+        (operation["id"],),
     ).fetchall()
-    for later_operation_row in later_operation_rows:
-        later_operation = conn.execute(
-            "SELECT * FROM restore_operations WHERE id=? AND status='APPLIED'",
-            (later_operation_row["id"],),
-        ).fetchone()
-        if later_operation is None:
-            continue
+    for later_operation in later_operation_rows:
         later_rows = conn.execute(
             "SELECT * FROM restore_operation_changes WHERE restore_operation_id=? ORDER BY sequence",
             (later_operation["id"],),
@@ -6842,6 +6829,8 @@ def restore_undo_later_operation_overlap_state(
             later_changes = validate_restore_undo_operation(later_operation, later_rows)
         except RestoreUndoPreviewFailure as exc:
             raise RestoreUndoPreviewFailure("LATER_RESTORE_OVERLAP") from exc
+        if later_operation["status"] == "UNDONE":
+            continue
         later_identities = {
             (change.entity_kind, int(change.locator["primary_key"]))
             for change in later_changes
