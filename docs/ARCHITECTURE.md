@@ -200,9 +200,12 @@ a closed dependency graph for later durable work that a future inverse would
 destroy. Dependencies already represented by the same operation are allowed;
 unrelated database state is neither enumerated nor revision-bound. A
 deterministic opaque Undo revision binds the validated operation, affected-row
-tokens, and dependency checks. The latest-operation discovery surface returns
-only one safe summary so restart does not hide availability. Change images,
-private locators, row IDs, paths, and cache identities remain private. Apply
+tokens, dependency checks, and the absence of any later overlapping APPLIED
+Restore journal. Private monotonic Restore-operation row order is authoritative:
+a later validated `(entity_kind, primary_key)` overlap blocks the older Undo,
+while later UNDONE or disjoint operations do not. The latest-operation discovery
+surface returns only one safe summary so restart does not hide availability.
+Change images, private locators, row IDs, paths, and cache identities remain private. Apply
 repeats all validation under the Restore apply lock and `BEGIN IMMEDIATE`,
 compares the exact opaque revision, restores recorded UPDATE before-images,
 explicitly deletes operation-owned INSERT rows child-first, rebuilds only the

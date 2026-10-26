@@ -231,8 +231,11 @@ or answer text, or controlled cache identities. Preview does not read or modify
 the user's original source files and does not touch cache artifacts. Undo Apply
 accepts only the opaque operation ID and opaque expected revision, then repeats
 ChangeSet, postimage, and dependency validation inside the serialized write
-transaction. It restores only StudyHub-owned durable rows and affected derived
-state. User-owned originals remain outside mutation authority. Cache cleanup is
+transaction. It also rejects an older operation when a later APPLIED Restore
+journal contains the same validated private durable identity; the later
+operation ID and identity never enter public output. Later UNDONE and disjoint
+journals do not block. Apply restores only StudyHub-owned durable rows and
+affected derived state. User-owned originals remain outside mutation authority. Cache cleanup is
 restricted to a validated private relative cache identity and happens only
 after the durable commit; failures are best-effort and never expose the identity.
 

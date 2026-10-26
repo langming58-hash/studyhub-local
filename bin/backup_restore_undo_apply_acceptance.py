@@ -24,6 +24,7 @@ from backup_restore_apply_acceptance import (  # noqa: E402
     seed_search_metadata,
 )
 from backup_restore_relink_apply_acceptance import fixture as relink_fixture  # noqa: E402
+from backup_restore_preview_acceptance import export_fixture, mutate_dataset, stage  # noqa: E402
 from backup_restore_undo_preview_acceptance import (  # noqa: E402
     http_request,
     logical_dump,
@@ -122,6 +123,58 @@ def mixed_applied_fixture(
     return target, conn, operation_id, preview
 
 
+def overlapping_restore_fixture(
+    base: Path,
+    suffix: str,
+) -> tuple[Any, sqlite3.Connection, str, dict[str, Any], str, Path, bytes]:
+    source = load_server(base / f"overlap-source-{suffix}")
+    source_conn = seed_state(source, base / f"overlap-source-{suffix}", 100)
+    archive = export_archive(source, source_conn)
+    consistency = consistency_archive(source, archive, base / f"overlap-{suffix}.zip")
+    restore_a = hashlib.sha256(f"{suffix}-a".encode()).hexdigest()[:32]
+    target, conn, _staged, _plan = prepare_target(
+        base, consistency, f"overlap-{suffix}", restore_a
+    )
+    seed_search_metadata(conn)
+    conn.execute(
+        "UPDATE files SET display_name='L', metadata_locked=0 "
+        "WHERE stable_id='material_syn_local'"
+    )
+    conn.execute(
+        "UPDATE materials SET display_name='L' WHERE stable_id='material_syn_local'"
+    )
+    conn.commit()
+    plan_a = target.preview_staged_restore(restore_a)
+    applied_a = target.apply_staged_restore(
+        restore_a, plan_a["plan_revision"], decisions_for(plan_a)
+    )
+    operation_a = applied_a["applied"]["restore_operation_id"]
+    preview_a = target.preview_restore_undo(operation_a)
+    conn.execute(
+        "UPDATE files SET display_name='Y', metadata_locked=0 "
+        "WHERE stable_id='material_syn_local'"
+    )
+    conn.execute(
+        "UPDATE materials SET display_name='Y' WHERE stable_id='material_syn_local'"
+    )
+    conn.commit()
+    restore_b = hashlib.sha256(f"{suffix}-b".encode()).hexdigest()[:32]
+    stage(target, consistency, restore_b)
+    plan_b = target.preview_staged_restore(restore_b)
+    applied_b = target.apply_staged_restore(
+        restore_b, plan_b["plan_revision"], decisions_for(plan_b)
+    )
+    operation_b = applied_b["applied"]["restore_operation_id"]
+    original_path = Path(
+        conn.execute(
+            "SELECT original_path FROM files WHERE stable_id='material_syn_local'"
+        ).fetchone()["original_path"]
+    )
+    original_bytes = original_path.read_bytes()
+    source_conn.close()
+    return target, conn, operation_a, preview_a, operation_b, original_path, original_bytes
+
+
 def main() -> int:
     failures: list[str] = []
     with tempfile.TemporaryDirectory(prefix="studyhub-undo-apply-") as temporary:
@@ -215,6 +268,164 @@ def main() -> int:
         check(
             "empty_target_original_is_untouched",
             empty_selected.read_bytes() == empty_bytes,
+            failures,
+        )
+
+        history, history_conn, operation_a, preview_a, operation_b, history_original, history_bytes = overlapping_restore_fixture(
+            base, "cross-operation"
+        )
+        row_a, changes_a = operation_rows(history_conn, operation_a)
+        row_b, changes_b = operation_rows(history_conn, operation_b)
+        history_cache_before = tree_digest(history.CACHE_DIR)
+        blocked_preview = history.preview_restore_undo(operation_a)
+        check(
+            "later_applied_restore_overlap_blocks_older_preview",
+            row_b["id"] > row_a["id"]
+            and blocked_preview.get("undo_available") is False
+            and blocked_preview.get("reason") == "LATER_RESTORE_OVERLAP",
+            failures,
+        )
+        original_b_digest = row_b["changeset_digest"]
+        history_conn.execute(
+            "UPDATE restore_operations SET changeset_digest=? WHERE id=?",
+            ("0" * 64, row_b["id"]),
+        )
+        history_conn.commit()
+        corrupt_later = history.preview_restore_undo(operation_a)
+        history_conn.execute(
+            "UPDATE restore_operations SET changeset_digest=? WHERE id=?",
+            (original_b_digest, row_b["id"]),
+        )
+        history_conn.commit()
+        check(
+            "corrupt_relevant_later_applied_journal_fails_closed",
+            corrupt_later.get("reason") == "LATER_RESTORE_OVERLAP",
+            failures,
+        )
+        restored_history_before = logical_dump(history_conn)
+        rejected = expect_code(
+            lambda: history.apply_restore_undo(operation_a, preview_a["undo_revision"]),
+            "LATER_RESTORE_OVERLAP",
+        )
+        row_a_after_reject, changes_a_after_reject = operation_rows(history_conn, operation_a)
+        row_b_after_reject, changes_b_after_reject = operation_rows(history_conn, operation_b)
+        check(
+            "older_undo_overlap_rejection_is_zero_mutation",
+            rejected
+            and logical_dump(history_conn) == restored_history_before
+            and row_a_after_reject["status"] == "APPLIED"
+            and row_b_after_reject["status"] == "APPLIED"
+            and [dict(row) for row in changes_a_after_reject] == [dict(row) for row in changes_a]
+            and [dict(row) for row in changes_b_after_reject] == [dict(row) for row in changes_b]
+            and history_original.read_bytes() == history_bytes
+            and tree_digest(history.CACHE_DIR) == history_cache_before,
+            failures,
+        )
+        preview_b = history.preview_restore_undo(operation_b)
+        history.apply_restore_undo(operation_b, preview_b["undo_revision"])
+        a_after_b_undo = history.preview_restore_undo(operation_a)
+        for change in changes_a:
+            if change["change_kind"] == "UPDATE":
+                set_row_image(
+                    history,
+                    history_conn,
+                    change["entity_kind"],
+                    json.loads(change["after_json"]),
+                )
+        a_recovered = history.preview_restore_undo(operation_a)
+        history.apply_restore_undo(operation_a, a_recovered["undo_revision"])
+        final_a, _final_a_changes = operation_rows(history_conn, operation_a)
+        final_b, _final_b_changes = operation_rows(history_conn, operation_b)
+        a_updates_restored = all(
+            history.current_restore_undo_row(
+                history_conn,
+                history.validate_restore_undo_change(change, change["sequence"]),
+            )
+            == json.loads(change["before_json"])
+            for change in changes_a
+            if change["change_kind"] == "UPDATE"
+        )
+        check(
+            "safe_newest_first_unwind_sequence",
+            preview_b.get("undo_available") is True
+            and a_after_b_undo.get("reason") == "ROW_CHANGED"
+            and a_recovered.get("undo_available") is True
+            and final_a["status"] == "UNDONE"
+            and final_b["status"] == "UNDONE"
+            and a_updates_restored
+            and history_original.read_bytes() == history_bytes,
+            failures,
+        )
+        check(
+            "later_undone_overlap_does_not_block_older_operation",
+            a_recovered.get("undo_available") is True,
+            failures,
+        )
+
+        unrelated_history, unrelated_history_conn, _restore_id, _source_id, unrelated_original, unrelated_request = relink_fixture(
+            base, "unrelated-later-operation"
+        )
+        applied_history_a = unrelated_history.apply_staged_restore(
+            unrelated_request["restore_id"],
+            unrelated_request["expected_plan_revision"],
+            unrelated_request["decisions"],
+            unrelated_request["relinks"],
+        )
+        unrelated_original_bytes = unrelated_original.read_bytes()
+        unrelated_operation_a = applied_history_a["applied"]["restore_operation_id"]
+        unrelated_preview_a = unrelated_history.preview_restore_undo(unrelated_operation_a)
+        exported = export_fixture(
+            unrelated_history,
+            unrelated_history_conn,
+            "2026-06-01T00:00:00+00:00",
+        )
+
+        def append_unrelated_note(payload: dict[str, Any]) -> None:
+            payload["records"].append(
+                {
+                    "body": "Unrelated later Restore note",
+                    "created_at": "2026-06-01T00:00:00+00:00",
+                    "stable_id": "note_unrelated_later_restore",
+                    "target_ref": "material_syn_local",
+                    "target_type": "material",
+                    "updated_at": "2026-06-01T00:00:00+00:00",
+                }
+            )
+
+        unrelated_archive = mutate_dataset(
+            unrelated_history, exported, "data/notes.json", append_unrelated_note
+        )
+        unrelated_restore_c = hashlib.sha256(b"unrelated-restore-c").hexdigest()[:32]
+        stage(unrelated_history, unrelated_archive, unrelated_restore_c)
+        unrelated_plan_c = unrelated_history.preview_staged_restore(unrelated_restore_c)
+        applied_history_c = unrelated_history.apply_staged_restore(
+            unrelated_restore_c,
+            unrelated_plan_c["plan_revision"],
+            decisions_for(unrelated_plan_c),
+        )
+        unrelated_operation_c = applied_history_c["applied"]["restore_operation_id"]
+        row_c, changes_c = operation_rows(unrelated_history_conn, unrelated_operation_c)
+        note_c = json.loads(
+            next(change["after_json"] for change in changes_c if change["entity_kind"] == "note")
+        )
+        unrelated_after_c = unrelated_history.preview_restore_undo(unrelated_operation_a)
+        unrelated_history.apply_restore_undo(
+            unrelated_operation_a, unrelated_preview_a["undo_revision"]
+        )
+        row_c_after, changes_c_after = operation_rows(
+            unrelated_history_conn, unrelated_operation_c
+        )
+        check(
+            "later_unrelated_restore_does_not_change_revision_or_block",
+            unrelated_after_c.get("undo_available") is True
+            and unrelated_after_c.get("undo_revision") == unrelated_preview_a["undo_revision"]
+            and row_c["status"] == "APPLIED"
+            and row_c_after["status"] == "APPLIED"
+            and [dict(row) for row in changes_c_after] == [dict(row) for row in changes_c]
+            and unrelated_history_conn.execute(
+                "SELECT body FROM notes WHERE id=?", (note_c["id"],)
+            ).fetchone()["body"] == "Unrelated later Restore note"
+            and unrelated_original.read_bytes() == unrelated_original_bytes,
             failures,
         )
 
@@ -640,6 +851,8 @@ def main() -> int:
             complexity_conn,
             isolation_conn,
             mixed_conn,
+            history_conn,
+            unrelated_history_conn,
         ):
             try:
                 connection.close()

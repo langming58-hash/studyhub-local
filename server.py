@@ -266,6 +266,7 @@ RESTORE_UNDO_PUBLIC_REASONS = frozenset(
         "ROW_MISSING",
         "ROW_CHANGED",
         "DEPENDENCY_CHANGED",
+        "LATER_RESTORE_OVERLAP",
     }
 )
 RESTORE_UNDO_APPLY_REASONS = frozenset(
@@ -6805,6 +6806,54 @@ def restore_undo_dependency_state(
     return dependency_state
 
 
+def restore_undo_later_operation_overlap_state(
+    conn: sqlite3.Connection,
+    operation: sqlite3.Row,
+    changes: list[ValidatedRestoreUndoChange],
+) -> list[dict[str, Any]]:
+    candidate_identities = {
+        (change.entity_kind, int(change.locator["primary_key"]))
+        for change in changes
+        if change.entity_kind != "text_cache_artifact"
+    }
+    candidate_kinds = sorted({entity_kind for entity_kind, _primary_key in candidate_identities})
+    if not candidate_kinds:
+        return []
+    placeholders = ",".join("?" for _kind in candidate_kinds)
+    later_operation_rows = conn.execute(
+        "SELECT DISTINCT ro.id FROM restore_operations ro "
+        "JOIN restore_operation_changes roc ON roc.restore_operation_id=ro.id "
+        f"WHERE ro.id>? AND ro.status='APPLIED' AND roc.entity_kind IN ({placeholders}) "
+        "ORDER BY ro.id",
+        (operation["id"], *candidate_kinds),
+    ).fetchall()
+    for later_operation_row in later_operation_rows:
+        later_operation = conn.execute(
+            "SELECT * FROM restore_operations WHERE id=? AND status='APPLIED'",
+            (later_operation_row["id"],),
+        ).fetchone()
+        if later_operation is None:
+            continue
+        later_rows = conn.execute(
+            "SELECT * FROM restore_operation_changes WHERE restore_operation_id=? ORDER BY sequence",
+            (later_operation["id"],),
+        ).fetchall()
+        try:
+            later_changes = validate_restore_undo_operation(later_operation, later_rows)
+        except RestoreUndoPreviewFailure as exc:
+            raise RestoreUndoPreviewFailure("LATER_RESTORE_OVERLAP") from exc
+        later_identities = {
+            (change.entity_kind, int(change.locator["primary_key"]))
+            for change in later_changes
+            if change.entity_kind != "text_cache_artifact"
+        }
+        if candidate_identities.intersection(later_identities):
+            raise RestoreUndoPreviewFailure("LATER_RESTORE_OVERLAP")
+    # READY revisions intentionally bind only active overlaps. Disjoint and
+    # UNDONE later journals do not serialize otherwise independent Undo work.
+    return []
+
+
 def restore_undo_public_summary(operation: sqlite3.Row) -> dict[str, int]:
     return {
         "changes": int(operation["change_count"]),
@@ -6871,6 +6920,9 @@ def current_restore_undo_revision(
             }
         )
     dependency_state = restore_undo_dependency_state(conn, changes)
+    later_restore_overlap_state = restore_undo_later_operation_overlap_state(
+        conn, operation, changes
+    )
     revision_input = {
         "preview_version": RESTORE_UNDO_PREVIEW_VERSION,
         "operation_id": operation["operation_id"],
@@ -6879,6 +6931,7 @@ def current_restore_undo_revision(
         "status": operation["status"],
         "affected_rows": row_tokens,
         "dependency_state": dependency_state,
+        "later_restore_overlap_state": later_restore_overlap_state,
     }
     return "undo_" + hashlib.sha256(canonical_backup_json(revision_input)).hexdigest()[:24]
 
@@ -11996,6 +12049,7 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 "ROW_MISSING",
                 "ROW_CHANGED",
                 "DEPENDENCY_CHANGED",
+                "LATER_RESTORE_OVERLAP",
                 "STALE_UNDO_REVISION",
             } else 400
             self.send_json({"ok": False, "error": exc.code}, status)
