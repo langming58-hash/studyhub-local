@@ -206,8 +206,8 @@ content, and retained Canvas copies. Exact SHA-256 and size verification is
 zero-mutation, and discarding a capability never deletes the selected original.
 Relink Apply reopens only that private capability, re-verifies the binding and
 bytes inside the restore transaction, keeps the original user-owned and in
-place, and consumes the descriptor only after success. Automatic relinking,
-backup-wins replacement, and post-commit Undo are not implemented.
+place, and consumes the descriptor only after success. Automatic relinking and
+backup-wins replacement are not implemented.
 
 Successful mutating Restore Apply now records a private runtime-local ChangeSet
 atomically with the restored state. These records can contain note bodies,
@@ -220,6 +220,16 @@ mutation scope; unrelated durable rows and note bodies are not enumerated into
 the ChangeSet. Images contain only the closed reversible field contract, while
 derived indexes and extracted text are not serialized into this private inverse
 contract.
+
+Read-only Undo Preview consumes only the opaque Restore-operation ID. It
+validates the private ChangeSet and exact current postimages in a query-only
+snapshot, then checks only the affected operation graph for later durable
+dependencies. Public Preview and latest-operation responses contain a safe
+status, opaque revision, timestamp, and aggregate counts only. They never
+contain private row images, locators, database keys, hashes, source paths, note
+or answer text, or controlled cache identities. Preview does not read or modify
+the user's original source files, does not touch cache artifacts, and cannot
+apply an inverse. Undo Apply remains not implemented.
 
 Archive hashes prove integrity, not trust. The shared Preview/Apply validator
 rejects semantically invalid field types, oversized text, unsafe controls,

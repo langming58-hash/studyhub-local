@@ -533,7 +533,7 @@ def main() -> int:
         )
 
         source_text = (ROOT / "server.py").read_text(encoding="utf-8")
-        check("undo_preview_not_implemented", "/api/backup/restore-undo-preview" not in source_text, failures)
+        check("undo_preview_is_read_only_stage_b_surface", "/api/backup/restore-undo-preview" in source_text, failures)
         check("undo_apply_not_implemented", "/api/backup/restore-undo-apply" not in source_text, failures)
         check("backup_wins_not_implemented", '"RESTORE_BACKUP"' not in source_text, failures)
 

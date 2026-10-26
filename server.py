@@ -256,6 +256,18 @@ RESTORE_CHANGESET_MAX_TOTAL_BYTES = (
     4 * BACKUP_MAX_UNCOMPRESSED_BYTES + 512 * BACKUP_MAX_RECORDS
 )
 RESTORE_OPERATION_ID_RE = re.compile(r"^restoreop_[0-9a-f]{32}$")
+RESTORE_UNDO_PREVIEW_VERSION = "restore-undo-preview-v1"
+RESTORE_UNDO_REVISION_RE = re.compile(r"^undo_[0-9a-f]{24}$")
+RESTORE_UNDO_PUBLIC_REASONS = frozenset(
+    {
+        "ALREADY_UNDONE",
+        "CHANGESET_INVALID",
+        "UNSUPPORTED_CHANGESET",
+        "ROW_MISSING",
+        "ROW_CHANGED",
+        "DEPENDENCY_CHANGED",
+    }
+)
 RESTORE_CHANGE_KINDS = ("INSERT", "UPDATE", "CACHE_CREATE")
 RESTORE_CHANGE_ENTITY_KINDS = (
     "term",
@@ -6356,6 +6368,524 @@ def record_restore_operation(
     return operation_id
 
 
+class RestoreUndoPreviewFailure(Exception):
+    """Internal fail-closed signal carrying only a public reason code."""
+
+    def __init__(self, reason: str) -> None:
+        if reason not in RESTORE_UNDO_PUBLIC_REASONS:
+            reason = "CHANGESET_INVALID"
+        super().__init__(reason)
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class ValidatedRestoreUndoChange:
+    sequence: int
+    change_kind: str
+    entity_kind: str
+    locator: dict[str, Any]
+    before: dict[str, Any] | None
+    after: dict[str, Any] | None
+    before_token: str
+    after_token: str
+    metadata: dict[str, Any]
+    digest_record: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class RestoreUndoDependencyRule:
+    parent_kind: str
+    dependent_table: str
+    dependent_kind: str | None
+    predicate: str
+    parameter_fields: tuple[str, ...]
+    dependent_primary_key: str = "id"
+
+
+# Closed Restore-specific dependency contract. Derived search/extraction tables
+# are intentionally absent because they are rebuilt after a future Undo Apply.
+RESTORE_UNDO_DEPENDENCY_RULES = (
+    RestoreUndoDependencyRule("term", "courses", "course", "term_id=?", ("id",)),
+    RestoreUndoDependencyRule("course", "weeks", "learning_unit", "course_id=?", ("id",)),
+    RestoreUndoDependencyRule("course", "files", "file", "course_id=?", ("id",)),
+    RestoreUndoDependencyRule("course", "materials", "material", "course_id=?", ("id",)),
+    RestoreUndoDependencyRule("course", "notes", "note", "course_id=?", ("id",)),
+    RestoreUndoDependencyRule("course", "wrong_questions", "wrong_question", "course_id=?", ("id",)),
+    RestoreUndoDependencyRule("course", "study_sessions", "study_session", "course_id=?", ("id",)),
+    RestoreUndoDependencyRule(
+        "course", "course_offering_local_bindings", None, "legacy_course_id=?", ("id",)
+    ),
+    RestoreUndoDependencyRule("learning_unit", "files", "file", "week_id=?", ("id",)),
+    RestoreUndoDependencyRule("learning_unit", "materials", "material", "week_id=?", ("id",)),
+    RestoreUndoDependencyRule(
+        "learning_unit", "notes", "note", "course_id=? AND week_label=?", ("course_id", "week_label")
+    ),
+    RestoreUndoDependencyRule(
+        "learning_unit", "wrong_questions", "wrong_question",
+        "course_id=? AND week_label=?", ("course_id", "week_label"),
+    ),
+    RestoreUndoDependencyRule(
+        "learning_unit", "study_sessions", "study_session",
+        "course_id=? AND week_label=?", ("course_id", "week_label"),
+    ),
+    RestoreUndoDependencyRule("file", "file_versions", "legacy_file_version", "file_id=?", ("id",)),
+    RestoreUndoDependencyRule("file", "materials", "material", "legacy_file_id=?", ("id",)),
+    RestoreUndoDependencyRule(
+        "file", "material_versions", "material_version", "legacy_file_id=?", ("id",)
+    ),
+    RestoreUndoDependencyRule(
+        "file", "notes", "note", "target_type='file' AND target_id=?", ("id",)
+    ),
+    RestoreUndoDependencyRule(
+        "file", "stars", "star", "target_type='file' AND target_id=?", ("id",)
+    ),
+    RestoreUndoDependencyRule("file", "attempts", "attempt", "file_id=?", ("id",)),
+    RestoreUndoDependencyRule(
+        "file", "wrong_questions", "wrong_question", "source_file_id=?", ("id",)
+    ),
+    RestoreUndoDependencyRule(
+        "file", "bookmarks", "bookmark", "target_type='file' AND target_id=?", ("id",)
+    ),
+    RestoreUndoDependencyRule("file", "ai_conversations", None, "file_id=?", ("id",)),
+    RestoreUndoDependencyRule(
+        "legacy_file_version", "material_versions", "material_version",
+        "legacy_file_version_id=?", ("id",),
+    ),
+    RestoreUndoDependencyRule(
+        "material", "material_versions", "material_version", "material_id=?", ("id",)
+    ),
+    RestoreUndoDependencyRule(
+        "material", "notes", "note", "target_type='material' AND target_id=?", ("id",)
+    ),
+    RestoreUndoDependencyRule(
+        "material", "stars", "star", "target_type='material' AND target_id=?", ("id",)
+    ),
+    RestoreUndoDependencyRule(
+        "material", "bookmarks", "bookmark", "target_type='material' AND target_id=?", ("id",)
+    ),
+    RestoreUndoDependencyRule(
+        "source", "material_versions", "material_version", "source_id=?", ("id",)
+    ),
+    RestoreUndoDependencyRule(
+        "blob", "material_versions", "material_version", "blob_id=?", ("id",)
+    ),
+    RestoreUndoDependencyRule(
+        "material_version", "materials", "material", "current_version_id=?", ("id",)
+    ),
+    RestoreUndoDependencyRule(
+        "material_version", "academic_change_events", None,
+        "resulting_material_version_stable_id=?", ("stable_id",),
+    ),
+)
+
+
+def normalize_restore_operation_id(value: Any) -> str:
+    operation_id = str(value or "")
+    if not RESTORE_OPERATION_ID_RE.fullmatch(operation_id):
+        raise ValueError("Invalid restore operation ID")
+    return operation_id
+
+
+def strict_restore_json(raw: Any, *, nullable: bool) -> dict[str, Any] | None:
+    if raw is None:
+        if nullable:
+            return None
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    if not isinstance(raw, str) or len(raw.encode("utf-8")) > RESTORE_CHANGESET_MAX_IMAGE_BYTES:
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(raw, object_pairs_hook=reject_duplicate_keys)
+    except RestoreUndoPreviewFailure:
+        raise
+    except Exception as exc:
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID") from exc
+    if not isinstance(value, dict):
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    return value
+
+
+def validate_restore_undo_schema(conn: sqlite3.Connection) -> None:
+    required = {
+        "restore_operations": {
+            "id", "operation_id", "format_version", "restore_plan_revision",
+            "schema_fingerprint", "changeset_digest", "status", "change_count",
+            "insert_count", "update_count", "artifact_count", "committed_at",
+            "undone_at", "created_at", "updated_at",
+        },
+        "restore_operation_changes": {
+            "id", "restore_operation_id", "sequence", "change_kind", "entity_kind",
+            "locator_json", "before_json", "after_json", "before_token", "after_token",
+            "metadata_json",
+        },
+    }
+    tables = {
+        str(row["name"])
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    if not set(required).issubset(tables):
+        raise RestoreUndoPreviewFailure("UNSUPPORTED_CHANGESET")
+    for table, columns in required.items():
+        available = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
+        if not columns.issubset(available):
+            raise RestoreUndoPreviewFailure("UNSUPPORTED_CHANGESET")
+
+
+def validate_restore_undo_change(row: sqlite3.Row, sequence: int) -> ValidatedRestoreUndoChange:
+    if type(row["sequence"]) is not int or row["sequence"] != sequence:
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    change_kind = row["change_kind"]
+    entity_kind = row["entity_kind"]
+    if change_kind not in RESTORE_CHANGE_KINDS or entity_kind not in RESTORE_CHANGE_ENTITY_KINDS:
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    locator = strict_restore_json(row["locator_json"], nullable=False)
+    before = strict_restore_json(row["before_json"], nullable=True)
+    after = strict_restore_json(row["after_json"], nullable=True)
+    metadata = strict_restore_json(row["metadata_json"], nullable=False)
+    assert locator is not None and metadata is not None
+
+    if entity_kind == "text_cache_artifact":
+        if change_kind != "CACHE_CREATE" or before is not None or after is None:
+            raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+        if set(locator) != {"relative_cache_id"} or locator != after:
+            raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+        relative_cache_id = locator.get("relative_cache_id")
+        if not isinstance(relative_cache_id, str) or not re.fullmatch(
+            r"[0-9a-f]{64}-[A-Za-z0-9._-]{1,80}\.txt", relative_cache_id
+        ):
+            raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+        if metadata != {"created_by_restore": True}:
+            raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    else:
+        if change_kind not in {"INSERT", "UPDATE"} or metadata:
+            raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+        try:
+            spec = restore_entity_spec(str(entity_kind))
+        except RestoreApplyError as exc:
+            raise RestoreUndoPreviewFailure("CHANGESET_INVALID") from exc
+        if change_kind == "INSERT" and before is not None:
+            raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+        if change_kind == "UPDATE" and before is None:
+            raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+        if after is None or set(after) != set(spec.columns):
+            raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+        if before is not None and set(before) != set(spec.columns):
+            raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+        primary_key = locator.get("primary_key")
+        if type(primary_key) is not int or primary_key <= 0:
+            raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+        expected_locator: dict[str, Any] = {"primary_key": primary_key}
+        if after.get(spec.primary_key) != primary_key:
+            raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+        if before is not None and before.get(spec.primary_key) != primary_key:
+            raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+        stable_id = after.get("stable_id") if "stable_id" in spec.columns else None
+        if stable_id:
+            if not isinstance(stable_id, str) or not BACKUP_STABLE_ID_RE.fullmatch(stable_id):
+                raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+            expected_locator["stable_id"] = stable_id
+            if before is not None and before.get("stable_id") != stable_id:
+                raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+        if locator != expected_locator:
+            raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+
+    before_token = row["before_token"]
+    after_token = row["after_token"]
+    if not isinstance(before_token, str) or not isinstance(after_token, str):
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    if not secrets.compare_digest(before_token, restore_change_state_token(entity_kind, before)):
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    if not secrets.compare_digest(after_token, restore_change_state_token(entity_kind, after)):
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    digest_record = {
+        "sequence": sequence,
+        "change_kind": change_kind,
+        "entity_kind": entity_kind,
+        "locator_json": row["locator_json"],
+        "before_json": row["before_json"],
+        "after_json": row["after_json"],
+        "before_token": before_token,
+        "after_token": after_token,
+        "metadata_json": row["metadata_json"],
+    }
+    return ValidatedRestoreUndoChange(
+        sequence, change_kind, entity_kind, locator, before, after,
+        before_token, after_token, metadata, digest_record,
+    )
+
+
+def validate_restore_undo_operation(
+    operation: sqlite3.Row,
+    rows: list[sqlite3.Row],
+) -> list[ValidatedRestoreUndoChange]:
+    if operation["format_version"] != RESTORE_CHANGESET_FORMAT_VERSION:
+        raise RestoreUndoPreviewFailure("UNSUPPORTED_CHANGESET")
+    if operation["schema_fingerprint"] != restore_changeset_schema_fingerprint():
+        raise RestoreUndoPreviewFailure("UNSUPPORTED_CHANGESET")
+    if operation["status"] not in {"APPLIED", "UNDONE"}:
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    if operation["status"] == "APPLIED" and operation["undone_at"] is not None:
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    if operation["status"] == "UNDONE" and not isinstance(operation["undone_at"], str):
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    if not RESTORE_OPERATION_ID_RE.fullmatch(str(operation["operation_id"])):
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    if not RESTORE_PLAN_REVISION_RE.fullmatch(str(operation["restore_plan_revision"])):
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    for field in ("committed_at", "created_at", "updated_at"):
+        value = operation[field]
+        if not isinstance(value, str) or not value or any(
+            ord(character) < 32 or 127 <= ord(character) <= 159 for character in value
+        ):
+            raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+        try:
+            datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise RestoreUndoPreviewFailure("CHANGESET_INVALID") from exc
+    digest = operation["changeset_digest"]
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    counts = (
+        operation["change_count"], operation["insert_count"],
+        operation["update_count"], operation["artifact_count"],
+    )
+    if any(type(value) is not int or value < 0 for value in counts):
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    if operation["change_count"] != len(rows) or operation["change_count"] <= 0:
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    total_bytes = sum(
+        len(str(row[field] or "").encode("utf-8"))
+        for row in rows
+        for field in ("locator_json", "before_json", "after_json", "metadata_json")
+    )
+    if total_bytes > RESTORE_CHANGESET_MAX_TOTAL_BYTES:
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    changes = [validate_restore_undo_change(row, index) for index, row in enumerate(rows, 1)]
+    expected_counts = (
+        len(changes),
+        sum(change.change_kind == "INSERT" for change in changes),
+        sum(change.change_kind == "UPDATE" for change in changes),
+        sum(change.change_kind == "CACHE_CREATE" for change in changes),
+    )
+    if counts != expected_counts:
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    if not secrets.compare_digest(
+        digest,
+        restore_changeset_digest([change.digest_record for change in changes]),
+    ):
+        raise RestoreUndoPreviewFailure("CHANGESET_INVALID")
+    return changes
+
+
+def current_restore_undo_row(
+    conn: sqlite3.Connection,
+    change: ValidatedRestoreUndoChange,
+) -> dict[str, Any] | None:
+    spec = restore_entity_spec(change.entity_kind)
+    columns = ", ".join(spec.columns)
+    row = conn.execute(
+        f"SELECT {columns} FROM {spec.table} WHERE {spec.primary_key}=?",
+        (change.locator["primary_key"],),
+    ).fetchone()
+    if row is None:
+        return None
+    return {column: row[column] for column in spec.columns}
+
+
+def restore_undo_dependency_state(
+    conn: sqlite3.Connection,
+    changes: list[ValidatedRestoreUndoChange],
+) -> list[dict[str, Any]]:
+    affected: dict[str, set[int]] = {}
+    inserted: dict[str, set[int]] = {}
+    for change in changes:
+        if change.entity_kind == "text_cache_artifact":
+            continue
+        primary_key = int(change.locator["primary_key"])
+        affected.setdefault(change.entity_kind, set()).add(primary_key)
+        if change.change_kind == "INSERT":
+            inserted.setdefault(change.entity_kind, set()).add(primary_key)
+    after_by_identity = {
+        (change.entity_kind, int(change.locator["primary_key"])): change.after
+        for change in changes
+        if change.entity_kind != "text_cache_artifact"
+    }
+    dependency_state: list[dict[str, Any]] = []
+    for rule_index, rule in enumerate(RESTORE_UNDO_DEPENDENCY_RULES):
+        for parent_id in sorted(inserted.get(rule.parent_kind, set())):
+            parent = after_by_identity[(rule.parent_kind, parent_id)]
+            assert parent is not None
+            parameters = tuple(parent.get(field) for field in rule.parameter_fields)
+            if any(value is None for value in parameters):
+                continue
+            rows = conn.execute(
+                f"SELECT {rule.dependent_primary_key} AS dependency_key "
+                f"FROM {rule.dependent_table} WHERE {rule.predicate} "
+                f"ORDER BY {rule.dependent_primary_key}",
+                parameters,
+            ).fetchall()
+            keys = [row["dependency_key"] for row in rows]
+            if rule.dependent_kind is None:
+                if keys:
+                    raise RestoreUndoPreviewFailure("DEPENDENCY_CHANGED")
+            else:
+                allowed = affected.get(rule.dependent_kind, set())
+                if any(type(key) is not int or int(key) not in allowed for key in keys):
+                    raise RestoreUndoPreviewFailure("DEPENDENCY_CHANGED")
+            dependency_state.append(
+                {
+                    "rule": rule_index,
+                    "parent_kind": rule.parent_kind,
+                    "parent": parent_id,
+                    "dependent_keys": keys,
+                }
+            )
+    return dependency_state
+
+
+def restore_undo_public_summary(operation: sqlite3.Row) -> dict[str, int]:
+    return {
+        "changes": int(operation["change_count"]),
+        "inserts": int(operation["insert_count"]),
+        "updates": int(operation["update_count"]),
+        "artifacts": int(operation["artifact_count"]),
+    }
+
+
+def restore_undo_unavailable(
+    operation_id: str,
+    reason: str,
+    *,
+    status: str | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "operation_id": operation_id,
+        "undo_available": False,
+        "reason": reason if reason in RESTORE_UNDO_PUBLIC_REASONS else "CHANGESET_INVALID",
+    }
+    if status in {"APPLIED", "UNDONE"}:
+        result["status"] = status
+    return result
+
+
+def preview_restore_undo(operation_id: Any) -> dict[str, Any]:
+    normalized_id = normalize_restore_operation_id(operation_id)
+    conn = connect_backup_db_readonly()
+    operation: sqlite3.Row | None = None
+    try:
+        conn.execute("BEGIN")
+        validate_restore_undo_schema(conn)
+        operation = conn.execute(
+            "SELECT * FROM restore_operations WHERE operation_id=?",
+            (normalized_id,),
+        ).fetchone()
+        if operation is None:
+            raise FileNotFoundError("Restore operation not found")
+        rows = conn.execute(
+            "SELECT * FROM restore_operation_changes WHERE restore_operation_id=? ORDER BY sequence",
+            (operation["id"],),
+        ).fetchall()
+        changes = validate_restore_undo_operation(operation, rows)
+        if operation["status"] == "UNDONE":
+            return restore_undo_unavailable(normalized_id, "ALREADY_UNDONE", status="UNDONE")
+
+        row_tokens: list[dict[str, Any]] = []
+        for change in changes:
+            if change.entity_kind == "text_cache_artifact":
+                continue
+            current = current_restore_undo_row(conn, change)
+            if current is None:
+                raise RestoreUndoPreviewFailure("ROW_MISSING")
+            current_token = restore_change_state_token(change.entity_kind, current)
+            if current != change.after or not secrets.compare_digest(current_token, change.after_token):
+                raise RestoreUndoPreviewFailure("ROW_CHANGED")
+            row_tokens.append(
+                {
+                    "entity_kind": change.entity_kind,
+                    "primary_key": change.locator["primary_key"],
+                    "token": current_token,
+                }
+            )
+        dependency_state = restore_undo_dependency_state(conn, changes)
+        revision_input = {
+            "preview_version": RESTORE_UNDO_PREVIEW_VERSION,
+            "operation_id": normalized_id,
+            "changeset_digest": operation["changeset_digest"],
+            "schema_fingerprint": operation["schema_fingerprint"],
+            "status": operation["status"],
+            "affected_rows": row_tokens,
+            "dependency_state": dependency_state,
+        }
+        undo_revision = "undo_" + hashlib.sha256(
+            canonical_backup_json(revision_input)
+        ).hexdigest()[:24]
+        return {
+            "operation_id": normalized_id,
+            "status": "APPLIED",
+            "undo_available": True,
+            "undo_revision": undo_revision,
+            "committed_at": operation["committed_at"],
+            "summary": restore_undo_public_summary(operation),
+        }
+    except RestoreUndoPreviewFailure as exc:
+        status = None if operation is None else str(operation["status"])
+        return restore_undo_unavailable(normalized_id, exc.reason, status=status)
+    finally:
+        conn.close()
+
+
+def latest_restore_undo_operation() -> dict[str, Any]:
+    conn = connect_backup_db_readonly()
+    try:
+        validate_restore_undo_schema(conn)
+        row = conn.execute(
+            "SELECT operation_id, status, change_count, insert_count, update_count, "
+            "artifact_count, committed_at FROM restore_operations "
+            "ORDER BY committed_at DESC, id DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return {"operation": None}
+        if (
+            not RESTORE_OPERATION_ID_RE.fullmatch(str(row["operation_id"]))
+            or row["status"] not in {"APPLIED", "UNDONE"}
+            or not isinstance(row["committed_at"], str)
+            or not row["committed_at"]
+            or any(
+                ord(character) < 32 or 127 <= ord(character) <= 159
+                for character in row["committed_at"]
+            )
+            or any(
+                type(row[column]) is not int or row[column] < 0
+                for column in ("change_count", "insert_count", "update_count", "artifact_count")
+            )
+        ):
+            return {"operation": None}
+        try:
+            datetime.fromisoformat(row["committed_at"])
+        except ValueError:
+            return {"operation": None}
+        return {
+            "operation": {
+                "operation_id": row["operation_id"],
+                "status": row["status"],
+                "committed_at": row["committed_at"],
+                "summary": restore_undo_public_summary(row),
+            }
+        }
+    except RestoreUndoPreviewFailure:
+        return {"operation": None}
+    finally:
+        conn.close()
+
+
 def sync_restored_material_projection(
     conn: sqlite3.Connection,
     *,
@@ -10792,6 +11322,9 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                     }
                 )
                 return
+            if path == "/api/backup/restore-undo-latest":
+                self.send_json(latest_restore_undo_operation())
+                return
             if path.startswith("/api/"):
                 self.handle_api_get(path, qs)
                 return
@@ -10866,6 +11399,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.handle_backup_restore_relink_discard()
             elif parsed.path == "/api/backup/restore-apply":
                 self.handle_backup_restore_apply()
+            elif parsed.path == "/api/backup/restore-undo-preview":
+                self.handle_backup_restore_undo_preview()
             elif parsed.path == "/api/backup/restore-discard":
                 self.handle_backup_restore_discard()
             elif parsed.path == "/api/whats-new/seen":
@@ -11115,6 +11650,12 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 "restore_dependency_unresolved",
             } else 400
             self.send_json({"ok": False, "error": exc.code}, status)
+
+    def handle_backup_restore_undo_preview(self) -> None:
+        body = self.parse_body_json()
+        if set(body) != {"operation_id"}:
+            raise ValueError("Restore Undo preview accepts only operation_id")
+        self.send_json({"ok": True, "preview": preview_restore_undo(body.get("operation_id"))})
 
     def handle_backup_restore_discard(self) -> None:
         body = self.parse_body_json()

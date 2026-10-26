@@ -191,10 +191,23 @@ contract. Its bounded private journal budget is derived from the existing
 backup envelope so recording does not reduce supported Restore size. A failed
 or no-op Restore leaves no operation record. Failures roll back atomically.
 
-This recorder is a foundation, not an Undo feature: there is no Undo Preview or
-Undo Apply API yet. Automatic source search, backup-wins overwrite decisions,
-post-commit Undo, scheduled/cloud backup, and original-file backup are not
-implemented. The canonical contract is
+The private recorder now supports a read-only post-commit Undo Preview. Given
+only an opaque Restore-operation ID, Preview opens the active-profile database
+query-only, validates the complete private ChangeSet contract and digest,
+requires every affected durable row to equal its recorded postimage, and checks
+a closed dependency graph for later durable work that a future inverse would
+destroy. Dependencies already represented by the same operation are allowed;
+unrelated database state is neither enumerated nor revision-bound. A
+deterministic opaque Undo revision binds the validated operation, affected-row
+tokens, and dependency checks. The latest-operation discovery surface returns
+only one safe summary so restart does not hide availability. Change images,
+private locators, row IDs, paths, and cache identities remain private.
+
+Undo Preview performs no mutation and does not inspect external original file
+bytes. Cache-artifact absence does not block durable Undo. Undo Apply, inverse
+mutation, automatic source search, backup-wins overwrite decisions, Redo,
+scheduled/cloud backup, and original-file backup are not implemented. The
+canonical contract is
 [Backup Export Format](BACKUP_FORMAT.md).
 
 Backup archives remain untrusted after ZIP and checksum verification. Preview
