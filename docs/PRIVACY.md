@@ -206,8 +206,40 @@ content, and retained Canvas copies. Exact SHA-256 and size verification is
 zero-mutation, and discarding a capability never deletes the selected original.
 Relink Apply reopens only that private capability, re-verifies the binding and
 bytes inside the restore transaction, keeps the original user-owned and in
-place, and consumes the descriptor only after success. Automatic relinking,
-backup-wins replacement, and post-commit Undo are not implemented.
+place, and consumes the descriptor only after success. Automatic relinking and
+backup-wins replacement are not implemented.
+
+Successful mutating Restore Apply now records a private runtime-local ChangeSet
+atomically with the restored state. These records can contain note bodies,
+internal row IDs, and private source locators, so `restore_operations` and
+`restore_operation_changes` are excluded from backup v1, MCP, diagnostics,
+logs, and public APIs. Public Restore results expose only the opaque operation
+ID alongside existing safe counts. Exact row images and locators never enter
+the browser response. Capture is limited to rows in the validated Restore
+mutation scope; unrelated durable rows and note bodies are not enumerated into
+the ChangeSet. Images contain only the closed reversible field contract, while
+derived indexes and extracted text are not serialized into this private inverse
+contract.
+
+Undo Preview consumes only the opaque Restore-operation ID. It
+validates the private ChangeSet and exact current postimages in a query-only
+snapshot, then checks only the affected operation graph for later durable
+dependencies. Public Preview and latest-operation responses contain a safe
+status, opaque revision, timestamp, and aggregate counts only. They never
+contain private row images, locators, database keys, hashes, source paths, note
+or answer text, or controlled cache identities. Preview does not read or modify
+the user's original source files and does not touch cache artifacts. Undo Apply
+accepts only the opaque operation ID and opaque expected revision, then repeats
+ChangeSet, postimage, and dependency validation inside the serialized write
+transaction. It enumerates later Restore journals only by private monotonic row
+order and fully validates each journal before trusting raw status or identity
+metadata. An invalid later journal or a validated APPLIED journal containing the
+same private durable identity rejects the older operation; later operation IDs
+and identities never enter public output. Valid later UNDONE and disjoint
+journals do not block. Apply restores only StudyHub-owned durable rows and
+affected derived state. User-owned originals remain outside mutation authority. Cache cleanup is
+restricted to a validated private relative cache identity and happens only
+after the durable commit; failures are best-effort and never expose the identity.
 
 Archive hashes prove integrity, not trust. The shared Preview/Apply validator
 rejects semantically invalid field types, oversized text, unsafe controls,

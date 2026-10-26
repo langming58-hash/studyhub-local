@@ -180,9 +180,46 @@ revision and a complete set of narrow `KEEP_LOCAL`/`SKIP`/`RELINK` decisions,
 applies only supported user-owned state, rechecks explicitly inspected source
 candidates, and commits once. Exact relink reuses the canonical ingestion/domain
 projection by reference and consumes its private capability only after commit.
-Failures roll back atomically. Automatic source search, backup-wins overwrite
-decisions, post-commit Undo, scheduled/cloud backup, and original-file backup
-are not implemented. The canonical contract is
+The same transaction now records a private, versioned Restore operation only
+when Apply makes at least one reversible durable mutation. Its closed ChangeSet
+contains exact pre/post images of the closed reversible field contract for only
+the rows reachable from the validated RestorePlan, explicit decisions, and
+relinks, plus safe relative identity for a Restore-created text cache artifact.
+It does not snapshot unrelated durable tables. Derived FTS, chunks, questions,
+solutions, and course/week counts are intentionally excluded from the inverse
+contract. Its bounded private journal budget is derived from the existing
+backup envelope so recording does not reduce supported Restore size. A failed
+or no-op Restore leaves no operation record. Failures roll back atomically.
+
+The private recorder now supports post-commit Undo Preview and an explicit
+atomic Undo Apply. Given
+only an opaque Restore-operation ID, Preview opens the active-profile database
+query-only, validates the complete private ChangeSet contract and digest,
+requires every affected durable row to equal its recorded postimage, and checks
+a closed dependency graph for later durable work that a future inverse would
+destroy. Dependencies already represented by the same operation are allowed;
+unrelated database state is neither enumerated nor revision-bound. A
+deterministic opaque Undo revision binds the validated operation, affected-row
+tokens, dependency checks, and the absence of any later overlapping APPLIED
+Restore journal. Private monotonic Restore-operation row order is the only
+discovery authority: every later complete journal is validated before its status
+or `(entity_kind, primary_key)` identity is trusted. An invalid later journal or
+a validated APPLIED overlap blocks the older Undo, while validated later UNDONE
+or disjoint operations do not. The latest-operation discovery
+surface returns only one safe summary so restart does not hide availability.
+Change images, private locators, row IDs, paths, and cache identities remain private. Apply
+repeats all validation under the Restore apply lock and `BEGIN IMMEDIATE`,
+compares the exact opaque revision, restores recorded UPDATE before-images,
+explicitly deletes operation-owned INSERT rows child-first, rebuilds only the
+affected derived projection, and transitions `APPLIED` to `UNDONE` in the same
+transaction. Any failure rolls back the inverse and status transition together.
+
+Undo Preview performs no mutation and neither Preview nor Apply reads or writes
+external original file bytes. Cache-artifact absence does not block durable
+Undo; an exact Restore-created cache artifact may be removed best-effort only
+after commit. Automatic source search, backup-wins overwrite decisions, Redo,
+generic history, scheduled/cloud backup, and original-file backup are not
+implemented. The canonical contract is
 [Backup Export Format](BACKUP_FORMAT.md).
 
 Backup archives remain untrusted after ZIP and checksum verification. Preview

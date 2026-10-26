@@ -60,9 +60,9 @@ enhancement and is not a V1 completion blocker.
 - refine search ranking, filtering, and source navigation
 - complete human keyboard and VoiceOver validation
 - extend the implemented privacy-safe v1 export, zero-mutation restore/relink
-  preview, stale-checked transactional safe Apply, and exact source relink Apply
-  with separately reviewed audited backup-wins decisions and post-commit
-  recovery/Undo
+  preview, stale-checked transactional safe Apply, exact source relink Apply,
+  private atomic Restore-operation recorder, and explicit transactional Undo;
+  backup-wins and Redo remain separate later decisions
 - improve signed/notarized desktop distribution and dependency handling
 
 Each item requires a focused design and migration PR. This roadmap does not

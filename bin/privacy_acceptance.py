@@ -96,9 +96,33 @@ def public_source_has_no_private_deny_data() -> bool:
     return True
 
 
+def restore_changeset_stays_out_of_public_contracts() -> bool:
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+    backup_members = server[
+        server.index("BACKUP_DATA_MEMBERS =") : server.index("BACKUP_MEMBERS =")
+    ]
+    mcp_tools = server[
+        server.index("MCP_TOOLS:") : server.index("def mcp_tool_descriptors")
+    ]
+    frontend = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in (ROOT / "static").rglob("*")
+        if path.is_file()
+    )
+    private_names = ("restore_operations", "restore_operation_changes")
+    return (
+        all(name not in backup_members for name in private_names)
+        and all(name not in mcp_tools for name in private_names)
+        and all(name not in frontend for name in private_names)
+        and "before_json" not in frontend
+        and "locator_json" not in frontend
+    )
+
+
 def main() -> int:
     checks = run_detection_cases()
     checks["public_source_has_no_user_specific_deny_data"] = public_source_has_no_private_deny_data()
+    checks["private_restore_changeset_excluded_from_public_contracts"] = restore_changeset_stays_out_of_public_contracts()
     for name, ok in checks.items():
         print(f"{name}: {'PASS' if ok else 'FAIL'}")
     return 0 if all(checks.values()) else 1
