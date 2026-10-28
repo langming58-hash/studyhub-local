@@ -3972,29 +3972,50 @@ def assign_backup_occurrence_ids(
     records: list[dict[str, Any]],
     *,
     identity_fields: tuple[str, ...],
+    private_row_ids: list[int] | None = None,
+    private_targets: dict[tuple[str, str], tuple[str, int]] | None = None,
+    private_dataset: str = "",
+    private_entity_kind: str = "",
 ) -> list[dict[str, Any]]:
     """Assign deterministic IDs to a multiset without exposing SQLite row IDs."""
-    groups: dict[bytes, list[dict[str, Any]]] = {}
-    for record in records:
+    if private_row_ids is not None and len(private_row_ids) != len(records):
+        raise ValueError("Backup private identity count mismatch")
+    groups: dict[bytes, list[tuple[dict[str, Any], int | None]]] = {}
+    for index, record in enumerate(records):
         if "stable_id" in record:
             raise ValueError("Occurrence-based backup record already has an identity")
         semantic_identity = {field: record.get(field) for field in identity_fields}
         identity_bytes = canonical_backup_json(semantic_identity)
-        groups.setdefault(identity_bytes, []).append(dict(record))
+        private_row_id = private_row_ids[index] if private_row_ids is not None else None
+        groups.setdefault(identity_bytes, []).append((dict(record), private_row_id))
     identified: list[dict[str, Any]] = []
     for identity_bytes in sorted(groups):
-        ordered = sorted(groups[identity_bytes], key=canonical_backup_json)
-        for occurrence_index, record in enumerate(ordered, start=1):
+        ordered = sorted(
+            groups[identity_bytes],
+            key=lambda item: (canonical_backup_json(item[0]), item[1] or 0),
+        )
+        for occurrence_index, (record, private_row_id) in enumerate(ordered, start=1):
             record["stable_id"] = backup_record_id(
                 prefix,
                 identity_bytes.decode("utf-8"),
                 occurrence_index,
             )
+            if private_targets is not None and private_row_id is not None:
+                if not private_dataset or not private_entity_kind:
+                    raise ValueError("Backup private target metadata is incomplete")
+                private_targets[(private_dataset, record["stable_id"])] = (
+                    private_entity_kind,
+                    private_row_id,
+                )
             identified.append(record)
     return identified
 
 
-def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
+def project_user_owned_backup(
+    conn: sqlite3.Connection,
+    *,
+    private_targets: dict[tuple[str, str], tuple[str, int]] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     material_by_file, course_by_id, week_by_id = backup_material_maps(conn)
     datasets: dict[str, list[dict[str, Any]]] = {member: [] for member in BACKUP_DATA_MEMBERS}
 
@@ -4011,6 +4032,9 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
         if row["stable_id"]
     ]
     datasets["data/terms.json"] = terms
+    if private_targets is not None:
+        for row in conn.execute("SELECT id, stable_id FROM terms WHERE stable_id!=''"):
+            private_targets[("terms", str(row["stable_id"]))] = ("term", int(row["id"]))
     term_by_id = {
         int(row["id"]): str(row["stable_id"])
         for row in conn.execute("SELECT id, stable_id FROM terms WHERE stable_id!=''").fetchall()
@@ -4043,6 +4067,8 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
                 "updated_at": str(row["updated_at"] or ""),
             }
         )
+        if private_targets is not None:
+            private_targets[("courses", stable_id)] = ("course", int(row["id"]))
     datasets["data/courses.json"] = courses
 
     learning_units: list[dict[str, Any]] = []
@@ -4066,6 +4092,11 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
                 "updated_at": str(row["updated_at"] or ""),
             }
         )
+        if private_targets is not None:
+            private_targets[("learning_units", stable_id)] = (
+                "learning_unit",
+                int(row["id"]),
+            )
     datasets["data/learning_units.json"] = learning_units
 
     overlays: list[dict[str, Any]] = []
@@ -4089,6 +4120,11 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
                 "updated_at": str(row["material_updated_at"] or row["indexed_at"] or ""),
             }
         )
+        if private_targets is not None:
+            private_targets[("material_overlays", backup_record_id("overlay", material_ref))] = (
+                "file",
+                int(row["id"]),
+            )
     datasets["data/material_overlays.json"] = overlays
 
     local_sources: list[dict[str, Any]] = []
@@ -4138,6 +4174,7 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
     datasets["data/local_sources.json"] = local_sources
 
     notes: list[dict[str, Any]] = []
+    note_row_ids: list[int] = []
     for row in conn.execute("SELECT * FROM notes ORDER BY created_at, updated_at, id").fetchall():
         if str(row["target_type"] or "") != "file" or not row["target_id"]:
             raise ValueError("Unsupported note target in backup v1")
@@ -4154,10 +4191,15 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
                 "updated_at": str(row["updated_at"] or ""),
             }
         )
+        note_row_ids.append(int(row["id"]))
     datasets["data/notes.json"] = assign_backup_occurrence_ids(
         "note",
         notes,
         identity_fields=("target_type", "target_ref", "body", "created_at"),
+        private_row_ids=note_row_ids,
+        private_targets=private_targets,
+        private_dataset="notes",
+        private_entity_kind="note",
     )
 
     stars: list[dict[str, Any]] = []
@@ -4200,6 +4242,7 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
         )
     )
     wrong_question_records: list[dict[str, Any]] = []
+    wrong_question_row_ids: list[int] = []
     for row in conn.execute("SELECT * FROM wrong_questions ORDER BY created_at, id").fetchall():
         material_ref = material_by_file.get(int(row["source_file_id"])) if row["source_file_id"] else None
         course_ref = course_by_id.get(int(row["course_id"])) if row["course_id"] and int(row["course_id"]) in included_course_ids else None
@@ -4221,11 +4264,16 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
                 "created_at": str(row["created_at"] or ""),
             }
         )
+        wrong_question_row_ids.append(int(row["id"]))
     study_records.extend(
         assign_backup_occurrence_ids(
             "wrong",
             wrong_question_records,
             identity_fields=("record_type", "course_ref", "material_ref", "question_ref", "created_at"),
+            private_row_ids=wrong_question_row_ids,
+            private_targets=private_targets,
+            private_dataset="study_records",
+            private_entity_kind="wrong_question",
         )
     )
     for row in conn.execute("SELECT * FROM bookmarks ORDER BY created_at, id").fetchall():
@@ -4243,7 +4291,12 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
                 "created_at": str(row["created_at"] or ""),
             }
         )
+        if private_targets is not None:
+            private_targets[
+                ("study_records", backup_record_id("bookmark", material_ref))
+            ] = ("bookmark", int(row["id"]))
     session_records: list[dict[str, Any]] = []
+    session_row_ids: list[int] = []
     for row in conn.execute("SELECT * FROM study_sessions ORDER BY started_at, id").fetchall():
         course_ref = course_by_id.get(int(row["course_id"])) if row["course_id"] and int(row["course_id"]) in included_course_ids else None
         session_records.append(
@@ -4256,11 +4309,16 @@ def project_user_owned_backup(conn: sqlite3.Connection) -> dict[str, list[dict[s
                 "ended_at": str(row["ended_at"] or "") or None,
             }
         )
+        session_row_ids.append(int(row["id"]))
     study_records.extend(
         assign_backup_occurrence_ids(
             "study_session",
             session_records,
             identity_fields=("record_type", "course_ref", "started_at"),
+            private_row_ids=session_row_ids,
+            private_targets=private_targets,
+            private_dataset="study_records",
+            private_entity_kind="study_session",
         )
     )
     datasets["data/study_records.json"] = study_records
@@ -5011,6 +5069,7 @@ def restore_action(
     label: str,
     differing_fields: list[str] | None = None,
     reason: str = "",
+    allow_backup_restore: bool | None = None,
 ) -> dict[str, Any]:
     if classification not in RESTORE_CLASSIFICATIONS:
         raise ValueError("Unknown restore action classification")
@@ -5022,6 +5081,26 @@ def restore_action(
         "differing_fields": sorted(set(differing_fields or [])),
         "reason": reason,
     }
+    if classification == "CONFLICT":
+        backup_wins = dataset in {
+            "terms",
+            "courses",
+            "learning_units",
+            "material_overlays",
+            "notes",
+        } or (
+            dataset == "study_records"
+            and record.get("record_type") in {
+                "wrong_question_state",
+                "study_session",
+                "bookmark",
+            }
+        )
+        if allow_backup_restore is not None:
+            backup_wins = allow_backup_restore
+        action["allowed_decisions"] = (
+            ["KEEP_LOCAL", "RESTORE_BACKUP"] if backup_wins else ["KEEP_LOCAL"]
+        )
     if not BACKUP_STABLE_ID_RE.fullmatch(action["stable_id"]):
         raise ValueError("Restore action lacks a portable identity")
     return action
@@ -5088,6 +5167,8 @@ def restore_multiset_actions(
     identity_fields: tuple[str, ...],
     label: str,
     allow_state_conflict: bool,
+    private_current_targets: dict[tuple[str, str], tuple[str, int]] | None = None,
+    private_conflict_targets: dict[tuple[str, str], tuple[str, int]] | None = None,
 ) -> list[dict[str, Any]]:
     current_groups: dict[bytes, list[dict[str, Any]]] = {}
     for record in current_records:
@@ -5125,6 +5206,11 @@ def restore_multiset_actions(
                     reason="local_user_state_differs",
                 )
             )
+            if private_current_targets is not None and private_conflict_targets is not None:
+                target = private_current_targets.get((dataset, str(candidate["stable_id"])))
+                if target is None:
+                    raise ValueError("Restore conflict target is unavailable")
+                private_conflict_targets[(dataset, str(record["stable_id"]))] = target
         else:
             actions.append(restore_action(dataset, record, "CREATE", label=label))
     return actions
@@ -5151,8 +5237,10 @@ def plan_restore_state(
     target_state_tokens: dict[str, str] = {}
     if not transaction_owned_by_caller:
         conn.execute("BEGIN")
+    private_current_targets: dict[tuple[str, str], tuple[str, int]] = {}
+    private_conflict_targets: dict[tuple[str, str], tuple[str, int]] = {}
     try:
-        current = project_user_owned_backup(conn)
+        current = project_user_owned_backup(conn, private_targets=private_current_targets)
         material_rows = conn.execute(
             """
             SELECT m.stable_id, COALESCE(mv.sha256, f.sha256, f.hash, '') AS sha256,
@@ -5180,6 +5268,7 @@ def plan_restore_state(
         member: {str(record["stable_id"]): record for record in records}
         for member, records in current.items()
     }
+    private_conflict_targets.update(private_current_targets)
     current_materials = {
         str(row["stable_id"]): {"sha256": str(row["sha256"] or ""), "byte_size": int(row["byte_size"] or 0)}
         for row in material_rows
@@ -5354,6 +5443,7 @@ def plan_restore_state(
                 classification,
                 label=str(record["display_name"]),
                 differing_fields=differing,
+                allow_backup_restore=bool(resolved_ref and local is not None),
             )
         )
 
@@ -5383,16 +5473,18 @@ def plan_restore_state(
     target_state_tokens["notes"] = restore_multiset_state_token(
         backup_notes,
         current["data/notes.json"],
-        identity_fields=("target_type", "target_ref", "body", "created_at"),
+        identity_fields=("target_type", "target_ref", "created_at"),
     )
     actions.extend(
         restore_multiset_actions(
             "notes",
             backup_notes,
             current["data/notes.json"],
-            identity_fields=("target_type", "target_ref", "body", "created_at"),
+            identity_fields=("target_type", "target_ref", "created_at"),
             label="Note",
             allow_state_conflict=True,
+            private_current_targets=private_current_targets,
+            private_conflict_targets=private_conflict_targets,
         )
     )
 
@@ -5433,6 +5525,8 @@ def plan_restore_state(
                 identity_fields=identity_fields,
                 label=label,
                 allow_state_conflict=conflict,
+                private_current_targets=private_current_targets,
+                private_conflict_targets=private_conflict_targets,
             )
         )
 
@@ -5519,8 +5613,6 @@ def plan_restore_state(
             "original_files_not_included",
             "ai_history_not_included",
             "canvas_state_not_included",
-            "post_commit_undo_unavailable",
-            "relink_unavailable",
         ],
         "plan_revision": plan_revision,
     }
@@ -5528,6 +5620,7 @@ def plan_restore_state(
         "material_resolution": dict(material_resolution),
         "source_candidates": source_candidates,
         "relink_material_refs": sorted(relink_material_refs),
+        "private_conflict_targets": private_conflict_targets,
     }
 
 
@@ -5789,13 +5882,13 @@ def normalize_restore_decisions(
     relink_source_ids = set(relink_source_ids or ())
     required = {
         (item["dataset"], item["stable_id"]): (
-            "KEEP_LOCAL"
+            frozenset(item.get("allowed_decisions", ["KEEP_LOCAL"]))
             if item["classification"] == "CONFLICT"
-            else "RELINK"
+            else frozenset({"RELINK"})
             if item["classification"] == "RELINK_REQUIRED"
             and item["dataset"] == "local_sources"
             and item["stable_id"] in relink_source_ids
-            else "SKIP"
+            else frozenset({"SKIP"})
         )
         for item in actions
         if item["classification"] in {
@@ -5818,7 +5911,7 @@ def normalize_restore_decisions(
         if action is None:
             raise RestoreApplyError("unknown_restore_decision_target")
         allowed = required.get(key)
-        if allowed is None or decision != allowed:
+        if allowed is None or decision not in allowed:
             raise RestoreApplyError("unsupported_restore_decision")
         decisions[key] = decision
     if set(decisions) != set(required):
@@ -5861,7 +5954,7 @@ RESTORE_REVERSIBLE_ENTITY_SPECS = (
         "course", "courses", "id",
         (
             "id", "stable_id", "code", "course_code", "name", "display_name", "folder_name",
-            "path", "source_folder", "source_kind", "term_id", "archived", "removed_at",
+            "path", "source_folder", "source_kind", "term_id", "archived", "active", "removed_at",
             "sort_order", "metadata_locked", "created_at", "updated_at",
         ),
     ),
@@ -5979,6 +6072,7 @@ def restore_changeset_schema_fingerprint(
 @dataclass(frozen=True)
 class RestoreMutationScope:
     stable_ids: dict[str, frozenset[str]]
+    primary_keys: dict[str, frozenset[int]]
     append_boundaries: dict[str, int]
     material_stable_ids: frozenset[str]
     event_ids: frozenset[int]
@@ -6044,14 +6138,31 @@ def plan_restore_mutation_scope(
     plan: dict[str, Any],
     context: dict[str, Any],
     relink_candidates: dict[str, dict[str, Any]],
+    decisions: dict[tuple[str, str], str],
 ) -> RestoreMutationScope:
     """Derive the maximum row scope this exact validated Restore may mutate."""
     _actions, actions_by_id = restore_action_index(plan)
-    selected = {
+    automatic_selected = {
         stable_id
         for stable_id, action in actions_by_id.items()
         if action["classification"] in {"CREATE", "UPDATE_USER_STATE"}
     }
+    backup_selected = {
+        stable_id
+        for (dataset, stable_id), decision in decisions.items()
+        if decision == "RESTORE_BACKUP"
+    }
+    selected = automatic_selected | backup_selected
+    private_targets = dict(context["private_conflict_targets"])
+    primary_keys: dict[str, set[int]] = {}
+    for key, decision in decisions.items():
+        if decision != "RESTORE_BACKUP":
+            continue
+        target = private_targets.get(key)
+        if target is None:
+            raise RestoreApplyError("restore_conflict_target_unavailable")
+        entity_kind, primary_key = target
+        primary_keys.setdefault(entity_kind, set()).add(int(primary_key))
     stable_ids: dict[str, frozenset[str]] = {}
     for entity_kind, member in (
         ("term", "data/terms.json"),
@@ -6105,6 +6216,7 @@ def plan_restore_mutation_scope(
     for entity_kind, (member, record_type) in append_members.items():
         if any(
             str(record["stable_id"]) in selected
+            and str(record["stable_id"]) in automatic_selected
             and (record_type is None or record.get("record_type") == record_type)
             for record in datasets[member]
         ):
@@ -6134,6 +6246,9 @@ def plan_restore_mutation_scope(
     )
     return RestoreMutationScope(
         stable_ids=stable_ids,
+        primary_keys={
+            entity_kind: frozenset(values) for entity_kind, values in primary_keys.items()
+        },
         append_boundaries=append_boundaries,
         material_stable_ids=material_stable_ids,
         event_ids=frozenset(event_ids),
@@ -6151,6 +6266,17 @@ def capture_restore_targeted_state(
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """Capture only rows reachable from this Restore's validated mutation scope."""
     snapshot = {spec.entity_kind: {} for spec in RESTORE_REVERSIBLE_ENTITY_SPECS}
+    for entity_kind, primary_keys in scope.primary_keys.items():
+        merge_restore_rows(
+            snapshot,
+            entity_kind,
+            restore_rows_for_values(
+                conn,
+                entity_kind,
+                restore_entity_spec(entity_kind).primary_key,
+                primary_keys,
+            ),
+        )
     for entity_kind, stable_ids in scope.stable_ids.items():
         merge_restore_rows(
             snapshot,
@@ -7320,6 +7446,19 @@ def apply_restore_plan(
         for stable_id, action in actions_by_id.items()
         if action["classification"] in safe_classes
     }
+    backup_selected = {
+        key for key, decision in decisions.items() if decision == "RESTORE_BACKUP"
+    }
+    private_targets = dict(context["private_conflict_targets"])
+
+    def backup_target(dataset: str, stable_id: str, entity_kind: str) -> int:
+        target = private_targets.get((dataset, stable_id))
+        if target is None or target[0] != entity_kind or int(target[1]) <= 0:
+            raise RestoreApplyError("restore_conflict_target_unavailable")
+        return int(target[1])
+
+    def selected_for_backup(dataset: str, stable_id: str) -> bool:
+        return (dataset, stable_id) in backup_selected
     relink_candidates = dict(relink_candidates or {})
     relink_materials = {str(candidate["material_ref"]) for candidate in relink_candidates.values()}
     material_resolution = dict(context["material_resolution"])
@@ -7392,7 +7531,8 @@ def apply_restore_plan(
                     str(record[ref_field]) in resolved_file_ids or str(record[ref_field]) in relink_materials
                 )
     for record in datasets["data/material_overlays.json"]:
-        if str(record["stable_id"]) not in selected:
+        stable_id = str(record["stable_id"])
+        if stable_id not in selected and not selected_for_backup("material_overlays", stable_id):
             continue
         require_restore_dependency(record.get("course_ref") in restorable_courses)
         require_restore_dependency(
@@ -7438,6 +7578,7 @@ def apply_restore_plan(
 
     created = 0
     updated = 0
+    restored_from_backup = 0
     writes = 0
 
     def wrote(kind: str) -> None:
@@ -7447,6 +7588,25 @@ def apply_restore_plan(
             raise RuntimeError("synthetic_restore_failure_after_first_create")
         if failure_point == kind:
             raise RuntimeError(f"synthetic_restore_failure_{kind}")
+
+    for record in datasets["data/terms.json"]:
+        stable_id = str(record["stable_id"])
+        if not selected_for_backup("terms", stable_id):
+            continue
+        target_id = backup_target("terms", stable_id, "term")
+        conn.execute(
+            "UPDATE terms SET name=?, archived=?, sort_order=?, updated_at=? "
+            "WHERE id=? AND stable_id=?",
+            (
+                record["name"], int(record["archived"]), int(record["sort_order"]),
+                record["updated_at"], target_id, stable_id,
+            ),
+        )
+        require_restore_dependency(conn.execute("SELECT changes() AS c").fetchone()["c"] == 1)
+        term_rows[stable_id] = conn.execute("SELECT * FROM terms WHERE id=?", (target_id,)).fetchone()
+        restored_from_backup += 1
+        updated += 1
+        wrote("after_restore_backup")
 
     for record in datasets["data/terms.json"]:
         stable_id = str(record["stable_id"])
@@ -7485,6 +7645,32 @@ def apply_restore_plan(
         created += 1
         wrote("after_course")
 
+    for record in datasets["data/courses.json"]:
+        stable_id = str(record["stable_id"])
+        if not selected_for_backup("courses", stable_id):
+            continue
+        target_id = backup_target("courses", stable_id, "course")
+        term_ref = record.get("term_ref")
+        term_id = int(term_rows[term_ref]["id"]) if term_ref else None
+        conn.execute(
+            """
+            UPDATE courses SET term_id=?, code=?, course_code=?, name=?, display_name=?,
+              archived=?, active=?, sort_order=?, metadata_locked=?, updated_at=?
+            WHERE id=? AND stable_id=?
+            """,
+            (
+                term_id, record["course_code"], record["course_code"],
+                record["display_name"], record["display_name"], int(record["archived"]),
+                int(record["active"]), int(record["sort_order"]),
+                int(record["metadata_locked"]), record["updated_at"], target_id, stable_id,
+            ),
+        )
+        require_restore_dependency(conn.execute("SELECT changes() AS c").fetchone()["c"] == 1)
+        course_rows[stable_id] = conn.execute("SELECT * FROM courses WHERE id=?", (target_id,)).fetchone()
+        restored_from_backup += 1
+        updated += 1
+        wrote("after_restore_backup")
+
     for record in datasets["data/learning_units.json"]:
         stable_id = str(record["stable_id"])
         if stable_id not in selected:
@@ -7504,6 +7690,28 @@ def apply_restore_plan(
         unit_rows[stable_id] = conn.execute("SELECT * FROM weeks WHERE stable_id=?", (stable_id,)).fetchone()
         created += 1
         wrote("after_learning_unit")
+
+    for record in datasets["data/learning_units.json"]:
+        stable_id = str(record["stable_id"])
+        if not selected_for_backup("learning_units", stable_id):
+            continue
+        target_id = backup_target("learning_units", stable_id, "learning_unit")
+        course_id = int(course_rows[str(record["course_ref"])]["id"])
+        conn.execute(
+            """
+            UPDATE weeks SET course_id=?, week_label=?, week_number=?, kind=?, archived=?, updated_at=?
+            WHERE id=? AND stable_id=?
+            """,
+            (
+                course_id, record["label"], record["number"], record["kind"],
+                int(record["archived"]), record["updated_at"], target_id, stable_id,
+            ),
+        )
+        require_restore_dependency(conn.execute("SELECT changes() AS c").fetchone()["c"] == 1)
+        unit_rows[stable_id] = conn.execute("SELECT * FROM weeks WHERE id=?", (target_id,)).fetchone()
+        restored_from_backup += 1
+        updated += 1
+        wrote("after_restore_backup")
 
     for source_id, candidate in relink_candidates.items():
         source_record = source_by_stable_id[source_id]
@@ -7605,9 +7813,15 @@ def apply_restore_plan(
         raise RuntimeError("synthetic_restore_failure_after_all_relinks")
 
     for record in datasets["data/material_overlays.json"]:
-        if str(record["stable_id"]) not in selected:
+        stable_id = str(record["stable_id"])
+        is_backup_restore = selected_for_backup("material_overlays", stable_id)
+        if stable_id not in selected and not is_backup_restore:
             continue
         file_id = resolved_file_ids[str(record["material_ref"])]
+        if is_backup_restore:
+            require_restore_dependency(
+                file_id == backup_target("material_overlays", stable_id, "file")
+            )
         course_ref = record.get("course_ref")
         unit_ref = record.get("learning_unit_ref")
         course_id = int(course_rows[course_ref]["id"]) if course_ref else None
@@ -7642,6 +7856,9 @@ def apply_restore_plan(
         )
         wrote("after_overlay_projection")
         sync_restored_material_search_metadata(conn, legacy_file_id=file_id)
+        if is_backup_restore:
+            restored_from_backup += 1
+            wrote("after_restore_backup")
 
     note_creates = [record for record in datasets["data/notes.json"] if str(record["stable_id"]) in selected]
     for index, record in enumerate(note_creates, start=1):
@@ -7654,6 +7871,20 @@ def apply_restore_plan(
         )
         created += 1
         wrote("midway_notes" if failure_point == "midway_notes" and index >= max(1, len(note_creates) // 2) else "after_note")
+
+    for record in datasets["data/notes.json"]:
+        stable_id = str(record["stable_id"])
+        if not selected_for_backup("notes", stable_id):
+            continue
+        target_id = backup_target("notes", stable_id, "note")
+        conn.execute(
+            "UPDATE notes SET body=?, updated_at=? WHERE id=?",
+            (record["body"], record["updated_at"], target_id),
+        )
+        require_restore_dependency(conn.execute("SELECT changes() AS c").fetchone()["c"] == 1)
+        restored_from_backup += 1
+        updated += 1
+        wrote("after_restore_backup")
 
     for record in datasets["data/stars.json"]:
         if str(record["stable_id"]) in selected:
@@ -7707,6 +7938,43 @@ def apply_restore_plan(
         created += 1
         wrote("after_study_records")
 
+    for record in datasets["data/study_records.json"]:
+        stable_id = str(record["stable_id"])
+        if not selected_for_backup("study_records", stable_id):
+            continue
+        record_type = record["record_type"]
+        if record_type == "wrong_question_state":
+            target_id = backup_target("study_records", stable_id, "wrong_question")
+            conn.execute(
+                """
+                UPDATE wrong_questions SET week_label=?, mistake=?, concept=?, attempts=?,
+                  last_reviewed=?, mastery=? WHERE id=?
+                """,
+                (
+                    record["learning_unit_label"], record["mistake"], record["concept"],
+                    int(record["attempt_count"]), record["last_reviewed"], record["mastery"],
+                    target_id,
+                ),
+            )
+        elif record_type == "study_session":
+            target_id = backup_target("study_records", stable_id, "study_session")
+            conn.execute(
+                "UPDATE study_sessions SET week_label=?, mode=?, ended_at=? WHERE id=?",
+                (record["learning_unit_label"], record["mode"], record["ended_at"], target_id),
+            )
+        elif record_type == "bookmark":
+            target_id = backup_target("study_records", stable_id, "bookmark")
+            conn.execute(
+                "UPDATE bookmarks SET label=? WHERE id=?",
+                (record["label"], target_id),
+            )
+        else:
+            raise RestoreApplyError("unsupported_restore_decision")
+        require_restore_dependency(conn.execute("SELECT changes() AS c").fetchone()["c"] == 1)
+        restored_from_backup += 1
+        updated += 1
+        wrote("after_restore_backup")
+
     if failure_point == "before_whats_new":
         raise RuntimeError("synthetic_restore_failure_before_whats_new")
     for record in datasets["data/whats_new_state.json"]:
@@ -7724,13 +7992,18 @@ def apply_restore_plan(
         updated += 1
         wrote("after_whats_new")
 
-    if any(str(record["stable_id"]) in selected for record in datasets["data/material_overlays.json"]):
+    if any(
+        str(record["stable_id"]) in selected
+        or selected_for_backup("material_overlays", str(record["stable_id"]))
+        for record in datasets["data/material_overlays.json"]
+    ):
         refresh_course_week_counts(conn)
     if failure_point == "before_commit":
         raise RuntimeError("synthetic_restore_failure_before_commit")
     return {
         "created": created,
         "updated_user_state": updated,
+        "restored_from_backup": restored_from_backup,
         "kept_local": sum(1 for value in decisions.values() if value == "KEEP_LOCAL"),
         "skipped": sum(1 for value in decisions.values() if value == "SKIP"),
         "relinked": sum(1 for value in decisions.values() if value == "RELINK"),
@@ -7883,6 +8156,7 @@ def apply_staged_restore(
                 plan,
                 context,
                 prepared,
+                decisions,
             )
             reversible_before = capture_restore_targeted_state(
                 conn,
@@ -7912,6 +8186,8 @@ def apply_staged_restore(
                 reversible_after,
                 cache_state=cache_state,
             )
+            if failure_point == "before_restore_operation_recorded":
+                raise RuntimeError("synthetic_restore_failure_before_restore_operation_recorded")
             operation_id = record_restore_operation(
                 conn,
                 base_plan["plan_revision"],
@@ -7919,6 +8195,8 @@ def apply_staged_restore(
             )
             if failure_point == "after_restore_operation_recorded":
                 raise RuntimeError("synthetic_restore_failure_after_restore_operation_recorded")
+            if failure_point == "before_restore_commit":
+                raise RuntimeError("synthetic_restore_failure_before_restore_commit")
             conn.commit()
             for candidate in prepared.values():
                 try:

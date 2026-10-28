@@ -74,9 +74,10 @@ clearly synthetic Demo fixtures.
 | Data | Reset StudyHub-owned state only | IMPLEMENTED | Confirmation required |
 | Data | Versioned user-owned metadata export | IMPLEMENTED | Canonical JSON ZIP; privacy-safe and validated |
 | Data | Restore validate/preview/explain | IMPLEMENTED | Deterministic, zero-mutation, native trusted staging |
-| Data | Transactional restore apply | IMPLEMENTED | Explicit Keep current/Skip/verified Relink decisions; no backup-wins |
+| Data | Transactional restore apply | IMPLEMENTED | Explicit Keep current/Restore backup/Skip/verified Relink decisions |
 | Data | Explicit source relink preview | IMPLEMENTED | Native opaque capability; exact hash/size; zero mutation |
 | Data | Source relink apply | IMPLEMENTED | Exact capability only; re-hash before commit; original remains user-owned |
+| Data | Latest Restore recovery and Undo | IMPLEMENTED | Private ChangeSet, restart discovery, guarded atomic Undo; no Redo |
 | Search | Local metadata and extracted-content search | EXISTS | Preserve |
 | Preview | PDF, Office fallback, text/code preview | EXISTS | Preserve |
 | Notes | File notes with persistence | EXISTS | Preserve |
@@ -174,8 +175,9 @@ SQLite row IDs, runtime roots, local paths, or those private values in the API.
 Transactional safe Restore Apply is implemented for the supported v1
 user-owned records. It revalidates one immutable snapshot, recomputes under
 `BEGIN IMMEDIATE`, requires the expected revision and every narrow decision,
-and commits all writes together. Conflicts only support Keep current;
-unresolved and unsupported actions support Skip, while an exact current relink
+and commits all writes together. Eligible user-owned conflicts support explicit
+Keep current or Restore backup; source/content conflicts remain keep-only.
+Unresolved and unsupported actions support Skip, while an exact current relink
 capability enables a narrow explicit Relink decision.
 Failure rolls back fully, and a final source-candidate check prevents applying
 against changed bytes. It never overwrites or moves an original source file,
@@ -187,7 +189,9 @@ SHA-256 and size matches become `RELINK_READY` preview state, while mismatches
 remain rejected. Apply rechecks the capability binding, archive, plan, relink
 revision, SHA-256, size, and file identity before committing the canonical
 user-owned projection and search metadata. Automatic source search, filename
-fuzzy matching, backup-wins, and post-commit Undo remain future focused work.
+fuzzy matching remains out of scope. Successful mutating Restore operations are
+discoverable after restart and can be previewed and atomically undone while the
+recorded postimages and dependency gates remain valid. Redo is not implemented.
 
 Both Preview and Apply treat archives as untrusted and use the same strict
 semantic v1 validator before planning. A restored material overlay atomically

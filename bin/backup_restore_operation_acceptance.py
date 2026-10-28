@@ -535,7 +535,13 @@ def main() -> int:
         source_text = (ROOT / "server.py").read_text(encoding="utf-8")
         check("undo_preview_surface_preserved", "/api/backup/restore-undo-preview" in source_text, failures)
         check("undo_apply_stage_c_surface_present", "/api/backup/restore-undo-apply" in source_text, failures)
-        check("backup_wins_not_implemented", '"RESTORE_BACKUP"' not in source_text, failures)
+        check(
+            "backup_wins_integrated_with_changeset_scope",
+            'decision == "RESTORE_BACKUP"' in source_text
+            and "private_conflict_targets" in source_text
+            and "restored_from_backup" in source_text,
+            failures,
+        )
 
         for active_conn in (
             source_conn,
