@@ -25,6 +25,12 @@ const state = {
     decisions: {},
     result: null,
     relinks: {},
+    undo: {
+      operation: null,
+      preview: null,
+      status: "idle",
+      error: "",
+    },
   },
   studyMode: "practice",
   searchFiltersOpen: false,
@@ -1675,14 +1681,34 @@ function restoreDecisionKey(action) {
   return `${action.dataset}::${action.stable_id}`;
 }
 
-function restoreRequiredDecision(action) {
-  if (action.classification === "CONFLICT") return "KEEP_LOCAL";
+function restoreDecisionOptions(action) {
+  if (action.classification === "CONFLICT") {
+    const allowed = Array.isArray(action.allowed_decisions) ? action.allowed_decisions : ["KEEP_LOCAL"];
+    return allowed.filter((decision) => ["KEEP_LOCAL", "RESTORE_BACKUP"].includes(decision));
+  }
   if (action.classification === "RELINK_REQUIRED" && action.dataset === "local_sources") {
     const relink = state.restore.relinks[action.stable_id]?.result;
-    if (relink?.exact_match && relink?.apply_available) return "RELINK";
+    if (relink?.exact_match && relink?.apply_available) return ["RELINK"];
   }
-  if (["RELINK_REQUIRED", "UNRESOLVED_REFERENCE", "UNSUPPORTED_BY_V1"].includes(action.classification)) return "SKIP";
-  return "";
+  if (["RELINK_REQUIRED", "UNRESOLVED_REFERENCE", "UNSUPPORTED_BY_V1"].includes(action.classification)) return ["SKIP"];
+  return [];
+}
+
+function restoreDecisionLabel(decision) {
+  if (decision === "KEEP_LOCAL") return t("restore.keepCurrent");
+  if (decision === "RESTORE_BACKUP") return t("restore.useBackupValue");
+  if (decision === "RELINK") return t("restore.applyRelink");
+  return t("restore.skipForNow");
+}
+
+function restoreDecisionSummary(actions) {
+  const values = actions.map((action) => state.restore.decisions[restoreDecisionKey(action)]).filter(Boolean);
+  return {
+    backup: values.filter((value) => value === "RESTORE_BACKUP").length,
+    kept: values.filter((value) => value === "KEEP_LOCAL").length,
+    relinked: values.filter((value) => value === "RELINK").length,
+    skipped: values.filter((value) => value === "SKIP").length,
+  };
 }
 
 function restoreRelinkMarkup(action) {
@@ -1744,8 +1770,12 @@ function restorePreviewMarkup() {
     actions: actions.filter((action) => group.classes.includes(action.classification)),
   })).filter((group) => group.actions.length);
   const summary = plan.summary || {};
-  const requiredActions = actions.filter((action) => restoreRequiredDecision(action));
-  const decisionsComplete = requiredActions.every((action) => state.restore.decisions[restoreDecisionKey(action)] === restoreRequiredDecision(action));
+  const requiredActions = actions.filter((action) => restoreDecisionOptions(action).length);
+  const decisionsComplete = requiredActions.every((action) => {
+    const chosen = state.restore.decisions[restoreDecisionKey(action)];
+    return restoreDecisionOptions(action).includes(chosen);
+  });
+  const decisionSummary = restoreDecisionSummary(requiredActions);
   const result = restore.result;
   return `
     <div class="restore-preview" aria-labelledby="restorePreviewTitle">
@@ -1780,22 +1810,21 @@ function restorePreviewMarkup() {
                   ${action.reason ? `<small>${escapeHtml(t(`restore.reason.${action.reason}`))}</small>` : ""}
                   ${(action.differing_fields || []).length ? `<small>${escapeHtml(t("restore.fieldsDiffer", { fields: action.differing_fields.join(", ") }))}</small>` : ""}
                   ${restoreRelinkMarkup(action)}
-                  ${restoreRequiredDecision(action) ? `
+                  ${restoreDecisionOptions(action).length ? `
                     <fieldset class="restore-decision">
                       <legend>${escapeHtml(t("restore.decisionRequired"))}</legend>
-                      <label>
-                        <input type="radio" name="restore-${escapeHtml(action.stable_id)}"
-                          data-restore-decision="${escapeHtml(restoreDecisionKey(action))}"
-                          value="${restoreRequiredDecision(action)}"
-                          ${state.restore.decisions[restoreDecisionKey(action)] === restoreRequiredDecision(action) ? "checked" : ""}>
-                        <span>${escapeHtml(t(
-                          restoreRequiredDecision(action) === "KEEP_LOCAL"
-                            ? "restore.keepCurrent"
-                            : restoreRequiredDecision(action) === "RELINK"
-                              ? "restore.applyRelink"
-                              : "restore.skipForNow"
-                        ))}</span>
-                      </label>
+                      ${restoreDecisionOptions(action).map((decision) => `
+                        <label>
+                          <input type="radio" name="restore-${escapeHtml(action.dataset)}-${escapeHtml(action.stable_id)}"
+                            data-restore-decision="${escapeHtml(restoreDecisionKey(action))}"
+                            value="${escapeHtml(decision)}"
+                            ${state.restore.decisions[restoreDecisionKey(action)] === decision ? "checked" : ""}>
+                          <span>${escapeHtml(restoreDecisionLabel(decision))}</span>
+                        </label>
+                      `).join("")}
+                      ${action.classification === "CONFLICT" && !restoreDecisionOptions(action).includes("RESTORE_BACKUP")
+                        ? `<small>${escapeHtml(t("restore.backupValueUnavailable"))}</small>`
+                        : ""}
                     </fieldset>
                   ` : ""}
                 </li>
@@ -1808,7 +1837,6 @@ function restorePreviewMarkup() {
         <p>${escapeHtml(t("restore.originalsExcluded"))}</p>
         <p>${escapeHtml(t("restore.aiExcluded"))}</p>
         <p>${escapeHtml(t("restore.canvasExcluded"))}</p>
-        <p>${escapeHtml(t("restore.undoUnavailable"))}</p>
       </div>
       ${result ? `
         <div class="notice" role="status" aria-live="polite">
@@ -1816,6 +1844,7 @@ function restorePreviewMarkup() {
           <p>${escapeHtml(t("restore.resultSummary", {
             created: result.created || 0,
             updated: result.updated_user_state || 0,
+            backup: result.restored_from_backup || 0,
             kept: result.kept_local || 0,
             skipped: result.skipped || 0,
             noop: result.noop || 0,
@@ -1826,14 +1855,50 @@ function restorePreviewMarkup() {
         <p>${escapeHtml(t("restore.applySummary", {
           created: Number(summary.create || 0),
           updated: Number(summary.update_user_state || 0),
-          kept: requiredActions.filter((action) => action.classification === "CONFLICT").length,
-          skipped: requiredActions.filter((action) => action.classification !== "CONFLICT").length,
+          backup: decisionSummary.backup,
+          kept: decisionSummary.kept,
+          relinked: decisionSummary.relinked,
+          skipped: decisionSummary.skipped,
         }))}</p>
+        ${decisionSummary.backup ? `<div class="notice warning" role="alert">${escapeHtml(t("restore.backupOverwriteWarning", { count: decisionSummary.backup }))}</div>` : ""}
         <button class="button primary" type="button" data-apply-restore="1"
           ${decisionsComplete && restore.status !== "applying" ? "" : "disabled"}
           aria-describedby="restoreApplyHelp">${escapeHtml(t("restore.apply"))}</button>
         <small id="restoreApplyHelp">${escapeHtml(decisionsComplete ? t("restore.readyToApply") : t("restore.completeDecisions"))}</small>
       </div>
+    </div>
+  `;
+}
+
+function restoreUndoMarkup() {
+  const undo = state.restore.undo;
+  const operation = undo.operation;
+  if (!operation) return `<p class="muted">${escapeHtml(t("restore.undoNone"))}</p>`;
+  const summary = operation.summary || {};
+  const preview = undo.preview;
+  const unavailableReason = preview && !preview.undo_available
+    ? t(`restore.undoReason.${String(preview.reason || "unknown").toLowerCase()}`)
+    : "";
+  return `
+    <div class="restore-recovery" aria-live="polite">
+      ${undo.error ? `<div class="notice error" role="alert">${escapeHtml(undo.error)}</div>` : ""}
+      <div class="restore-preview-head">
+        <div>
+          <strong>${escapeHtml(t("restore.latestRestore"))}</strong>
+          <p class="muted">${escapeHtml(t("restore.undoSummary", {
+            changes: summary.changes || 0,
+            committed: operation.committed_at || t("common.unknown"),
+          }))}</p>
+        </div>
+        <span class="chip">${escapeHtml(operation.status || t("common.unknown"))}</span>
+      </div>
+      ${unavailableReason ? `<p class="muted">${escapeHtml(unavailableReason)}</p>` : ""}
+      ${operation.status === "UNDONE" ? `<p class="muted">${escapeHtml(t("restore.wasUndone"))}</p>` : ""}
+      <div class="button-row">
+        ${operation.status === "APPLIED" && !preview ? `<button class="button secondary" type="button" data-preview-restore-undo="1" ${undo.status === "checking" ? "disabled aria-busy=\"true\"" : ""}>${escapeHtml(t("restore.reviewUndo"))}</button>` : ""}
+        ${preview?.undo_available ? `<button class="button danger" type="button" data-apply-restore-undo="1" ${undo.status === "applying" ? "disabled aria-busy=\"true\"" : ""}>${escapeHtml(t("restore.undoRestore"))}</button>` : ""}
+      </div>
+      ${preview?.undo_available ? `<p class="muted">${escapeHtml(t("restore.undoReady", { changes: preview.summary?.changes || 0 }))}</p>` : ""}
     </div>
   `;
 }
@@ -1844,6 +1909,39 @@ async function renderSettings() {
   state.health = await api("/api/health");
   const ai = await api("/api/ai-status");
   const allTerms = await api("/api/terms?include_archived=1");
+  const latestUndo = await api("/api/backup/restore-undo-latest");
+  const previousOperation = state.restore.undo.operation;
+  state.restore.undo.operation = latestUndo.operation || null;
+  const operationChanged = Boolean(
+    latestUndo.operation
+    && latestUndo.operation.operation_id !== previousOperation?.operation_id
+  );
+  if (
+    !latestUndo.operation
+    || latestUndo.operation.operation_id !== state.restore.undo.preview?.operation_id
+    || previousOperation?.status !== latestUndo.operation.status
+  ) {
+    state.restore.undo.preview = null;
+    if (state.restore.undo.status !== "applying") state.restore.undo.status = "idle";
+  }
+  if (
+    latestUndo.operation?.status === "APPLIED"
+    && !state.restore.undo.preview
+    && (operationChanged || ["idle", "complete"].includes(state.restore.undo.status))
+  ) {
+    state.restore.undo.status = "checking";
+    try {
+      const undoResult = await postJson("/api/backup/restore-undo-preview", {
+        operation_id: latestUndo.operation.operation_id,
+      });
+      state.restore.undo.preview = undoResult.preview;
+      state.restore.undo.status = "ready";
+      state.restore.undo.error = "";
+    } catch (error) {
+      state.restore.undo.status = "error";
+      state.restore.undo.error = t("restore.undoFailed", { error: error.message || String(error) });
+    }
+  }
   const askReady = ai.openAI === "Configured" && ai.vectorStore === "Configured" ? t("status.ready") : t("status.notReady");
   view.innerHTML = `
     <section class="settings-layout">
@@ -1955,6 +2053,10 @@ async function renderSettings() {
         </div>
         <p class="muted">${escapeHtml(t(state.health.desktopMode ? "restore.description" : "restore.desktopRequired"))}</p>
         ${restorePreviewMarkup()}
+        <div class="restore-recovery-panel">
+          <h3>${escapeHtml(t("restore.recoveryTitle"))}</h3>
+          ${restoreUndoMarkup()}
+        </div>
       </section>
       <section class="section-block quiet-section">
         <div class="section-head">
@@ -2592,12 +2694,54 @@ document.addEventListener("click", async (event) => {
     await renderSettings();
     return;
   }
+  if (target.dataset.previewRestoreUndo) {
+    const operationId = state.restore.undo.operation?.operation_id;
+    if (!operationId) return;
+    state.restore.undo.status = "checking";
+    state.restore.undo.error = "";
+    await renderSettings();
+    try {
+      const result = await postJson("/api/backup/restore-undo-preview", { operation_id: operationId });
+      state.restore.undo.preview = result.preview;
+      state.restore.undo.status = "ready";
+    } catch (error) {
+      state.restore.undo.status = "error";
+      state.restore.undo.error = t("restore.undoFailed", { error: error.message || String(error) });
+    }
+    await renderSettings();
+    return;
+  }
+  if (target.dataset.applyRestoreUndo) {
+    const preview = state.restore.undo.preview;
+    if (!preview?.undo_available || !preview.operation_id || !preview.undo_revision) return;
+    if (!confirm(t("restore.confirmUndo", { changes: preview.summary?.changes || 0 }))) return;
+    state.restore.undo.status = "applying";
+    state.restore.undo.error = "";
+    await renderSettings();
+    try {
+      await postJson("/api/backup/restore-undo-apply", {
+        operation_id: preview.operation_id,
+        expected_undo_revision: preview.undo_revision,
+      });
+      state.restore.undo.preview = null;
+      state.restore.undo.status = "complete";
+      await loadBase();
+      toast(t("restore.undoComplete"));
+    } catch (error) {
+      state.restore.undo.status = "error";
+      state.restore.undo.error = t("restore.undoFailed", { error: error.message || String(error) });
+    }
+    await renderSettings();
+    return;
+  }
   if (target.dataset.applyRestore) {
     if (!state.restore.restoreId || !state.restore.plan) return;
-    if (!confirm(t("restore.confirmApply"))) return;
     const plan = state.restore.plan;
     const actions = (plan.sections || []).flatMap((section) => section.actions || []);
-    const decisions = actions.filter((action) => restoreRequiredDecision(action)).map((action) => ({
+    const requiredActions = actions.filter((action) => restoreDecisionOptions(action).length);
+    const summary = restoreDecisionSummary(requiredActions);
+    if (!confirm(t("restore.confirmApply", summary))) return;
+    const decisions = requiredActions.map((action) => ({
       dataset: action.dataset,
       stable_id: action.stable_id,
       decision: state.restore.decisions[restoreDecisionKey(action)],
@@ -2624,6 +2768,8 @@ document.addEventListener("click", async (event) => {
         relinks,
       });
       state.restore.result = result.applied;
+      state.restore.undo.preview = null;
+      state.restore.undo.status = "idle";
       const refreshed = await postJson("/api/backup/restore-preview", { restore_id: state.restore.restoreId });
       state.restore.plan = refreshed.plan;
       state.restore.decisions = {};
@@ -2659,7 +2805,16 @@ document.addEventListener("click", async (event) => {
         return;
       }
     }
-    state.restore = { restoreId: null, plan: null, status: "idle", error: "", decisions: {}, result: null, relinks: {} };
+    state.restore = {
+      restoreId: null,
+      plan: null,
+      status: "idle",
+      error: "",
+      decisions: {},
+      result: null,
+      relinks: {},
+      undo: state.restore.undo,
+    };
     await renderSettings();
     return;
   }

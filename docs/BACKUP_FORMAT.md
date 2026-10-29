@@ -3,13 +3,13 @@
 Status: **AUTHORITATIVE `studyhub-backup-v1` EXPORT CONTRACT**.
 
 StudyHub's implemented backup surface exports a privacy-safe, portable
-projection of durable `USER_OWNED` state. It is not a database dump, an
-academic-file archive, or a complete backup/restore system. StudyHub can now
+projection of durable `USER_OWNED` state. It is not a database dump or an
+academic-file archive. StudyHub can now
 select and privately stage an archive, validate it, produce a deterministic
 zero-mutation restore preview, explicitly verify a user-selected exact relink
-candidate, and transactionally apply the supported safe actions. Relink Apply,
-backup-wins replacement, automatic relinking, post-commit undo,
-scheduling, cloud backup, and encryption are not implemented.
+candidate, transactionally apply the supported safe actions, discover the
+latest completed Restore, and explicitly Undo a still-safe Restore. Automatic
+relinking, Redo, scheduling, cloud backup, and encryption are not implemented.
 
 ## Format Identity And Versioning
 
@@ -226,8 +226,10 @@ identical academic event. Remote facts, AI history, and Canvas connection state
 remain excluded.
 
 The Settings UI presents the complete grouped preview and omissions. Required
-decisions are explicit: conflicts can only keep current state, while unresolved
-and unsupported items can only be skipped. For a
+decisions are explicit. Eligible user-owned conflicts can either keep current
+state or restore the validated backup value; local-source/content conflicts can
+only keep current because backup v1 contains no original bytes. Unresolved and
+unsupported items can only be skipped. For a
 relink-required local source, the desktop app can explicitly choose one
 replacement original and verify exact SHA-256 and byte-size identity without
 changing restore state. An exact current capability enables an explicit
@@ -274,11 +276,14 @@ archive snapshot, opens only the existing current-profile database, starts
 `BEGIN IMMEDIATE`, and recomputes the canonical plan. A changed archive, relevant
 target state, or inspected source candidate fails closed and rolls back.
 
-Safe `CREATE` and `UPDATE_USER_STATE` actions restore allowlisted v1 terms,
+Safe `CREATE`, `UPDATE_USER_STATE`, and explicitly selected `RESTORE_BACKUP`
+actions restore allowlisted v1 terms,
 local courses, managed learning units, material overlays on resolved Materials,
 notes, stars, attempts, wrong-question state, study sessions, bookmarks, and
 acknowledgement of an existing identical academic-change event. Multiset records
-restore exact missing multiplicity. `MATCH`, `NOOP`, `KEEP_LOCAL`, and `SKIP`
+restore exact missing multiplicity, and private deterministic conflict targeting
+updates only the recomputed matching row. No SQLite row ID enters the backup,
+plan, revision, or browser request. `MATCH`, `NOOP`, `KEEP_LOCAL`, and `SKIP`
 perform no write. The lower apply helper never commits or rolls back; the caller
 owns the single transaction, so any failure rolls back every restore mutation.
 
@@ -291,8 +296,9 @@ Source/Material projection and derived search index by reference. It never
 copies, moves, deletes, or rewrites the original. Successful Apply consumes the
 private descriptor; failed Apply preserves a still-valid descriptor and rolls
 back database/index changes. Apply does not restore Canvas or AI state or
-contact a network/credential service. A successful commit currently has no
-automatic Undo, and audited backup-wins decisions remain unimplemented.
+contact a network/credential service. `RESTORE_BACKUP` never writes source
+bytes, Source/Blob/MaterialVersion identity, or remote-authoritative Canvas
+facts.
 
 When a successful Apply makes reversible mutations, it also writes a private
 versioned Restore operation and ordered ChangeSet inside that same transaction.
@@ -310,11 +316,17 @@ The ChangeSet excludes rebuildable FTS, chunks, parsed questions/solutions,
 course/week counts, and extracted cache contents. Relink-created cache state is
 represented only by a controlled relative cache identity and only when Restore
 created the artifact. A Restore containing only `MATCH`, `NOOP`, `KEEP_LOCAL`,
-or `SKIP` writes no operation. Read-only Undo Preview and mutating Undo Apply
-remain unimplemented. The private journal remains bounded with capacity derived
+or `SKIP` writes no operation. The latest-operation endpoint exposes only a safe
+aggregate summary. Read-only Undo Preview validates postimages, dependencies,
+and later Restore overlap; explicit Undo Apply repeats those gates under the
+Restore lock and `BEGIN IMMEDIATE`, then reverses the exact ChangeSet atomically.
+The private journal remains bounded with capacity derived
 from backup v1's maximum uncompressed size, record count, dual pre/post images,
 and serialization overhead; an incomplete ChangeSet always aborts Restore
 atomically rather than truncating recovery data.
+
+Redo, generic action-history rollback, automatic backup scheduling, cloud
+backup, backup encryption, and source-byte backup remain out of scope.
 
 When Apply restores a material overlay, the same transaction synchronizes the
 existing legacy compatibility row, its existing Phase-1 Material projection,

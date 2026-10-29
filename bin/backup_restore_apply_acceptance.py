@@ -232,7 +232,7 @@ def main() -> int:
         check("no_backup_mcp_tool", "backup/restore-apply" not in json.dumps(source.mcp_tool_descriptors()), failures)
         check("ui_has_apply_control", 'data-apply-restore="1"' in frontend, failures)
         check("ui_has_semantic_radio", 'type="radio"' in frontend and "<fieldset" in frontend, failures)
-        check("ui_has_no_backup_wins", "RESTORE_BACKUP" not in frontend and "Use backup value" not in frontend, failures)
+        check("ui_has_explicit_backup_choice", "RESTORE_BACKUP" in frontend and "restore.useBackupValue" in frontend, failures)
         check("ui_has_stale_review", "restore.localStateChanged" in frontend and "restore.reviewAgain" in frontend, failures)
         check("english_and_chinese_apply_strings", catalog.count('"restore.apply"') == 2 and "应用恢复" in catalog, failures)
 
@@ -514,8 +514,8 @@ def main() -> int:
         check("unknown_decision_rejected", expect_error(lambda: conflict.apply_staged_restore("c" * 32, conflict_plan["plan_revision"], [{"dataset": "courses", "stable_id": "unknown", "decision": "KEEP_LOCAL"}]), "unknown_restore_decision_target"), failures)
         duplicate = required + required[:1]
         check("duplicate_decision_rejected", expect_error(lambda: conflict.apply_staged_restore("c" * 32, conflict_plan["plan_revision"], duplicate), "duplicate_restore_decision"), failures)
-        unsupported = [dict(item, decision="RESTORE_BACKUP") for item in required]
-        check("backup_wins_rejected", expect_error(lambda: conflict.apply_staged_restore("c" * 32, conflict_plan["plan_revision"], unsupported), "unsupported_restore_decision"), failures)
+        invalid = [dict(item, decision="RESTORE_EVERYTHING") for item in required]
+        check("unknown_decision_value_rejected", expect_error(lambda: conflict.apply_staged_restore("c" * 32, conflict_plan["plan_revision"], invalid), "unsupported_restore_decision"), failures)
         kept = conflict.apply_staged_restore("c" * 32, conflict_plan["plan_revision"], required)
         check("keep_local_preserves_bookmark", conflict_conn.execute("SELECT label FROM bookmarks").fetchone()["label"] == "Different label", failures)
         check("keep_local_reported", kept["applied"]["kept_local"] >= 1, failures)

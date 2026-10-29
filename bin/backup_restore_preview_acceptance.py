@@ -193,7 +193,7 @@ def main() -> int:
             'data-choose-backup="1"' in frontend_source
             and 'data-discard-restore="1"' in frontend_source
             and "/api/backup/restore-preview" in frontend_source
-            and "restoreRequiredDecision" in frontend_source,
+            and "restoreDecisionOptions" in frontend_source,
             failures,
         )
         check(

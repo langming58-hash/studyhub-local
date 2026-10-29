@@ -176,7 +176,8 @@ candidates or weaken stale-state protection.
 
 Restore Apply reuses the canonical planner under a process-local apply lock and
 a caller-owned SQLite `BEGIN IMMEDIATE` transaction. It requires the exact approved plan
-revision and a complete set of narrow `KEEP_LOCAL`/`SKIP`/`RELINK` decisions,
+revision and a complete set of narrow
+`KEEP_LOCAL`/`RESTORE_BACKUP`/`SKIP`/`RELINK` decisions,
 applies only supported user-owned state, rechecks explicitly inspected source
 candidates, and commits once. Exact relink reuses the canonical ingestion/domain
 projection by reference and consumes its private capability only after commit.
@@ -184,7 +185,8 @@ The same transaction now records a private, versioned Restore operation only
 when Apply makes at least one reversible durable mutation. Its closed ChangeSet
 contains exact pre/post images of the closed reversible field contract for only
 the rows reachable from the validated RestorePlan, explicit decisions, and
-relinks, plus safe relative identity for a Restore-created text cache artifact.
+relinks, selected eligible user-owned conflict targets, plus safe relative
+identity for a Restore-created text cache artifact.
 It does not snapshot unrelated durable tables. Derived FTS, chunks, questions,
 solutions, and course/week counts are intentionally excluded from the inverse
 contract. Its bounded private journal budget is derived from the existing
@@ -217,9 +219,12 @@ transaction. Any failure rolls back the inverse and status transition together.
 Undo Preview performs no mutation and neither Preview nor Apply reads or writes
 external original file bytes. Cache-artifact absence does not block durable
 Undo; an exact Restore-created cache artifact may be removed best-effort only
-after commit. Automatic source search, backup-wins overwrite decisions, Redo,
-generic history, scheduled/cloud backup, and original-file backup are not
-implemented. The canonical contract is
+after commit. Eligible user-owned backup conflicts use a private deterministic
+target mapping recomputed under the Apply transaction and update only the v1
+portable allowlist. Source-byte conflicts remain keep-only, and remote facts
+remain remote-authoritative. Automatic source search, Redo, generic history,
+scheduled/cloud backup, and original-file backup are not implemented. The
+canonical contract is
 [Backup Export Format](BACKUP_FORMAT.md).
 
 Backup archives remain untrusted after ZIP and checksum verification. Preview

@@ -647,6 +647,16 @@ menu {
   cursor: pointer;
 }
 
+.restore-decision label + label {
+  margin-left: 18px;
+}
+
+.restore-decision small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+}
+
 .restore-decision input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
@@ -676,6 +686,24 @@ menu {
   gap: 4px;
   color: var(--muted);
   font-size: 13px;
+}
+
+.restore-recovery-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.restore-recovery-panel h3,
+.restore-recovery p {
+  margin: 0;
+}
+
+.restore-recovery {
+  display: grid;
+  gap: 10px;
 }
 
 .restore-omissions p {
