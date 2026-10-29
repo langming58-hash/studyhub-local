@@ -5349,7 +5349,23 @@ def plan_restore_state(
             differing = restore_differences(record, local, fields=unit_fields)
             classification = "NOOP" if not differing else "CONFLICT"
         actions.append(
-            restore_action("learning_units", record, classification, label=str(record["label"]), differing_fields=differing)
+            restore_action(
+                "learning_units",
+                record,
+                classification,
+                label=str(record["label"]),
+                differing_fields=differing,
+                reason=(
+                    "cross_course_move_requires_keep_local"
+                    if classification == "CONFLICT" and "course_ref" in differing
+                    else ""
+                ),
+                allow_backup_restore=(
+                    False
+                    if classification == "CONFLICT" and "course_ref" in differing
+                    else None
+                ),
+            )
         )
 
     study_root = DEFAULT_STUDY_ROOT.resolve()
@@ -6163,6 +6179,77 @@ def plan_restore_mutation_scope(
             raise RestoreApplyError("restore_conflict_target_unavailable")
         entity_kind, primary_key = target
         primary_keys.setdefault(entity_kind, set()).add(int(primary_key))
+
+    def include_primary_keys(entity_kind: str, values: set[int]) -> None:
+        if values:
+            primary_keys.setdefault(entity_kind, set()).update(values)
+
+    # Hierarchy presentation restores propagate only through the exact affected
+    # Course/Learning Unit graph. Capture every durable propagated row so the
+    # existing ChangeSet and Undo machinery owns the complete mutation.
+    for (dataset, stable_id), decision in decisions.items():
+        if decision != "RESTORE_BACKUP":
+            continue
+        target = private_targets.get((dataset, stable_id))
+        if target is None:
+            raise RestoreApplyError("restore_conflict_target_unavailable")
+        entity_kind, target_id = target
+        if dataset == "courses" and entity_kind == "course":
+            file_ids = {
+                int(row["id"])
+                for row in conn.execute(
+                    "SELECT id FROM files WHERE course_id=? ORDER BY id",
+                    (target_id,),
+                ).fetchall()
+            }
+            include_primary_keys("file", file_ids)
+            material_ids = {
+                int(row["id"])
+                for row in conn.execute(
+                    "SELECT id FROM materials WHERE course_id=? ORDER BY id",
+                    (target_id,),
+                ).fetchall()
+            }
+            include_primary_keys("material", material_ids)
+        elif dataset == "learning_units" and entity_kind == "learning_unit":
+            unit = conn.execute(
+                "SELECT course_id, week_label FROM weeks WHERE id=?",
+                (target_id,),
+            ).fetchone()
+            if unit is None:
+                raise RestoreApplyError("restore_conflict_target_unavailable")
+            file_ids = {
+                int(row["id"])
+                for row in conn.execute(
+                    "SELECT id FROM files WHERE week_id=? ORDER BY id",
+                    (target_id,),
+                ).fetchall()
+            }
+            include_primary_keys("file", file_ids)
+            material_ids = {
+                int(row["id"])
+                for row in conn.execute(
+                    "SELECT id FROM materials WHERE week_id=? ORDER BY id",
+                    (target_id,),
+                ).fetchall()
+            }
+            include_primary_keys("material", material_ids)
+            note_ids = {
+                int(row["id"])
+                for row in conn.execute(
+                    "SELECT id FROM notes WHERE course_id=? AND week_label=? ORDER BY id",
+                    (unit["course_id"], unit["week_label"]),
+                ).fetchall()
+            }
+            include_primary_keys("note", note_ids)
+            wrong_question_ids = {
+                int(row["id"])
+                for row in conn.execute(
+                    "SELECT id FROM wrong_questions WHERE course_id=? AND week_label=? ORDER BY id",
+                    (unit["course_id"], unit["week_label"]),
+                ).fetchall()
+            }
+            include_primary_keys("wrong_question", wrong_question_ids)
     stable_ids: dict[str, frozenset[str]] = {}
     for entity_kind, member in (
         ("term", "data/terms.json"),
@@ -6929,6 +7016,59 @@ def restore_undo_dependency_state(
                     "dependent_keys": keys,
                 }
             )
+
+    # Hierarchy presentation UPDATEs own the exact dependent graph that was
+    # propagated by Restore. Later rows entering that graph make Undo unsafe:
+    # reverting only the older graph would leave mixed Course/Week metadata.
+    for change in changes:
+        if change.change_kind != "UPDATE" or change.before is None or change.after is None:
+            continue
+        checks: list[tuple[str, str, tuple[Any, ...], str]] = []
+        if change.entity_kind == "course" and any(
+            change.before.get(field) != change.after.get(field)
+            for field in ("code", "course_code", "name", "display_name")
+        ):
+            course_id = int(change.after["id"])
+            checks = [
+                ("file", "SELECT id FROM files WHERE course_id=? ORDER BY id", (course_id,), "course_files"),
+                ("material", "SELECT id FROM materials WHERE course_id=? ORDER BY id", (course_id,), "course_materials"),
+            ]
+        elif change.entity_kind == "learning_unit" and any(
+            change.before.get(field) != change.after.get(field)
+            for field in ("week_label", "week_number")
+        ):
+            unit_id = int(change.after["id"])
+            course_id = int(change.after["course_id"])
+            week_label = str(change.after["week_label"])
+            checks = [
+                ("file", "SELECT id FROM files WHERE week_id=? ORDER BY id", (unit_id,), "unit_files"),
+                ("material", "SELECT id FROM materials WHERE week_id=? ORDER BY id", (unit_id,), "unit_materials"),
+                (
+                    "note",
+                    "SELECT id FROM notes WHERE course_id=? AND week_label=? ORDER BY id",
+                    (course_id, week_label),
+                    "unit_notes",
+                ),
+                (
+                    "wrong_question",
+                    "SELECT id FROM wrong_questions WHERE course_id=? AND week_label=? ORDER BY id",
+                    (course_id, week_label),
+                    "unit_wrong_questions",
+                ),
+            ]
+        for dependent_kind, query, parameters, label in checks:
+            keys = [row["id"] for row in conn.execute(query, parameters).fetchall()]
+            allowed = affected.get(dependent_kind, set())
+            if any(type(key) is not int or int(key) not in allowed for key in keys):
+                raise RestoreUndoPreviewFailure("DEPENDENCY_CHANGED")
+            dependency_state.append(
+                {
+                    "rule": label,
+                    "parent_kind": change.entity_kind,
+                    "parent": int(change.locator["primary_key"]),
+                    "dependent_keys": keys,
+                }
+            )
     return dependency_state
 
 
@@ -7142,6 +7282,9 @@ def rebuild_restore_undo_derived_state(
         row = conn.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
         if row is None:
             raise RestoreUndoApplyError("UNDO_INVARIANT_FAILED")
+        if bool(row["source_missing"]) or not bool(row["active"]) or row["removed_at"]:
+            delete_restore_undo_derived_for_files(conn, {file_id})
+            continue
         sync_restored_material_search_metadata(conn, legacy_file_id=file_id)
         conn.execute(
             "UPDATE ai_index_state SET stable_id=?, sha256=?, metadata_json=? "
@@ -7424,6 +7567,82 @@ def sync_restored_material_search_metadata(conn: sqlite3.Connection, *, legacy_f
         "UPDATE files_fts SET course_code=?, week_label=?, category=? WHERE rowid=?",
         (file_row["course_code"], file_row["week_label"], file_row["category"], legacy_file_id),
     )
+    conn.execute(
+        "UPDATE ai_index_state SET stable_id=?, sha256=?, metadata_json=? "
+        "WHERE file_id=? AND provider='local'",
+        (
+            file_row["stable_id"],
+            file_row["sha256"],
+            json.dumps(file_metadata(file_row), ensure_ascii=False),
+            legacy_file_id,
+        ),
+    )
+
+
+def sync_restored_course_presentation(
+    conn: sqlite3.Connection,
+    *,
+    course_id: int,
+) -> None:
+    """Propagate a restored local Course presentation inside the Restore transaction."""
+    course = conn.execute("SELECT * FROM courses WHERE id=?", (course_id,)).fetchone()
+    require_restore_dependency(course is not None)
+    conn.execute(
+        "UPDATE files SET course_code=?, course_name=? WHERE course_id=?",
+        (course["course_code"], course["display_name"], course_id),
+    )
+    conn.execute(
+        "UPDATE materials SET course_code=?, course_name=? WHERE course_id=?",
+        (course["course_code"], course["display_name"], course_id),
+    )
+    file_ids = [
+        int(row["id"])
+        for row in conn.execute(
+            "SELECT id FROM files WHERE course_id=? ORDER BY id",
+            (course_id,),
+        ).fetchall()
+    ]
+    for file_id in file_ids:
+        sync_restored_material_search_metadata(conn, legacy_file_id=file_id)
+
+
+def sync_restored_learning_unit_presentation(
+    conn: sqlite3.Connection,
+    *,
+    learning_unit_id: int,
+    previous_course_id: int,
+    previous_label: str,
+) -> None:
+    """Propagate a same-Course Learning Unit restore through its exact durable graph."""
+    unit = conn.execute("SELECT * FROM weeks WHERE id=?", (learning_unit_id,)).fetchone()
+    require_restore_dependency(
+        unit is not None and int(unit["course_id"]) == int(previous_course_id)
+    )
+    conn.execute(
+        "UPDATE files SET week_label=?, week_number=?, metadata_locked=1 WHERE week_id=?",
+        (unit["week_label"], unit["week_number"], learning_unit_id),
+    )
+    conn.execute(
+        "UPDATE materials SET week_label=?, week_number=? WHERE week_id=?",
+        (unit["week_label"], unit["week_number"], learning_unit_id),
+    )
+    conn.execute(
+        "UPDATE notes SET week_label=? WHERE course_id=? AND week_label=?",
+        (unit["week_label"], previous_course_id, previous_label),
+    )
+    conn.execute(
+        "UPDATE wrong_questions SET week_label=? WHERE course_id=? AND week_label=?",
+        (unit["week_label"], previous_course_id, previous_label),
+    )
+    file_ids = [
+        int(row["id"])
+        for row in conn.execute(
+            "SELECT id FROM files WHERE week_id=? ORDER BY id",
+            (learning_unit_id,),
+        ).fetchall()
+    ]
+    for file_id in file_ids:
+        sync_restored_material_search_metadata(conn, legacy_file_id=file_id)
 
 
 def apply_restore_plan(
@@ -7667,6 +7886,7 @@ def apply_restore_plan(
         )
         require_restore_dependency(conn.execute("SELECT changes() AS c").fetchone()["c"] == 1)
         course_rows[stable_id] = conn.execute("SELECT * FROM courses WHERE id=?", (target_id,)).fetchone()
+        sync_restored_course_presentation(conn, course_id=target_id)
         restored_from_backup += 1
         updated += 1
         wrote("after_restore_backup")
@@ -7696,7 +7916,10 @@ def apply_restore_plan(
         if not selected_for_backup("learning_units", stable_id):
             continue
         target_id = backup_target("learning_units", stable_id, "learning_unit")
+        previous_unit = conn.execute("SELECT * FROM weeks WHERE id=?", (target_id,)).fetchone()
+        require_restore_dependency(previous_unit is not None)
         course_id = int(course_rows[str(record["course_ref"])]["id"])
+        require_restore_dependency(course_id == int(previous_unit["course_id"]))
         conn.execute(
             """
             UPDATE weeks SET course_id=?, week_label=?, week_number=?, kind=?, archived=?, updated_at=?
@@ -7709,6 +7932,12 @@ def apply_restore_plan(
         )
         require_restore_dependency(conn.execute("SELECT changes() AS c").fetchone()["c"] == 1)
         unit_rows[stable_id] = conn.execute("SELECT * FROM weeks WHERE id=?", (target_id,)).fetchone()
+        sync_restored_learning_unit_presentation(
+            conn,
+            learning_unit_id=target_id,
+            previous_course_id=int(previous_unit["course_id"]),
+            previous_label=str(previous_unit["week_label"]),
+        )
         restored_from_backup += 1
         updated += 1
         wrote("after_restore_backup")

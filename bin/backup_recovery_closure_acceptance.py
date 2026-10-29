@@ -71,25 +71,51 @@ def expect_code(call: Any, code: str) -> bool:
 def mutate_eligible_state(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE terms SET name='Local Term' WHERE stable_id='term_syn_alpha'")
     conn.execute(
-        "UPDATE courses SET name='Local Course', display_name='Local Course' "
+        "UPDATE courses SET code='LOC9200', course_code='LOC9200', "
+        "name='Local Course', display_name='Local Course' "
         "WHERE stable_id='course_syn_alpha'"
     )
-    conn.execute("UPDATE weeks SET kind='week', archived=1 WHERE stable_id='unit_syn_alpha'")
     conn.execute(
-        "UPDATE files SET display_name='Local Material', category='Reading', "
-        "exercise_type='Reading', metadata_locked=1 WHERE stable_id='material_syn_local'"
+        "UPDATE weeks SET week_label='Revision Week', week_number=99, kind='week', archived=1 "
+        "WHERE stable_id='unit_syn_alpha'"
     )
     conn.execute(
-        "UPDATE document_chunks SET category='Reading', exercise_type='Reading' "
+        "UPDATE files SET display_name='Local Material', category='Reading', "
+        "exercise_type='Reading', course_code='LOC9200', course_name='Local Course', "
+        "week_label='Revision Week', week_number=99, metadata_locked=1 "
+        "WHERE stable_id='material_syn_local'"
+    )
+    conn.execute(
+        "UPDATE materials SET course_code='LOC9200', course_name='Local Course', "
+        "week_label='Revision Week', week_number=99 "
+        "WHERE stable_id='material_syn_local'"
+    )
+    conn.execute(
+        "UPDATE document_chunks SET course_code='LOC9200', week_label='Revision Week', "
+        "category='Reading', exercise_type='Reading' "
         "WHERE file_id=(SELECT id FROM files WHERE stable_id='material_syn_local')"
     )
     conn.execute(
-        "UPDATE files_fts SET category='Reading' "
+        "UPDATE questions SET course_code='LOC9200', week_label='Revision Week', "
+        "exercise_type='Reading' "
+        "WHERE file_id=(SELECT id FROM files WHERE stable_id='material_syn_local')"
+    )
+    conn.execute(
+        "UPDATE solutions SET course_code='LOC9200', week_label='Revision Week', "
+        "exercise_type='Reading' "
+        "WHERE file_id=(SELECT id FROM files WHERE stable_id='material_syn_local')"
+    )
+    conn.execute(
+        "UPDATE files_fts SET course_code='LOC9200', week_label='Revision Week', category='Reading' "
         "WHERE rowid=(SELECT id FROM files WHERE stable_id='material_syn_local')"
     )
-    conn.execute("UPDATE notes SET body='Local Note', updated_at='2026-05-01T00:00:00+00:00'")
     conn.execute(
-        "UPDATE wrong_questions SET mistake='Local Mistake', mastery='local'"
+        "UPDATE notes SET week_label='Revision Week', body='Local Note', "
+        "updated_at='2026-05-01T00:00:00+00:00'"
+    )
+    conn.execute(
+        "UPDATE wrong_questions SET week_label='Revision Week', "
+        "mistake='Local Mistake', mastery='local'"
     )
     conn.execute(
         "UPDATE study_sessions SET mode='local-mode', ended_at='2026-05-01T01:00:00+00:00'"
@@ -104,21 +130,40 @@ def user_state(conn: sqlite3.Connection) -> dict[str, Any]:
             "SELECT name, archived, sort_order FROM terms WHERE stable_id='term_syn_alpha'"
         ).fetchone()),
         "course": tuple(conn.execute(
-            "SELECT display_name, archived, active, sort_order, metadata_locked "
+            "SELECT course_code, display_name, archived, active, sort_order, metadata_locked "
             "FROM courses WHERE stable_id='course_syn_alpha'"
         ).fetchone()),
         "unit": tuple(conn.execute(
-            "SELECT week_label, kind, archived FROM weeks WHERE stable_id='unit_syn_alpha'"
+            "SELECT week_label, week_number, kind, archived "
+            "FROM weeks WHERE stable_id='unit_syn_alpha'"
         ).fetchone()),
         "file": tuple(conn.execute(
-            "SELECT display_name, category, exercise_type, metadata_locked "
+            "SELECT course_code, course_name, week_label, week_number, display_name, "
+            "category, exercise_type, metadata_locked "
             "FROM files WHERE stable_id='material_syn_local'"
         ).fetchone()),
+        "material": tuple(conn.execute(
+            "SELECT course_code, course_name, week_label, week_number, display_name, material_type "
+            "FROM materials WHERE stable_id='material_syn_local'"
+        ).fetchone()),
+        "chunks": [tuple(row) for row in conn.execute(
+            "SELECT course_code, week_label, category, exercise_type "
+            "FROM document_chunks WHERE file_id=(SELECT id FROM files WHERE stable_id='material_syn_local') "
+            "ORDER BY id"
+        ).fetchall()],
+        "questions": [tuple(row) for row in conn.execute(
+            "SELECT course_code, week_label, exercise_type FROM questions "
+            "WHERE file_id=(SELECT id FROM files WHERE stable_id='material_syn_local') ORDER BY id"
+        ).fetchall()],
+        "solutions": [tuple(row) for row in conn.execute(
+            "SELECT course_code, week_label, exercise_type FROM solutions "
+            "WHERE file_id=(SELECT id FROM files WHERE stable_id='material_syn_local') ORDER BY id"
+        ).fetchall()],
         "notes": [tuple(row) for row in conn.execute(
-            "SELECT body, created_at, updated_at FROM notes ORDER BY id"
+            "SELECT week_label, body, created_at, updated_at FROM notes ORDER BY id"
         ).fetchall()],
         "wrong": [tuple(row) for row in conn.execute(
-            "SELECT mistake, mastery, created_at FROM wrong_questions ORDER BY id"
+            "SELECT week_label, mistake, mastery, created_at FROM wrong_questions ORDER BY id"
         ).fetchall()],
         "sessions": [tuple(row) for row in conn.execute(
             "SELECT mode, ended_at, started_at FROM study_sessions ORDER BY id"
@@ -198,6 +243,14 @@ def main() -> int:
             conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             for table in ("sources", "materials", "material_versions", "blobs")
         )
+        content_identity = {
+            table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()]
+            for table in ("sources", "blobs", "material_versions")
+        }
+        remote_authority = {
+            table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()]
+            for table in ("course_offerings", "canvas_file_sync_baselines")
+        }
         plan_json = json.dumps(plan, ensure_ascii=False)
         conflicts = [item for item in actions(plan) if item["classification"] == "CONFLICT"]
         eligible = [item for item in conflicts if "RESTORE_BACKUP" in item.get("allowed_decisions", [])]
@@ -227,9 +280,15 @@ def main() -> int:
             "SELECT name FROM terms WHERE stable_id='term_syn_alpha'"
         ).fetchone()["name"] == "Local Term", failures)
         check("course_backup_value_applied", conn.execute(
+            "SELECT course_code, display_name FROM courses WHERE stable_id='course_syn_alpha'"
+        ).fetchone()["course_code"] == "SYN9200" and conn.execute(
             "SELECT display_name FROM courses WHERE stable_id='course_syn_alpha'"
         ).fetchone()["display_name"] == "My Synthetic Course", failures)
         check("unit_backup_value_applied", conn.execute(
+            "SELECT week_label, week_number, kind FROM weeks WHERE stable_id='unit_syn_alpha'"
+        ).fetchone()["week_label"] == "Module Alpha" and conn.execute(
+            "SELECT week_number FROM weeks WHERE stable_id='unit_syn_alpha'"
+        ).fetchone()["week_number"] is None and conn.execute(
             "SELECT kind FROM weeks WHERE stable_id='unit_syn_alpha'"
         ).fetchone()["kind"] == "module", failures)
         check("overlay_backup_value_applied", conn.execute(
@@ -250,9 +309,52 @@ def main() -> int:
             conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             for table in ("sources", "materials", "material_versions", "blobs")
         ), failures)
-        check("search_projection_consistent", conn.execute(
-            "SELECT category FROM files_fts WHERE rowid=(SELECT id FROM files WHERE stable_id='material_syn_local')"
-        ).fetchone()["category"] == "Lecture", failures)
+        check("course_and_unit_file_projection_synchronized", tuple(conn.execute(
+            "SELECT course_code, course_name, week_label, week_number FROM files "
+            "WHERE stable_id='material_syn_local'"
+        ).fetchone()) == ("SYN9200", "My Synthetic Course", "Module Alpha", None), failures)
+        check("course_and_unit_material_projection_synchronized", tuple(conn.execute(
+            "SELECT course_code, course_name, week_label, week_number FROM materials "
+            "WHERE stable_id='material_syn_local'"
+        ).fetchone()) == ("SYN9200", "My Synthetic Course", "Module Alpha", None), failures)
+        check("hierarchy_search_projection_consistent", tuple(conn.execute(
+            "SELECT course_code, week_label, category FROM files_fts "
+            "WHERE rowid=(SELECT id FROM files WHERE stable_id='material_syn_local')"
+        ).fetchone()) == ("SYN9200", "Module Alpha", "Lecture") and all(
+            tuple(row) == ("SYN9200", "Module Alpha")
+            for table in ("document_chunks", "questions", "solutions")
+            for row in conn.execute(
+                f"SELECT course_code, week_label FROM {table} "
+                "WHERE file_id=(SELECT id FROM files WHERE stable_id='material_syn_local')"
+            ).fetchall()
+        ), failures)
+        check("learning_unit_user_state_projection_synchronized", all(
+            row["week_label"] == "Module Alpha"
+            for table in ("notes", "wrong_questions")
+            for row in conn.execute(f"SELECT week_label FROM {table}").fetchall()
+        ), failures)
+        operation_pk = conn.execute(
+            "SELECT id FROM restore_operations WHERE operation_id=?",
+            (operation_id,),
+        ).fetchone()["id"]
+        changed_kinds = {
+            row["entity_kind"]
+            for row in conn.execute(
+                "SELECT entity_kind FROM restore_operation_changes WHERE restore_operation_id=?",
+                (operation_pk,),
+            ).fetchall()
+        }
+        check("hierarchy_changeset_covers_durable_graph", {
+            "course", "learning_unit", "file", "material", "note", "wrong_question"
+        }.issubset(changed_kinds), failures)
+        check("content_identity_unchanged", content_identity == {
+            table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()]
+            for table in ("sources", "blobs", "material_versions")
+        }, failures)
+        check("remote_authority_unchanged", remote_authority == {
+            table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()]
+            for table in ("course_offerings", "canvas_file_sync_baselines")
+        }, failures)
         check("original_file_untouched", hashlib.sha256(original_path.read_bytes()).hexdigest() == original_hash, failures)
         check("network_and_credentials_unused", blocked == {"canvas": 0, "openai": 0, "credentials": 0}, failures)
 
@@ -265,12 +367,63 @@ def main() -> int:
         check("undo_preview_persists_restart", restarted_undo.get("undo_available") is True, failures)
         restarted.apply_restore_undo(operation_id, restarted_undo["undo_revision"])
         check("undo_restores_exact_pre_restore_user_state", user_state(conn) == before, failures)
+        check("undo_restores_hierarchy_derived_projection", tuple(conn.execute(
+            "SELECT course_code, week_label, category FROM files_fts "
+            "WHERE rowid=(SELECT id FROM files WHERE stable_id='material_syn_local')"
+        ).fetchone()) == ("LOC9200", "Revision Week", "Reading"), failures)
         check("undo_preserves_original_file", hashlib.sha256(original_path.read_bytes()).hexdigest() == original_hash, failures)
         check("second_undo_rejected", expect_code(
             lambda: restarted.apply_restore_undo(operation_id, restarted_undo["undo_revision"]),
             "ALREADY_UNDONE",
         ), failures)
         conn.close()
+
+        hierarchy_only, hierarchy_conn, hierarchy_plan = prepare_target(
+            base, archive, "hierarchy-only", "f" * 32
+        )
+        hierarchy_before = user_state(hierarchy_conn)
+        hierarchy_decisions = decisions_for(hierarchy_plan, backup=True)
+        for decision in hierarchy_decisions:
+            if decision["dataset"] in {"material_overlays", "notes", "study_records"}:
+                decision["decision"] = "KEEP_LOCAL"
+        hierarchy_result = hierarchy_only.apply_staged_restore(
+            "f" * 32,
+            hierarchy_plan["plan_revision"],
+            hierarchy_decisions,
+        )
+        hierarchy_operation = hierarchy_result["applied"]["restore_operation_id"]
+        check(
+            "hierarchy_propagates_with_dependent_conflicts_kept_local",
+            tuple(hierarchy_conn.execute(
+                "SELECT course_code, course_name, week_label, week_number, display_name, category "
+                "FROM files WHERE stable_id='material_syn_local'"
+            ).fetchone())
+            == ("SYN9200", "My Synthetic Course", "Module Alpha", None, "Local Material", "Reading")
+            and all(
+                row["week_label"] == "Module Alpha" and row["body"] == "Local Note"
+                for row in hierarchy_conn.execute("SELECT week_label, body FROM notes").fetchall()
+            )
+            and all(
+                row["week_label"] == "Module Alpha" and row["mistake"] == "Local Mistake"
+                for row in hierarchy_conn.execute(
+                    "SELECT week_label, mistake FROM wrong_questions"
+                ).fetchall()
+            ),
+            failures,
+        )
+        hierarchy_undo = hierarchy_only.preview_restore_undo(hierarchy_operation)
+        hierarchy_conn.close()
+        hierarchy_only.apply_restore_undo(
+            hierarchy_operation,
+            hierarchy_undo["undo_revision"],
+        )
+        hierarchy_conn = hierarchy_only.connect_db()
+        check(
+            "hierarchy_only_undo_restores_exact_pre_restore_state",
+            user_state(hierarchy_conn) == hierarchy_before,
+            failures,
+        )
+        hierarchy_conn.close()
 
         rollback, rollback_conn, rollback_plan = prepare_target(base, archive, "rollback", "b" * 32)
         rollback_before = logical_dump(rollback_conn)
@@ -375,6 +528,127 @@ def main() -> int:
         )
         stale_undo_conn.close()
 
+        later_work, later_conn, later_plan = prepare_target(
+            base, archive, "later-dependent-work", "7" * 32
+        )
+        later_result = later_work.apply_staged_restore(
+            "7" * 32,
+            later_plan["plan_revision"],
+            decisions_for(later_plan, backup=True),
+        )
+        later_operation = later_result["applied"]["restore_operation_id"]
+        later_ready = later_work.preview_restore_undo(later_operation)
+        local_file = later_conn.execute(
+            "SELECT id, course_id FROM files WHERE stable_id='material_syn_local'"
+        ).fetchone()
+        later_conn.execute(
+            "INSERT INTO notes(target_type, target_id, course_id, week_label, body, created_at, updated_at) "
+            "VALUES ('file', ?, ?, 'Module Alpha', 'Later ordinary user work', ?, ?)",
+            (local_file["id"], local_file["course_id"], "2026-06-01T00:00:00+00:00", "2026-06-01T00:00:00+00:00"),
+        )
+        later_conn.commit()
+        later_before = logical_dump(later_conn)
+        later_blocked = later_work.preview_restore_undo(later_operation)
+        check(
+            "later_hierarchy_work_blocks_undo_without_partial_rollback",
+            later_ready.get("undo_available") is True
+            and later_blocked.get("reason") == "DEPENDENCY_CHANGED"
+            and expect_code(
+                lambda: later_work.apply_restore_undo(
+                    later_operation,
+                    later_ready["undo_revision"],
+                ),
+                "DEPENDENCY_CHANGED",
+            )
+            and logical_dump(later_conn) == later_before,
+            failures,
+        )
+        later_conn.close()
+
+        cross_course = load_server(base / "cross-course-unit")
+        cross_conn = seed_state(cross_course, base / "cross-course-unit", 1_100, reverse_insert_order=True)
+        seed_search_metadata(cross_conn)
+        term_id = int(cross_conn.execute(
+            "SELECT id FROM terms WHERE stable_id='term_syn_alpha'"
+        ).fetchone()["id"])
+        cross_conn.execute(
+            """
+            INSERT INTO courses(stable_id, code, course_code, name, display_name,
+              folder_name, path, source_folder, source_kind, term_id, archived, active,
+              sort_order, metadata_locked, created_at, updated_at)
+            VALUES ('course_syn_other', 'OTHER1000', 'OTHER1000', 'Other Course',
+              'Other Course', 'other-course', '', '', 'managed', ?, 0, 1, 0, 1, ?, ?)
+            """,
+            (term_id, "2026-05-01T00:00:00+00:00", "2026-05-01T00:00:00+00:00"),
+        )
+        other_course_id = int(cross_conn.execute(
+            "SELECT id FROM courses WHERE stable_id='course_syn_other'"
+        ).fetchone()["id"])
+        cross_conn.execute(
+            "UPDATE weeks SET course_id=? WHERE stable_id='unit_syn_alpha'",
+            (other_course_id,),
+        )
+        cross_conn.commit()
+        stage(cross_course, archive, "6" * 32)
+        cross_plan = cross_course.preview_staged_restore("6" * 32)
+        unit_action = next(
+            item for item in actions(cross_plan)
+            if item["dataset"] == "learning_units" and item["stable_id"] == "unit_syn_alpha"
+        )
+        cross_before = logical_dump(cross_conn)
+        invalid_cross = decisions_for(cross_plan, backup=True)
+        next(
+            item for item in invalid_cross
+            if item["dataset"] == "learning_units" and item["stable_id"] == "unit_syn_alpha"
+        )["decision"] = "RESTORE_BACKUP"
+        check(
+            "cross_course_learning_unit_is_keep_local_only",
+            unit_action.get("allowed_decisions") == ["KEEP_LOCAL"]
+            and unit_action.get("reason") == "cross_course_move_requires_keep_local",
+            failures,
+        )
+        check(
+            "cross_course_learning_unit_backup_override_rejected",
+            expect_code(
+                lambda: cross_course.apply_staged_restore(
+                    "6" * 32,
+                    cross_plan["plan_revision"],
+                    invalid_cross,
+                ),
+                "unsupported_restore_decision",
+            )
+            and logical_dump(cross_conn) == cross_before
+            and cross_conn.execute("SELECT COUNT(*) FROM restore_operations").fetchone()[0] == 0,
+            failures,
+        )
+        cross_conn.close()
+
+        remote_overlay = load_server(base / "remote-overlay")
+        remote_conn = seed_state(remote_overlay, base / "remote-overlay", 1_300, reverse_insert_order=True)
+        remote_conn.execute(
+            "UPDATE courses SET name='Local Canvas Label', display_name='Local Canvas Label', "
+            "metadata_locked=1 WHERE stable_id='course_syn_remote'"
+        )
+        remote_conn.commit()
+        authority_before = [
+            tuple(row) for row in remote_conn.execute("SELECT * FROM course_offerings ORDER BY id").fetchall()
+        ]
+        stage(remote_overlay, archive, "5" * 32)
+        remote_plan = remote_overlay.preview_staged_restore("5" * 32)
+        remote_overlay.apply_staged_restore(
+            "5" * 32,
+            remote_plan["plan_revision"],
+            decisions_for(remote_plan, backup=True),
+        )
+        check(
+            "remote_overlay_restore_preserves_authoritative_canvas_facts",
+            authority_before == [
+                tuple(row) for row in remote_conn.execute("SELECT * FROM course_offerings ORDER BY id").fetchall()
+            ],
+            failures,
+        )
+        remote_conn.close()
+
         archive_race, race_conn, race_plan = prepare_target(base, archive, "archive-race", "d" * 32)
         archive_race.staged_restore_path("d" * 32).write_bytes(b"changed archive")
         race_before = logical_dump(race_conn)
@@ -431,6 +705,7 @@ def main() -> int:
         )
         mixed_source_hash = hashlib.sha256(mixed_original.read_bytes()).hexdigest()
         mixed_before = user_state(mixed_conn)
+        mixed_conn.close()
         mixed_result = mixed_server.apply_staged_restore(
             mixed_request["restore_id"],
             mixed_request["expected_plan_revision"],
@@ -439,6 +714,7 @@ def main() -> int:
         )
         mixed_applied = mixed_result["applied"]
         mixed_operation = mixed_applied["restore_operation_id"]
+        mixed_conn = mixed_server.connect_db()
         check(
             "mixed_restore_contains_all_action_families",
             mixed_applied["created"] >= 1
@@ -454,9 +730,25 @@ def main() -> int:
             mixed_conn.execute("SELECT COUNT(*) FROM restore_operations").fetchone()[0] == 1,
             failures,
         )
+        mixed_conn.close()
         mixed_undo = mixed_server.preview_restore_undo(mixed_operation)
         mixed_server.apply_restore_undo(mixed_operation, mixed_undo["undo_revision"])
+        mixed_conn = mixed_server.connect_db()
         check("mixed_restore_undo_restores_user_state", user_state(mixed_conn) == mixed_before, failures)
+        mixed_file_projection = mixed_conn.execute(
+            "SELECT course_code, week_label, category FROM files "
+            "WHERE stable_id='material_syn_local'"
+        ).fetchone()
+        mixed_fts_projection = mixed_conn.execute(
+            "SELECT course_code, week_label, category FROM files_fts "
+            "WHERE rowid=(SELECT id FROM files WHERE stable_id='material_syn_local')"
+        ).fetchone()
+        check(
+            "mixed_restore_undo_derived_projection_consistent",
+            mixed_fts_projection is None
+            or tuple(mixed_fts_projection) == tuple(mixed_file_projection),
+            failures,
+        )
         check(
             "mixed_restore_undo_preserves_original",
             hashlib.sha256(mixed_original.read_bytes()).hexdigest() == mixed_source_hash,
@@ -469,27 +761,30 @@ def main() -> int:
         )
         mixed_fail_hash = hashlib.sha256(mixed_fail_original.read_bytes()).hexdigest()
         mixed_fail_before = logical_dump(mixed_fail_conn)
+        mixed_fail_conn.close()
         mixed_descriptor = mixed_fail.restore_relink_descriptor_path(
             mixed_fail_request["relinks"][0]["relink_id"]
         )
+        mixed_failed = expect_code(
+            lambda: mixed_fail.apply_staged_restore(
+                mixed_fail_request["restore_id"],
+                mixed_fail_request["expected_plan_revision"],
+                mixed_fail_request["decisions"],
+                mixed_fail_request["relinks"],
+                failure_point="after_restore_backup",
+            ),
+            "synthetic_restore_failure_after_restore_backup",
+        )
+        mixed_fail_check = mixed_fail.connect_db()
         check(
             "mixed_backup_create_relink_failure_rolls_back",
-            expect_code(
-                lambda: mixed_fail.apply_staged_restore(
-                    mixed_fail_request["restore_id"],
-                    mixed_fail_request["expected_plan_revision"],
-                    mixed_fail_request["decisions"],
-                    mixed_fail_request["relinks"],
-                    failure_point="after_restore_backup",
-                ),
-                "synthetic_restore_failure_after_restore_backup",
-            )
-            and logical_dump(mixed_fail_conn) == mixed_fail_before
+            mixed_failed
+            and logical_dump(mixed_fail_check) == mixed_fail_before
             and mixed_descriptor.exists()
             and hashlib.sha256(mixed_fail_original.read_bytes()).hexdigest() == mixed_fail_hash,
             failures,
         )
-        mixed_fail_conn.close()
+        mixed_fail_check.close()
 
         frontend = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
         catalog = (ROOT / "static" / "i18n" / "catalog.js").read_text(encoding="utf-8")
