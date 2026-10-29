@@ -85,7 +85,9 @@ clearly synthetic Demo fixtures.
 | Study | Teacher-provided question extraction | EXISTS | Preserve |
 | Study | Wrong-question records | PARTIAL | P1 |
 | Study | Structured study sessions | PARTIAL | P1 |
-| Study | Manual flashcards and spaced repetition | MISSING | P1 |
+| Study | Per-Material progress and explicit review queue | IMPLEMENTED | Stable Material identity; deterministic local queue |
+| Study | FSRS scheduling | IMPLEMENTED | `fsrs` 6.3.2 scheduler only; no optimizer extras |
+| Study | Manual flashcard authoring | MISSING | P1 |
 | AI | Optional source-grounded Ask AI | EXISTS | Preserve |
 | AI | Explicit multi-source selection | PARTIAL | P2 |
 | AI | Keychain BYOK | MISSING | DEFER until P0 stabilizes |
@@ -147,11 +149,11 @@ The migration is additive and idempotent:
 
 ## Backup And Restore Design
 
-The implemented `studyhub-backup-v1` exporter creates a versioned archive with
+The implemented `studyhub-backup-v2` exporter creates a versioned archive with
 a schema manifest and canonical portable JSON for allowlisted user-owned
 course/learning-unit overlays, material metadata, notes, stars, study state,
 local source descriptors, and What's New seen acknowledgements. AI history is
-an explicitly empty v1 member because current conversations do not yet have
+an explicitly empty member because current conversations do not yet have
 durable portable identity. The archive excludes original study files, Canvas-retained bytes,
 remote/provider facts, extracted text, previews, runtime databases,
 credentials, provider file/vector IDs, logs, and absolute paths. The writer
@@ -160,7 +162,7 @@ mutate the database or require network access. The exact contract is
 [Backup Export Format](BACKUP_FORMAT.md).
 
 Read-only restore validation and preview are implemented. The desktop app uses
-a native picker and profile-private staging copy, then reuses the strict v1
+a native picker and profile-private staging copy, then reuses the strict
 validator on one bounded immutable archive snapshot and a query-only database
 connection to produce a deterministic grouped plan. Stable IDs drive entity
 reconciliation; explicitly referenced
@@ -172,7 +174,7 @@ The plan revision privately binds relevant current semantic values and
 duplicate-capable record multiplicity, without including ignored timestamps,
 SQLite row IDs, runtime roots, local paths, or those private values in the API.
 
-Transactional safe Restore Apply is implemented for the supported v1
+Transactional safe Restore Apply is implemented for the supported versioned
 user-owned records. It revalidates one immutable snapshot, recomputes under
 `BEGIN IMMEDIATE`, requires the expected revision and every narrow decision,
 and commits all writes together. Eligible user-owned conflicts support explicit
@@ -194,7 +196,7 @@ discoverable after restart and can be previewed and atomically undone while the
 recorded postimages and dependency gates remain valid. Redo is not implemented.
 
 Both Preview and Apply treat archives as untrusted and use the same strict
-semantic v1 validator before planning. A restored material overlay atomically
+semantic validator before planning. A restored material overlay atomically
 keeps the legacy compatibility row, existing Material projection, and derived
 local search metadata consistent. Relink may create one missing canonical
 Source/Blob/MaterialVersion graph, but never changes source bytes or remote
