@@ -301,6 +301,19 @@ RESTORE_CHANGE_ENTITY_KINDS = (
     "academic_change_event_state",
     "text_cache_artifact",
 )
+RESTORE_OPERATION_CHANGE_COLUMNS = (
+    "id",
+    "restore_operation_id",
+    "sequence",
+    "change_kind",
+    "entity_kind",
+    "locator_json",
+    "before_json",
+    "after_json",
+    "before_token",
+    "after_token",
+    "metadata_json",
+)
 RESTORE_UNDO_INSERT_DELETE_ORDER = (
     "academic_change_event_state",
     "note",
@@ -2549,9 +2562,28 @@ def phase2_academic_change_journal_migration(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
-def phase2_restore_operation_changeset_migration(conn: sqlite3.Connection) -> None:
+def restore_operation_changes_table_ddl(table_name: str) -> str:
     change_kinds = ", ".join(f"'{value}'" for value in RESTORE_CHANGE_KINDS)
     entity_kinds = ", ".join(f"'{value}'" for value in RESTORE_CHANGE_ENTITY_KINDS)
+    return f"""
+        CREATE TABLE {table_name} (
+          id INTEGER PRIMARY KEY,
+          restore_operation_id INTEGER NOT NULL REFERENCES restore_operations(id) ON DELETE RESTRICT,
+          sequence INTEGER NOT NULL,
+          change_kind TEXT NOT NULL CHECK(change_kind IN ({change_kinds})),
+          entity_kind TEXT NOT NULL CHECK(entity_kind IN ({entity_kinds})),
+          locator_json TEXT NOT NULL,
+          before_json TEXT,
+          after_json TEXT,
+          before_token TEXT NOT NULL,
+          after_token TEXT NOT NULL,
+          metadata_json TEXT NOT NULL DEFAULT '{{}}',
+          UNIQUE(restore_operation_id, sequence)
+        )
+    """
+
+
+def phase2_restore_operation_changeset_migration(conn: sqlite3.Connection) -> None:
     statements = (
         """
         CREATE TABLE IF NOT EXISTS restore_operations (
@@ -2572,22 +2604,11 @@ def phase2_restore_operation_changeset_migration(conn: sqlite3.Connection) -> No
           updated_at TEXT NOT NULL
         )
         """,
-        f"""
-        CREATE TABLE IF NOT EXISTS restore_operation_changes (
-          id INTEGER PRIMARY KEY,
-          restore_operation_id INTEGER NOT NULL REFERENCES restore_operations(id) ON DELETE RESTRICT,
-          sequence INTEGER NOT NULL,
-          change_kind TEXT NOT NULL CHECK(change_kind IN ({change_kinds})),
-          entity_kind TEXT NOT NULL CHECK(entity_kind IN ({entity_kinds})),
-          locator_json TEXT NOT NULL,
-          before_json TEXT,
-          after_json TEXT,
-          before_token TEXT NOT NULL,
-          after_token TEXT NOT NULL,
-          metadata_json TEXT NOT NULL DEFAULT '{{}}',
-          UNIQUE(restore_operation_id, sequence)
-        )
-        """,
+        restore_operation_changes_table_ddl("restore_operation_changes").replace(
+            "CREATE TABLE restore_operation_changes",
+            "CREATE TABLE IF NOT EXISTS restore_operation_changes",
+            1,
+        ),
         "CREATE INDEX IF NOT EXISTS idx_restore_operations_status ON restore_operations(status, committed_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_restore_operation_changes_operation ON restore_operation_changes(restore_operation_id, sequence)",
     )
@@ -2595,7 +2616,44 @@ def phase2_restore_operation_changeset_migration(conn: sqlite3.Connection) -> No
         conn.execute(statement)
 
 
+def upgrade_restore_operation_changes_entity_kinds(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='restore_operation_changes'"
+    ).fetchone()
+    if row is None or not row["sql"]:
+        raise RuntimeError("Restore journal schema is missing")
+    existing_sql = str(row["sql"])
+    if all(f"'{entity_kind}'" in existing_sql for entity_kind in RESTORE_CHANGE_ENTITY_KINDS):
+        return
+
+    temporary_table = "restore_operation_changes_v7"
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (temporary_table,)
+    ).fetchone():
+        raise RuntimeError("Restore journal migration staging table already exists")
+
+    columns = ", ".join(RESTORE_OPERATION_CHANGE_COLUMNS)
+    original_count = int(conn.execute("SELECT COUNT(*) FROM restore_operation_changes").fetchone()[0])
+    conn.execute(restore_operation_changes_table_ddl(temporary_table))
+    conn.execute(
+        f"INSERT INTO {temporary_table} ({columns}) SELECT {columns} FROM restore_operation_changes"
+    )
+    copied_count = int(conn.execute(f"SELECT COUNT(*) FROM {temporary_table}").fetchone()[0])
+    if copied_count != original_count:
+        raise RuntimeError("Restore journal migration did not preserve every change row")
+
+    conn.execute("DROP TABLE restore_operation_changes")
+    conn.execute(f"ALTER TABLE {temporary_table} RENAME TO restore_operation_changes")
+    conn.execute(
+        "CREATE INDEX idx_restore_operation_changes_operation "
+        "ON restore_operation_changes(restore_operation_id, sequence)"
+    )
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("Restore journal migration failed foreign-key validation")
+
+
 def phase3_study_engine_migration(conn: sqlite3.Connection) -> None:
+    upgrade_restore_operation_changes_entity_kinds(conn)
     statements = (
         """
         CREATE TABLE IF NOT EXISTS material_study_state (
