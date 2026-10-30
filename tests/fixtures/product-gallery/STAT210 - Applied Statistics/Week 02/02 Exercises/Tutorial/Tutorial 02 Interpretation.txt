@@ -1,0 +1,8 @@
+STAT210 Synthetic Tutorial 02
+
+Q1. A fitted slope is 1.8 study points per additional hour in a fictional dataset. Interpret the slope without claiming causation.
+
+Official Solution
+The fitted model associates each additional hour with an average increase of 1.8 points in the response for this synthetic sample. The statement is associational, not causal.
+
+All content is synthetic public test material.

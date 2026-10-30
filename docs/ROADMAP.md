@@ -9,8 +9,9 @@ TARGET items are not shipped features. Architecture and donor rules are in the
 ## Current Product Baseline
 
 The current product is a local-first desktop study workspace with course and
-week organization, local preview/search, notes and study state, source-grounded
-optional AI, a read-only MCP surface, and an Apple Silicon unsigned beta.
+week organization, local preview/search, notes, persistent per-Material study
+state, deterministic local FSRS review, source-grounded optional AI, a
+read-only MCP surface, and an Apple Silicon unsigned beta.
 
 For the current local-library workflow, user-imported originals remain
 user-controlled and authoritative for those user-owned sources. The current
@@ -48,8 +49,9 @@ enhancement and is not a V1 completion blocker.
 
 - harden stable academic identity, provenance, and user-overlay behavior
 - clarify Source/Blob/Material/MaterialVersion boundaries incrementally
-- improve study sessions, wrong-question review, anchored notes, and manual
-  review-item workflows without inventing teacher content
+- extend the implemented Study Engine V1 with evidence-driven session,
+  wrong-question, anchored-note, and manual review-item improvements without
+  inventing teacher content
 - improve extraction and graceful capability discovery for PDFs, Office files,
   OCR, and workbook-aware reading
 - extend the implemented Canvas connector, selected-course file preview, and
@@ -59,7 +61,7 @@ enhancement and is not a V1 completion blocker.
   when real use demonstrates a need; acknowledgement remains explicit
 - refine search ranking, filtering, and source navigation
 - complete human keyboard and VoiceOver validation
-- keep the implemented privacy-safe v1 export, zero-mutation restore/relink
+- keep the implemented privacy-safe versioned export, zero-mutation restore/relink
   preview, stale-checked transactional Apply, exact source relink, explicit
   eligible user-owned backup conflict decisions, private Restore journal,
   latest-operation recovery, and atomic Undo stable; Redo remains a separate
@@ -89,13 +91,15 @@ must not be bundled into one change.
 
 - PDF rendering direction: PDF.js behind StudyHub viewer semantics.
 - Rich-text direction: Tiptap with StudyHub academic/source-reference behavior.
-- Review scheduling direction: `fsrs-rs` / FSRS behind a ReviewScheduler.
+- Review scheduling: implemented with `fsrs` 6.3.2 (`py-fsrs` upstream) behind
+  StudyHub's `ReviewScheduler`; optimizer training remains out of scope.
 - Canvas authority: official Canvas API behind a StudyHub CanvasConnector.
 - Persistent background jobs: open decision; Effectum and Apalis SQLite remain
   benchmark candidates. Do not build a custom queue in the meantime.
 
-These are target decisions or candidates, not current installed dependencies.
-The canonical registry and licensing rules are in the constitution.
+Items explicitly marked implemented are current dependencies; the remaining
+entries are target decisions or candidates. The canonical registry and
+licensing rules are in the constitution.
 
 ## Explicitly Out Of Scope For V1
 

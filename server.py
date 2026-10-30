@@ -9,6 +9,7 @@ import hashlib
 import html
 import io
 import json
+import math
 import mimetypes
 import os
 import ipaddress
@@ -37,6 +38,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 from xml.etree import ElementTree
+
+from fsrs import Card, Rating, Scheduler, State
 
 try:
     import certifi
@@ -194,7 +197,8 @@ MAX_JSON_BODY_SIZE = int(os.environ.get("MAX_JSON_BODY_SIZE", str(512 * 1024)))
 MAX_MCP_BODY_SIZE = int(os.environ.get("MAX_MCP_BODY_SIZE", str(512 * 1024)))
 MAX_UPLOAD_FILE_SIZE = int(os.environ.get("MAX_UPLOAD_FILE_SIZE", str(50 * 1024 * 1024)))
 MAX_UPLOAD_REQUEST_SIZE = int(os.environ.get("MAX_UPLOAD_REQUEST_SIZE", str(60 * 1024 * 1024)))
-BACKUP_FORMAT_VERSION = 1
+BACKUP_FORMAT_VERSION = 2
+BACKUP_SUPPORTED_FORMAT_VERSIONS = frozenset({1, 2})
 BACKUP_FORMAT_NAME = "studyhub-backup"
 BACKUP_MAX_ENTRIES = 32
 BACKUP_MAX_ENTRY_BYTES = 10 * 1024 * 1024
@@ -293,8 +297,22 @@ RESTORE_CHANGE_ENTITY_KINDS = (
     "wrong_question",
     "bookmark",
     "study_session",
+    "material_study_state",
     "academic_change_event_state",
     "text_cache_artifact",
+)
+RESTORE_OPERATION_CHANGE_COLUMNS = (
+    "id",
+    "restore_operation_id",
+    "sequence",
+    "change_kind",
+    "entity_kind",
+    "locator_json",
+    "before_json",
+    "after_json",
+    "before_token",
+    "after_token",
+    "metadata_json",
 )
 RESTORE_UNDO_INSERT_DELETE_ORDER = (
     "academic_change_event_state",
@@ -304,6 +322,7 @@ RESTORE_UNDO_INSERT_DELETE_ORDER = (
     "wrong_question",
     "bookmark",
     "study_session",
+    "material_study_state",
     "material_version",
     "material",
     "source",
@@ -331,6 +350,7 @@ RESTORE_UNDO_FOREIGN_KEYS = {
         ("legacy_file_id", "files", "id"),
         ("legacy_file_version_id", "file_versions", "id"),
     ),
+    "material_study_state": (("material_id", "materials", "id"),),
     "academic_change_event_state": (("event_id", "academic_change_events", "id"),),
 }
 BACKUP_REQUIRED_SCHEMA: dict[str, set[str]] = {
@@ -362,6 +382,11 @@ BACKUP_REQUIRED_SCHEMA: dict[str, set[str]] = {
     },
     "bookmarks": {"target_type", "target_id", "label", "created_at"},
     "study_sessions": {"course_id", "week_label", "mode", "started_at", "ended_at"},
+    "material_study_state": {
+        "material_id", "progress_state", "needs_review", "first_started_at", "completed_at",
+        "last_studied_at", "fsrs_state", "fsrs_step", "fsrs_stability", "fsrs_difficulty",
+        "fsrs_due_at", "fsrs_last_review_at", "created_at", "updated_at",
+    },
     "academic_change_events": {"id", "stable_id"},
     "academic_change_event_state": {"event_id", "seen_at", "updated_at"},
 }
@@ -1451,6 +1476,16 @@ def public_file(row: sqlite3.Row | dict[str, Any], include_text: str | None = No
         "ai_index_error",
         "star_id",
         "rank",
+        "material_id",
+        "progress_state",
+        "needs_review",
+        "first_started_at",
+        "completed_at",
+        "last_studied_at",
+        "fsrs_due_at",
+        "fsrs_last_review_at",
+        "review_due",
+        "queue_reason",
     )
     data = {key: row[key] for key in allowed if key in row.keys()}
     if "course_code" in data:
@@ -2527,9 +2562,28 @@ def phase2_academic_change_journal_migration(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
-def phase2_restore_operation_changeset_migration(conn: sqlite3.Connection) -> None:
+def restore_operation_changes_table_ddl(table_name: str) -> str:
     change_kinds = ", ".join(f"'{value}'" for value in RESTORE_CHANGE_KINDS)
     entity_kinds = ", ".join(f"'{value}'" for value in RESTORE_CHANGE_ENTITY_KINDS)
+    return f"""
+        CREATE TABLE {table_name} (
+          id INTEGER PRIMARY KEY,
+          restore_operation_id INTEGER NOT NULL REFERENCES restore_operations(id) ON DELETE RESTRICT,
+          sequence INTEGER NOT NULL,
+          change_kind TEXT NOT NULL CHECK(change_kind IN ({change_kinds})),
+          entity_kind TEXT NOT NULL CHECK(entity_kind IN ({entity_kinds})),
+          locator_json TEXT NOT NULL,
+          before_json TEXT,
+          after_json TEXT,
+          before_token TEXT NOT NULL,
+          after_token TEXT NOT NULL,
+          metadata_json TEXT NOT NULL DEFAULT '{{}}',
+          UNIQUE(restore_operation_id, sequence)
+        )
+    """
+
+
+def phase2_restore_operation_changeset_migration(conn: sqlite3.Connection) -> None:
     statements = (
         """
         CREATE TABLE IF NOT EXISTS restore_operations (
@@ -2550,24 +2604,77 @@ def phase2_restore_operation_changeset_migration(conn: sqlite3.Connection) -> No
           updated_at TEXT NOT NULL
         )
         """,
-        f"""
-        CREATE TABLE IF NOT EXISTS restore_operation_changes (
-          id INTEGER PRIMARY KEY,
-          restore_operation_id INTEGER NOT NULL REFERENCES restore_operations(id) ON DELETE RESTRICT,
-          sequence INTEGER NOT NULL,
-          change_kind TEXT NOT NULL CHECK(change_kind IN ({change_kinds})),
-          entity_kind TEXT NOT NULL CHECK(entity_kind IN ({entity_kinds})),
-          locator_json TEXT NOT NULL,
-          before_json TEXT,
-          after_json TEXT,
-          before_token TEXT NOT NULL,
-          after_token TEXT NOT NULL,
-          metadata_json TEXT NOT NULL DEFAULT '{{}}',
-          UNIQUE(restore_operation_id, sequence)
-        )
-        """,
+        restore_operation_changes_table_ddl("restore_operation_changes").replace(
+            "CREATE TABLE restore_operation_changes",
+            "CREATE TABLE IF NOT EXISTS restore_operation_changes",
+            1,
+        ),
         "CREATE INDEX IF NOT EXISTS idx_restore_operations_status ON restore_operations(status, committed_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_restore_operation_changes_operation ON restore_operation_changes(restore_operation_id, sequence)",
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+
+def upgrade_restore_operation_changes_entity_kinds(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='restore_operation_changes'"
+    ).fetchone()
+    if row is None or not row["sql"]:
+        raise RuntimeError("Restore journal schema is missing")
+    existing_sql = str(row["sql"])
+    if all(f"'{entity_kind}'" in existing_sql for entity_kind in RESTORE_CHANGE_ENTITY_KINDS):
+        return
+
+    temporary_table = "restore_operation_changes_v7"
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (temporary_table,)
+    ).fetchone():
+        raise RuntimeError("Restore journal migration staging table already exists")
+
+    columns = ", ".join(RESTORE_OPERATION_CHANGE_COLUMNS)
+    original_count = int(conn.execute("SELECT COUNT(*) FROM restore_operation_changes").fetchone()[0])
+    conn.execute(restore_operation_changes_table_ddl(temporary_table))
+    conn.execute(
+        f"INSERT INTO {temporary_table} ({columns}) SELECT {columns} FROM restore_operation_changes"
+    )
+    copied_count = int(conn.execute(f"SELECT COUNT(*) FROM {temporary_table}").fetchone()[0])
+    if copied_count != original_count:
+        raise RuntimeError("Restore journal migration did not preserve every change row")
+
+    conn.execute("DROP TABLE restore_operation_changes")
+    conn.execute(f"ALTER TABLE {temporary_table} RENAME TO restore_operation_changes")
+    conn.execute(
+        "CREATE INDEX idx_restore_operation_changes_operation "
+        "ON restore_operation_changes(restore_operation_id, sequence)"
+    )
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise RuntimeError("Restore journal migration failed foreign-key validation")
+
+
+def phase3_study_engine_migration(conn: sqlite3.Connection) -> None:
+    upgrade_restore_operation_changes_entity_kinds(conn)
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS material_study_state (
+          material_id INTEGER PRIMARY KEY REFERENCES materials(id) ON DELETE CASCADE,
+          progress_state TEXT NOT NULL DEFAULT 'NOT_STARTED'
+            CHECK(progress_state IN ('NOT_STARTED', 'IN_PROGRESS', 'COMPLETED')),
+          needs_review INTEGER NOT NULL DEFAULT 0 CHECK(needs_review IN (0, 1)),
+          first_started_at TEXT,
+          completed_at TEXT,
+          last_studied_at TEXT,
+          fsrs_state INTEGER CHECK(fsrs_state IS NULL OR fsrs_state IN (1, 2, 3)),
+          fsrs_step INTEGER,
+          fsrs_stability REAL,
+          fsrs_difficulty REAL,
+          fsrs_due_at TEXT,
+          fsrs_last_review_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_material_study_queue ON material_study_state(fsrs_due_at, needs_review, progress_state, last_studied_at)",
     )
     for statement in statements:
         conn.execute(statement)
@@ -2580,6 +2687,7 @@ SCHEMA_MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], 
     (4, "phase2_canvas_file_acquisition", phase2_canvas_file_acquisition_migration),
     (5, "phase2_academic_change_journal", phase2_academic_change_journal_migration),
     (6, "phase2_restore_operation_changeset", phase2_restore_operation_changeset_migration),
+    (7, "phase3_study_engine", phase3_study_engine_migration),
 )
 
 
@@ -4321,6 +4429,41 @@ def project_user_owned_backup(
             private_entity_kind="study_session",
         )
     )
+    for row in conn.execute(
+        """
+        SELECT state.*, material.stable_id AS material_ref
+        FROM material_study_state state
+        JOIN materials material ON material.id=state.material_id
+        ORDER BY material.stable_id
+        """
+    ).fetchall():
+        material_ref = str(row["material_ref"])
+        stable_id = backup_record_id("material_study", material_ref)
+        study_records.append(
+            {
+                "stable_id": stable_id,
+                "record_type": "material_study_state",
+                "material_ref": material_ref,
+                "progress_state": str(row["progress_state"]),
+                "needs_review": bool(row["needs_review"]),
+                "first_started_at": row["first_started_at"],
+                "completed_at": row["completed_at"],
+                "last_studied_at": row["last_studied_at"],
+                "fsrs_state": row["fsrs_state"],
+                "fsrs_step": row["fsrs_step"],
+                "fsrs_stability": row["fsrs_stability"],
+                "fsrs_difficulty": row["fsrs_difficulty"],
+                "fsrs_due_at": row["fsrs_due_at"],
+                "fsrs_last_review_at": row["fsrs_last_review_at"],
+                "created_at": str(row["created_at"]),
+                "updated_at": str(row["updated_at"]),
+            }
+        )
+        if private_targets is not None:
+            private_targets[("study_records", stable_id)] = (
+                "material_study_state",
+                int(row["material_id"]),
+            )
     datasets["data/study_records.json"] = study_records
 
     # Current AI rows have no portable immutable identity; v1 keeps the member empty.
@@ -4391,7 +4534,7 @@ BACKUP_RECORD_FIELDS: dict[str, set[str]] = {
     "data/stars.json": {"stable_id", "target_type", "target_ref", "created_at"},
     "data/whats_new_state.json": {"stable_id", "event_stable_id", "seen_at", "updated_at"},
 }
-BACKUP_STUDY_RECORD_FIELDS: dict[str, set[str]] = {
+BACKUP_STUDY_RECORD_FIELDS_V1: dict[str, set[str]] = {
     "attempt": {"stable_id", "record_type", "material_ref", "answer_text", "result", "created_at"},
     "wrong_question_state": {
         "stable_id", "record_type", "course_ref", "material_ref", "learning_unit_label",
@@ -4400,6 +4543,15 @@ BACKUP_STUDY_RECORD_FIELDS: dict[str, set[str]] = {
     "bookmark": {"stable_id", "record_type", "target_ref", "label", "created_at"},
     "study_session": {
         "stable_id", "record_type", "course_ref", "learning_unit_label", "mode", "started_at", "ended_at",
+    },
+}
+BACKUP_STUDY_RECORD_FIELDS: dict[str, set[str]] = {
+    **BACKUP_STUDY_RECORD_FIELDS_V1,
+    "material_study_state": {
+        "stable_id", "record_type", "material_ref", "progress_state", "needs_review",
+        "first_started_at", "completed_at", "last_studied_at", "fsrs_state", "fsrs_step",
+        "fsrs_stability", "fsrs_difficulty", "fsrs_due_at", "fsrs_last_review_at",
+        "created_at", "updated_at",
     },
 }
 
@@ -4443,6 +4595,13 @@ def validate_backup_int(
         raise ValueError("Backup record integer value is invalid")
 
 
+def validate_backup_number(value: Any, *, nullable: bool = False) -> None:
+    if value is None and nullable:
+        return
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        raise ValueError("Backup record numeric value is invalid")
+
+
 def validate_backup_stable_id(value: Any, *, nullable: bool = False) -> None:
     if value is None and nullable:
         return
@@ -4455,7 +4614,7 @@ def validate_backup_timestamp(value: Any, *, nullable: bool = False) -> None:
 
 
 def validate_backup_record_values(member: str, record: dict[str, Any]) -> None:
-    """Validate the semantic studyhub-backup-v1 contract without coercion."""
+    """Validate the semantic versioned StudyHub backup contract without coercion."""
     validate_backup_stable_id(record["stable_id"])
 
     if member == "data/terms.json":
@@ -4549,7 +4708,23 @@ def validate_backup_record_values(member: str, record: dict[str, Any]) -> None:
     record_type = record["record_type"]
     if not isinstance(record_type, str) or record_type not in BACKUP_STUDY_RECORD_FIELDS:
         raise ValueError("Backup study record type is invalid")
-    if record_type == "attempt":
+    if record_type == "material_study_state":
+        validate_backup_stable_id(record["material_ref"])
+        if record["progress_state"] not in STUDY_PROGRESS_STATES:
+            raise ValueError("Backup study progress state is invalid")
+        validate_backup_bool(record["needs_review"])
+        for field in (
+            "first_started_at", "completed_at", "last_studied_at", "fsrs_due_at",
+            "fsrs_last_review_at",
+        ):
+            validate_backup_timestamp(record[field], nullable=True)
+        validate_backup_int(record["fsrs_state"], nullable=True, minimum=1, maximum=3)
+        validate_backup_int(record["fsrs_step"], nullable=True, maximum=1_000_000)
+        validate_backup_number(record["fsrs_stability"], nullable=True)
+        validate_backup_number(record["fsrs_difficulty"], nullable=True)
+        validate_backup_timestamp(record["created_at"])
+        validate_backup_timestamp(record["updated_at"])
+    elif record_type == "attempt":
         validate_backup_stable_id(record["material_ref"], nullable=True)
         validate_backup_text(record["answer_text"], limit=BACKUP_ANSWER_TEXT_MAX, multiline=True)
         validate_backup_text(record["result"], limit=BACKUP_RESULT_MAX)
@@ -4577,14 +4752,15 @@ def validate_backup_record_values(member: str, record: dict[str, Any]) -> None:
         validate_backup_timestamp(record["ended_at"], nullable=True)
 
 
-def validate_backup_record_schema(member: str, record: Any) -> None:
+def validate_backup_record_schema(member: str, record: Any, format_version: int) -> None:
     if not isinstance(record, dict):
         raise ValueError("Backup record must be an object")
     if member in {"data/ai_history.json", "data/connector_user_state.json"}:
         raise ValueError("Backup v1 excluded dataset must remain empty")
     expected = BACKUP_RECORD_FIELDS.get(member)
     if member == "data/study_records.json":
-        expected = BACKUP_STUDY_RECORD_FIELDS.get(str(record.get("record_type") or ""))
+        fields = BACKUP_STUDY_RECORD_FIELDS if format_version >= 2 else BACKUP_STUDY_RECORD_FIELDS_V1
+        expected = fields.get(str(record.get("record_type") or ""))
     if expected is None or set(record) != expected:
         raise ValueError("Backup record schema is invalid")
     if member == "data/local_sources.json":
@@ -4686,10 +4862,11 @@ def validate_backup_snapshot(
             manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
         except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError("Backup manifest is malformed") from exc
+        format_version = manifest.get("format_version")
         if (
             manifest.get("format") != BACKUP_FORMAT_NAME
-            or not is_backup_json_int(manifest.get("format_version"))
-            or manifest.get("format_version") != BACKUP_FORMAT_VERSION
+            or not is_backup_json_int(format_version)
+            or format_version not in BACKUP_SUPPORTED_FORMAT_VERSIONS
         ):
             raise ValueError("Unsupported backup format version")
         manifest_fields = {
@@ -4699,7 +4876,7 @@ def validate_backup_snapshot(
         if (
             set(manifest) != manifest_fields
             or not is_backup_json_int(manifest.get("minimum_restore_format_version"))
-            or manifest.get("minimum_restore_format_version") != BACKUP_FORMAT_VERSION
+            or manifest.get("minimum_restore_format_version") != format_version
             or not is_backup_json_int(manifest.get("total_records"))
             or not 0 <= manifest["total_records"] <= BACKUP_MAX_RECORDS
             or not isinstance(manifest.get("disposable_demo"), bool)
@@ -4753,7 +4930,7 @@ def validate_backup_snapshot(
                 not isinstance(payload, dict)
                 or set(payload) != {"dataset", "format_version", "records"}
                 or not is_backup_json_int(payload.get("format_version"))
-                or payload.get("format_version") != BACKUP_FORMAT_VERSION
+                or payload.get("format_version") != format_version
             ):
                 raise ValueError("Backup dataset schema is invalid")
             if payload.get("dataset") != Path(member).stem or not isinstance(payload.get("records"), list):
@@ -4765,7 +4942,7 @@ def validate_backup_snapshot(
                 raise ValueError("Backup member size mismatch")
             require_unique_backup_records(member, records)
             for record in records:
-                validate_backup_record_schema(member, record)
+                validate_backup_record_schema(member, record, int(format_version))
                 identity = record["stable_id"]
                 if identity in all_portable_ids:
                     raise ValueError("Backup portable identities collide")
@@ -4782,7 +4959,7 @@ def validate_backup_snapshot(
             raise ValueError("Backup total record count mismatch")
         validation = {
             "format": BACKUP_FORMAT_NAME,
-            "format_version": BACKUP_FORMAT_VERSION,
+            "format_version": int(format_version),
             "created_at": str(manifest.get("created_at") or ""),
             "record_counts": {member: int(entries[member]["record_count"]) for member in BACKUP_DATA_MEMBERS},
             "total_records": total_records,
@@ -4842,7 +5019,7 @@ def export_user_owned_backup(
         "entries": entries,
         "total_records": sum(item["record_count"] for item in entries.values()),
     }
-    filename = f"studyhub-backup-v1-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.zip"
+    filename = f"studyhub-backup-v{BACKUP_FORMAT_VERSION}-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.zip"
     final_path = output_dir / filename
     try:
         with tempfile.NamedTemporaryFile(prefix=".studyhub-backup-", suffix=".tmp", dir=output_dir, delete=False) as handle:
@@ -5546,6 +5723,46 @@ def plan_restore_state(
             )
         )
 
+    current_material_study = {
+        str(record["material_ref"]): record
+        for record in current_study
+        if record["record_type"] == "material_study_state"
+    }
+    material_study_fields = (
+        "progress_state", "needs_review", "first_started_at", "completed_at",
+        "last_studied_at", "fsrs_state", "fsrs_step", "fsrs_stability",
+        "fsrs_difficulty", "fsrs_due_at", "fsrs_last_review_at",
+    )
+    for record in [
+        item for item in backup_study if item["record_type"] == "material_study_state"
+    ]:
+        backup_ref = str(record["material_ref"])
+        resolved_ref = material_resolution.get(backup_ref)
+        local = current_material_study.get(resolved_ref) if resolved_ref else None
+        if not resolved_ref:
+            classification, differing = material_failure.get(backup_ref, "UNRESOLVED_REFERENCE"), []
+        elif local is None:
+            classification, differing = "CREATE", []
+        else:
+            normalized = dict(record)
+            normalized["material_ref"] = resolved_ref
+            differing = restore_differences(normalized, local, fields=material_study_fields)
+            classification = "NOOP" if not differing else "CONFLICT"
+        target_state_tokens[f"material_study:{backup_ref}"] = restore_record_state_token(
+            local,
+            fields=material_study_fields,
+        )
+        actions.append(
+            restore_action(
+                "study_records",
+                record,
+                classification,
+                label="Material study state",
+                differing_fields=differing,
+                allow_backup_restore=bool(resolved_ref and local is not None),
+            )
+        )
+
     current_bookmarks = {
         str(record["target_ref"]): record
         for record in current_study
@@ -6053,6 +6270,14 @@ RESTORE_REVERSIBLE_ENTITY_SPECS = (
         ("id", "course_id", "week_label", "mode", "started_at", "ended_at"),
     ),
     RestoreReversibleEntitySpec(
+        "material_study_state", "material_study_state", "material_id",
+        (
+            "material_id", "progress_state", "needs_review", "first_started_at", "completed_at",
+            "last_studied_at", "fsrs_state", "fsrs_step", "fsrs_stability", "fsrs_difficulty",
+            "fsrs_due_at", "fsrs_last_review_at", "created_at", "updated_at",
+        ),
+    ),
+    RestoreReversibleEntitySpec(
         "academic_change_event_state", "academic_change_event_state", "event_id",
         ("event_id", "seen_at", "updated_at"),
     ),
@@ -6268,6 +6493,12 @@ def plan_restore_mutation_scope(
         for record in datasets["data/material_overlays.json"]
         if str(record["stable_id"]) in selected
     }
+    material_refs.update(
+        str(record["material_ref"])
+        for record in datasets["data/study_records.json"]
+        if record.get("record_type") == "material_study_state"
+        and str(record["stable_id"]) in selected
+    )
     material_refs.update(str(candidate["material_ref"]) for candidate in relink_candidates.values())
     material_stable_ids = frozenset(
         str(material_resolution.get(material_ref, material_ref))
@@ -6376,6 +6607,11 @@ def capture_restore_targeted_state(
     )
     merge_restore_rows(snapshot, "material", material_rows)
     material_ids = {int(row["id"]) for row in material_rows.values()}
+    merge_restore_rows(
+        snapshot,
+        "material_study_state",
+        restore_rows_for_values(conn, "material_study_state", "material_id", material_ids),
+    )
     legacy_file_ids = {
         int(row["legacy_file_id"])
         for row in material_rows.values()
@@ -6730,6 +6966,10 @@ RESTORE_UNDO_DEPENDENCY_RULES = (
     ),
     RestoreUndoDependencyRule(
         "material", "bookmarks", "bookmark", "target_type='material' AND target_id=?", ("id",)
+    ),
+    RestoreUndoDependencyRule(
+        "material", "material_study_state", "material_study_state", "material_id=?", ("id",),
+        dependent_primary_key="material_id",
     ),
     RestoreUndoDependencyRule(
         "source", "material_versions", "material_version", "source_id=?", ("id",)
@@ -7697,7 +7937,7 @@ def apply_restore_plan(
     material_rows = {
         str(row["stable_id"]): row
         for row in conn.execute(
-            "SELECT m.stable_id, m.legacy_file_id FROM materials m WHERE m.stable_id!=''"
+            "SELECT m.id, m.stable_id, m.legacy_file_id FROM materials m WHERE m.stable_id!=''"
         ).fetchall()
     }
 
@@ -7733,10 +7973,12 @@ def apply_restore_plan(
                 )
             restorable_units.add(str(record["stable_id"]))
     resolved_file_ids: dict[str, int] = {}
+    resolved_material_ids: dict[str, int] = {}
     for backup_ref, resolved_ref in material_resolution.items():
         row = material_rows.get(resolved_ref)
         if row is not None and row["legacy_file_id"] is not None:
             resolved_file_ids[str(backup_ref)] = int(row["legacy_file_id"])
+            resolved_material_ids[str(backup_ref)] = int(row["id"])
         else:
             require_restore_dependency(str(backup_ref) in relink_materials)
     for member, ref_field in (
@@ -8028,11 +8270,12 @@ def apply_restore_plan(
             require_restore_dependency(result.material_stable_id == material_ref)
             file_id = result.legacy_file_id
             material_rows[material_ref] = conn.execute(
-                "SELECT stable_id, legacy_file_id FROM materials WHERE stable_id=?",
+                "SELECT id, stable_id, legacy_file_id FROM materials WHERE stable_id=?",
                 (material_ref,),
             ).fetchone()
             created += 1
         resolved_file_ids[material_ref] = file_id
+        resolved_material_ids[material_ref] = int(material_rows[material_ref]["id"])
         relinks_applied += 1
         wrote("after_relink")
         if failure_point == "after_first_relink" and relinks_applied == 1:
@@ -8157,6 +8400,24 @@ def apply_restore_plan(
                 "INSERT INTO study_sessions(course_id, week_label, mode, started_at, ended_at) VALUES (?, ?, ?, ?, ?)",
                 (course_id, record["learning_unit_label"], record["mode"], record["started_at"], record["ended_at"]),
             )
+        elif record_type == "material_study_state":
+            material_id = resolved_material_ids[str(record["material_ref"])]
+            conn.execute(
+                """
+                INSERT INTO material_study_state(
+                  material_id, progress_state, needs_review, first_started_at, completed_at,
+                  last_studied_at, fsrs_state, fsrs_step, fsrs_stability, fsrs_difficulty,
+                  fsrs_due_at, fsrs_last_review_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    material_id, record["progress_state"], int(record["needs_review"]),
+                    record["first_started_at"], record["completed_at"], record["last_studied_at"],
+                    record["fsrs_state"], record["fsrs_step"], record["fsrs_stability"],
+                    record["fsrs_difficulty"], record["fsrs_due_at"], record["fsrs_last_review_at"],
+                    record["created_at"], record["updated_at"],
+                ),
+            )
         elif record_type == "bookmark":
             conn.execute(
                 "INSERT INTO bookmarks(target_type, target_id, label, created_at) VALUES ('file', ?, ?, ?)",
@@ -8190,6 +8451,27 @@ def apply_restore_plan(
             conn.execute(
                 "UPDATE study_sessions SET week_label=?, mode=?, ended_at=? WHERE id=?",
                 (record["learning_unit_label"], record["mode"], record["ended_at"], target_id),
+            )
+        elif record_type == "material_study_state":
+            target_id = backup_target("study_records", stable_id, "material_study_state")
+            require_restore_dependency(
+                target_id == resolved_material_ids[str(record["material_ref"])]
+            )
+            conn.execute(
+                """
+                UPDATE material_study_state SET progress_state=?, needs_review=?,
+                  first_started_at=?, completed_at=?, last_studied_at=?, fsrs_state=?,
+                  fsrs_step=?, fsrs_stability=?, fsrs_difficulty=?, fsrs_due_at=?,
+                  fsrs_last_review_at=?, created_at=?, updated_at=?
+                WHERE material_id=?
+                """,
+                (
+                    record["progress_state"], int(record["needs_review"]),
+                    record["first_started_at"], record["completed_at"], record["last_studied_at"],
+                    record["fsrs_state"], record["fsrs_step"], record["fsrs_stability"],
+                    record["fsrs_difficulty"], record["fsrs_due_at"], record["fsrs_last_review_at"],
+                    record["created_at"], record["updated_at"], target_id,
+                ),
             )
         elif record_type == "bookmark":
             target_id = backup_target("study_records", stable_id, "bookmark")
@@ -10518,6 +10800,334 @@ def import_course_folder(conn: sqlite3.Connection, body: dict[str, Any]) -> dict
     }
 
 
+STUDY_PROGRESS_STATES = ("NOT_STARTED", "IN_PROGRESS", "COMPLETED")
+STUDY_REVIEW_GRADES = {
+    "again": Rating.Again,
+    "hard": Rating.Hard,
+    "good": Rating.Good,
+    "easy": Rating.Easy,
+}
+
+
+class ReviewScheduler:
+    """Small deterministic adapter around the adopted FSRS scheduler."""
+
+    def __init__(self) -> None:
+        self._scheduler = Scheduler(enable_fuzzing=False)
+
+    @staticmethod
+    def _timestamp(value: Any) -> datetime | None:
+        if not value:
+            return None
+        parsed = datetime.fromisoformat(str(value))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    def card_from_row(self, material_id: int, row: sqlite3.Row | dict[str, Any] | None) -> Card:
+        if row is None or row_value(row, "fsrs_state") is None:
+            return Card(card_id=material_id)
+        due = self._timestamp(row_value(row, "fsrs_due_at"))
+        if due is None:
+            raise ValueError("Stored review state is incomplete")
+        return Card(
+            card_id=material_id,
+            state=State(int(row_value(row, "fsrs_state"))),
+            step=row_value(row, "fsrs_step"),
+            stability=row_value(row, "fsrs_stability"),
+            difficulty=row_value(row, "fsrs_difficulty"),
+            due=due,
+            last_review=self._timestamp(row_value(row, "fsrs_last_review_at")),
+        )
+
+    def review(
+        self,
+        material_id: int,
+        row: sqlite3.Row | dict[str, Any] | None,
+        grade: str,
+        *,
+        reviewed_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        rating = STUDY_REVIEW_GRADES.get(grade.strip().lower())
+        if rating is None:
+            raise ValueError("Review grade must be again, hard, good, or easy")
+        when = reviewed_at or datetime.now(timezone.utc)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        card, _log = self._scheduler.review_card(
+            self.card_from_row(material_id, row),
+            rating,
+            review_datetime=when,
+        )
+        return {
+            "fsrs_state": int(card.state.value),
+            "fsrs_step": card.step,
+            "fsrs_stability": card.stability,
+            "fsrs_difficulty": card.difficulty,
+            "fsrs_due_at": card.due.isoformat(timespec="seconds"),
+            "fsrs_last_review_at": card.last_review.isoformat(timespec="seconds") if card.last_review else None,
+        }
+
+
+def study_material_row(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row:
+    row = conn.execute(
+        """
+        SELECT m.id AS material_id, m.stable_id AS material_stable_id, m.legacy_file_id,
+          f.course_id, f.week_id, f.course_code, f.course_name, f.week_label,
+          f.week_number, f.filename, f.display_name, f.material_type, f.category,
+          f.exercise_type, f.indexed_at, f.material_updated_at
+        FROM materials m
+        JOIN files f ON f.id=m.legacy_file_id
+        JOIN courses c ON c.id=f.course_id
+        WHERE f.id=? AND f.active=1 AND f.removed_at IS NULL AND f.source_missing=0
+          AND m.active=1 AND c.archived=0 AND {visibility}
+        """.format(visibility=course_visibility_sql("c", include_system=True)),
+        (file_id,),
+    ).fetchone()
+    if row is None:
+        raise FileNotFoundError("Material was not found")
+    return row
+
+
+def public_study_state(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    allowed = (
+        "material_id", "progress_state", "needs_review", "first_started_at",
+        "completed_at", "last_studied_at", "fsrs_due_at", "fsrs_last_review_at",
+    )
+    return {key: row_value(row, key) for key in allowed}
+
+
+def update_material_study_state(
+    conn: sqlite3.Connection,
+    body: dict[str, Any],
+    *,
+    reviewed_at: datetime | None = None,
+) -> dict[str, Any]:
+    if set(body) - {"file_id", "action", "progress_state", "needs_review", "grade"}:
+        raise ValueError("Study update contains unsupported fields")
+    file_id = int(body.get("file_id") or 0)
+    if not file_id:
+        raise ValueError("Choose a material")
+    material = study_material_row(conn, file_id)
+    material_id = int(material["material_id"])
+    existing = conn.execute(
+        "SELECT * FROM material_study_state WHERE material_id=?",
+        (material_id,),
+    ).fetchone()
+    current: sqlite3.Row | dict[str, Any] = existing if existing is not None else {}
+    action = str(body.get("action") or "open").strip().lower()
+    if action not in {"open", "set_progress", "set_needs_review", "review"}:
+        raise ValueError("Unknown study action")
+    now = reviewed_at or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now_text = now.isoformat(timespec="seconds")
+    progress = str(row_value(current, "progress_state", "NOT_STARTED") or "NOT_STARTED")
+    needs_review = int(row_value(current, "needs_review", 0) or 0)
+    first_started_at = row_value(current, "first_started_at")
+    completed_at = row_value(current, "completed_at")
+    last_studied_at = row_value(current, "last_studied_at")
+    review_fields = {
+        "fsrs_state": row_value(current, "fsrs_state"),
+        "fsrs_step": row_value(current, "fsrs_step"),
+        "fsrs_stability": row_value(current, "fsrs_stability"),
+        "fsrs_difficulty": row_value(current, "fsrs_difficulty"),
+        "fsrs_due_at": row_value(current, "fsrs_due_at"),
+        "fsrs_last_review_at": row_value(current, "fsrs_last_review_at"),
+    }
+
+    if action == "open":
+        if progress == "NOT_STARTED":
+            progress = "IN_PROGRESS"
+        first_started_at = first_started_at or now_text
+        last_studied_at = now_text
+    elif action == "set_progress":
+        requested = str(body.get("progress_state") or "").upper()
+        if requested not in STUDY_PROGRESS_STATES:
+            raise ValueError("Progress state is invalid")
+        progress = requested
+        if progress == "NOT_STARTED":
+            first_started_at = None
+            completed_at = None
+            last_studied_at = None
+        else:
+            first_started_at = first_started_at or now_text
+            last_studied_at = now_text
+            completed_at = now_text if progress == "COMPLETED" else None
+    elif action == "set_needs_review":
+        if not isinstance(body.get("needs_review"), bool):
+            raise ValueError("needs_review must be true or false")
+        needs_review = int(body["needs_review"])
+    else:
+        review_fields = ReviewScheduler().review(
+            material_id,
+            existing,
+            str(body.get("grade") or ""),
+            reviewed_at=now,
+        )
+        needs_review = 0
+        first_started_at = first_started_at or now_text
+        last_studied_at = now_text
+
+    created_at = str(row_value(current, "created_at", now_text) or now_text)
+    conn.execute(
+        """
+        INSERT INTO material_study_state(
+          material_id, progress_state, needs_review, first_started_at, completed_at,
+          last_studied_at, fsrs_state, fsrs_step, fsrs_stability, fsrs_difficulty,
+          fsrs_due_at, fsrs_last_review_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(material_id) DO UPDATE SET
+          progress_state=excluded.progress_state,
+          needs_review=excluded.needs_review,
+          first_started_at=excluded.first_started_at,
+          completed_at=excluded.completed_at,
+          last_studied_at=excluded.last_studied_at,
+          fsrs_state=excluded.fsrs_state,
+          fsrs_step=excluded.fsrs_step,
+          fsrs_stability=excluded.fsrs_stability,
+          fsrs_difficulty=excluded.fsrs_difficulty,
+          fsrs_due_at=excluded.fsrs_due_at,
+          fsrs_last_review_at=excluded.fsrs_last_review_at,
+          updated_at=excluded.updated_at
+        """,
+        (
+            material_id, progress, needs_review, first_started_at, completed_at,
+            last_studied_at, review_fields["fsrs_state"], review_fields["fsrs_step"],
+            review_fields["fsrs_stability"], review_fields["fsrs_difficulty"],
+            review_fields["fsrs_due_at"], review_fields["fsrs_last_review_at"],
+            created_at, now_text,
+        ),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM material_study_state WHERE material_id=?",
+        (material_id,),
+    ).fetchone()
+    return {"ok": True, "file_id": file_id, **public_study_state(row)}
+
+
+def study_overview(
+    conn: sqlite3.Connection,
+    course_id: int = 0,
+    week_label: str = "",
+    *,
+    at: datetime | None = None,
+) -> dict[str, Any]:
+    now = at or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now_text = now.isoformat(timespec="seconds")
+    filters = ""
+    params: list[Any] = []
+    if course_id:
+        filters += " AND f.course_id=?"
+        params.append(course_id)
+    if week_label:
+        filters += " AND f.week_label=?"
+        params.append(week_label)
+    rows = conn.execute(
+        """
+        SELECT f.id, f.course_id, f.week_id, f.course_code, f.course_name, f.week_label,
+          f.week_number, f.filename, f.display_name, f.material_type, f.category,
+          f.exercise_type, m.id AS material_id,
+          COALESCE(ms.progress_state, 'NOT_STARTED') AS progress_state,
+          COALESCE(ms.needs_review, 0) AS needs_review,
+          ms.first_started_at, ms.completed_at, ms.last_studied_at,
+          ms.fsrs_due_at, ms.fsrs_last_review_at,
+          CASE WHEN ms.fsrs_due_at IS NOT NULL AND ms.fsrs_due_at<=? THEN 1 ELSE 0 END AS review_due
+        FROM files f
+        JOIN materials m ON m.legacy_file_id=f.id AND m.active=1
+        JOIN courses c ON c.id=f.course_id
+        LEFT JOIN material_study_state ms ON ms.material_id=m.id
+        WHERE f.active=1 AND f.removed_at IS NULL AND f.source_missing=0
+          AND c.archived=0 AND {visibility} {filters}
+        ORDER BY f.course_code, COALESCE(f.week_number, 1000000), f.week_label,
+          COALESCE(f.display_name, f.filename), f.id
+        """.format(visibility=course_visibility_sql("c"), filters=filters),
+        [now_text, *params],
+    ).fetchall()
+
+    summary = {
+        "total": len(rows), "not_started": 0, "in_progress": 0,
+        "completed": 0, "needs_review": 0, "review_due": 0,
+    }
+    course_groups: dict[int, dict[str, Any]] = {}
+    unit_groups: dict[tuple[int, str], dict[str, Any]] = {}
+    queue: list[dict[str, Any]] = []
+    recent: list[dict[str, Any]] = []
+    for row in rows:
+        progress = str(row["progress_state"])
+        summary[progress.lower()] += 1
+        summary["needs_review"] += int(bool(row["needs_review"]))
+        summary["review_due"] += int(bool(row["review_due"]))
+        course = course_groups.setdefault(
+            int(row["course_id"]),
+            {
+                "course_id": int(row["course_id"]), "course_code": row["course_code"],
+                "course_name": row["course_name"], "total": 0, "completed": 0,
+                "in_progress": 0, "needs_review": 0, "review_due": 0,
+            },
+        )
+        unit_key = (int(row["course_id"]), str(row["week_label"] or ""))
+        unit = unit_groups.setdefault(
+            unit_key,
+            {
+                "course_id": int(row["course_id"]), "course_code": row["course_code"],
+                "week_label": row["week_label"], "total": 0, "completed": 0,
+                "in_progress": 0, "needs_review": 0, "review_due": 0,
+            },
+        )
+        for group in (course, unit):
+            group["total"] += 1
+            group["completed"] += int(progress == "COMPLETED")
+            group["in_progress"] += int(progress == "IN_PROGRESS")
+            group["needs_review"] += int(bool(row["needs_review"]))
+            group["review_due"] += int(bool(row["review_due"]))
+
+        reason = ""
+        priority = 9
+        if row["review_due"]:
+            priority, reason = 0, "FSRS_DUE"
+        elif row["needs_review"]:
+            priority, reason = 1, "NEEDS_REVIEW"
+        elif progress == "IN_PROGRESS":
+            priority, reason = 2, "CONTINUE"
+        elif progress == "NOT_STARTED":
+            priority, reason = 3, "NOT_STARTED"
+        if reason:
+            item = public_file(row)
+            item["queue_reason"] = reason
+            item["_queue_priority"] = priority
+            queue.append(item)
+        if row["last_studied_at"]:
+            recent.append(public_file(row))
+
+    queue.sort(
+        key=lambda item: (
+            int(item["_queue_priority"]),
+            str(item.get("fsrs_due_at") or "9999"),
+            "" if item.get("queue_reason") == "CONTINUE" else str(item.get("course_code") or ""),
+            -datetime.fromisoformat(str(item.get("last_studied_at"))).timestamp()
+            if item.get("last_studied_at") else 0,
+            int(item["id"]),
+        )
+    )
+    for item in queue:
+        item.pop("_queue_priority", None)
+    recent.sort(key=lambda item: (str(item.get("last_studied_at") or ""), int(item["id"])), reverse=True)
+    for group in [*course_groups.values(), *unit_groups.values()]:
+        group["progress_percent"] = round(100 * group["completed"] / max(group["total"], 1))
+    summary["progress_percent"] = round(100 * summary["completed"] / max(summary["total"], 1))
+    return {
+        "summary": summary,
+        "queue": queue[:50],
+        "continue": [item for item in queue if item["queue_reason"] == "CONTINUE"][:8],
+        "needs_review": [item for item in queue if item["queue_reason"] in {"FSRS_DUE", "NEEDS_REVIEW"}][:20],
+        "recent": recent[:12],
+        "courses": list(course_groups.values()),
+        "learning_units": list(unit_groups.values()),
+    }
+
+
 def manage_materials(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
     action = str(body.get("action") or "")
     ids = body.get("ids") or ([body.get("id")] if body.get("id") else [])
@@ -10649,7 +11259,7 @@ def reset_studyhub_state(conn: sqlite3.Connection) -> dict[str, Any]:
     for table in (
         "ai_messages", "ai_conversations", "ai_interactions", "wrong_questions", "attempts", "bookmarks",
         "study_sessions", "notes", "stars", "questions", "solutions", "document_chunks", "file_versions",
-        "academic_change_event_state", "academic_change_events",
+        "academic_change_event_state", "academic_change_events", "material_study_state",
         "material_versions", "materials", "sources", "blobs",
         "ai_index_state", "sync_events", "files", "weeks", "courses", "terms", "app_settings",
     ):
@@ -10717,10 +11327,16 @@ def has_context_scope(context: dict[str, Any]) -> bool:
 def get_file(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row:
     row = conn.execute(
         f"""
-        SELECT f.*, s.id AS star_id
+        SELECT f.*, s.id AS star_id, m.id AS material_id,
+          COALESCE(ms.progress_state, 'NOT_STARTED') AS progress_state,
+          COALESCE(ms.needs_review, 0) AS needs_review,
+          ms.first_started_at, ms.completed_at, ms.last_studied_at,
+          ms.fsrs_due_at, ms.fsrs_last_review_at
         FROM files f
         JOIN courses c ON c.id=f.course_id
+        JOIN materials m ON m.legacy_file_id=f.id
         LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
+        LEFT JOIN material_study_state ms ON ms.material_id=m.id
         WHERE f.id=? AND f.active=1 AND f.removed_at IS NULL AND f.source_missing=0
           AND c.archived=0 AND {course_visibility_sql('c', include_system=True)}
         """,
@@ -12281,6 +12897,7 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 "/api/materials/import-paths",
                 "/api/materials/import-folder",
                 "/api/materials/manage",
+                "/api/study/material",
                 "/api/cache/clear",
                 "/api/reset",
                 "/api/config/managed-workspace",
@@ -12599,6 +13216,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 result = import_course_folder(conn, body)
             elif path == "/api/materials/manage":
                 result = manage_materials(conn, body)
+            elif path == "/api/study/material":
+                result = update_material_study_state(conn, body)
             elif path == "/api/cache/clear":
                 result = clear_recreatable_cache(conn)
             elif path == "/api/reset":
@@ -12705,7 +13324,17 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 course_id = int(qs.get("course_id", ["0"])[0])
                 week_label = qs.get("week", [""])[0]
                 params: list[Any] = [course_id]
-                sql = f"SELECT f.*, s.id AS star_id FROM files f JOIN courses c ON c.id=f.course_id LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id WHERE f.course_id=? AND f.active=1 AND f.removed_at IS NULL AND c.archived=0 AND {course_visibility_sql('c')}"
+                sql = f"""SELECT f.*, s.id AS star_id, m.id AS material_id,
+                    COALESCE(ms.progress_state, 'NOT_STARTED') AS progress_state,
+                    COALESCE(ms.needs_review, 0) AS needs_review,
+                    ms.first_started_at, ms.completed_at, ms.last_studied_at,
+                    ms.fsrs_due_at, ms.fsrs_last_review_at
+                  FROM files f JOIN courses c ON c.id=f.course_id
+                  JOIN materials m ON m.legacy_file_id=f.id
+                  LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
+                  LEFT JOIN material_study_state ms ON ms.material_id=m.id
+                  WHERE f.course_id=? AND f.active=1 AND f.removed_at IS NULL
+                    AND c.archived=0 AND {course_visibility_sql('c')}"""
                 if week_label:
                     sql += " AND f.week_label=?"
                     params.append(week_label)
@@ -12748,19 +13377,32 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 normalized_query = fts_query(query)
                 if normalized_query:
                     sql = """
-                    SELECT f.*, s.id AS star_id, bm25(files_fts) AS rank
+                    SELECT f.*, s.id AS star_id, m.id AS material_id,
+                      COALESCE(ms.progress_state, 'NOT_STARTED') AS progress_state,
+                      COALESCE(ms.needs_review, 0) AS needs_review,
+                      ms.first_started_at, ms.completed_at, ms.last_studied_at,
+                      ms.fsrs_due_at, ms.fsrs_last_review_at,
+                      bm25(files_fts) AS rank
                     FROM files_fts JOIN files f ON files_fts.rowid=f.id
                     JOIN courses c ON c.id=f.course_id
+                    JOIN materials m ON m.legacy_file_id=f.id
                     LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
+                    LEFT JOIN material_study_state ms ON ms.material_id=m.id
                     WHERE files_fts MATCH ? AND f.active=1 AND f.removed_at IS NULL {archive_clause} AND {visibility}
                     """
                     sql = sql.format(archive_clause=archive_clause, visibility=visibility)
                     params.append(normalized_query)
                 else:
                     sql = """
-                    SELECT f.*, s.id AS star_id, 0 AS rank
+                    SELECT f.*, s.id AS star_id, m.id AS material_id,
+                      COALESCE(ms.progress_state, 'NOT_STARTED') AS progress_state,
+                      COALESCE(ms.needs_review, 0) AS needs_review,
+                      ms.first_started_at, ms.completed_at, ms.last_studied_at,
+                      ms.fsrs_due_at, ms.fsrs_last_review_at, 0 AS rank
                     FROM files f JOIN courses c ON c.id=f.course_id
+                    JOIN materials m ON m.legacy_file_id=f.id
                     LEFT JOIN stars s ON s.target_type='file' AND s.target_id=f.id
+                    LEFT JOIN material_study_state ms ON ms.material_id=m.id
                     WHERE f.active=1 AND f.removed_at IS NULL {archive_clause} AND {visibility}
                     """
                     sql = sql.format(archive_clause=archive_clause, visibility=visibility)
@@ -12773,7 +13415,11 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 if scope:
                     sql += " AND (f.section=? OR f.category=? OR f.exercise_type=?)"
                     params.extend([scope, scope, scope])
-                sql += " ORDER BY rank, f.modified_at DESC LIMIT 80"
+                sql += """ ORDER BY rank,
+                  CASE WHEN COALESCE(ms.needs_review, 0)=1 THEN 0
+                       WHEN COALESCE(ms.progress_state, 'NOT_STARTED')='IN_PROGRESS' THEN 1
+                       WHEN COALESCE(ms.progress_state, 'NOT_STARTED')='NOT_STARTED' THEN 2 ELSE 3 END,
+                  f.modified_at DESC, f.id LIMIT 80"""
                 self.send_json([public_file(row) for row in conn.execute(sql, params).fetchall()])
             elif path == "/api/recent":
                 rows = conn.execute(
@@ -12825,6 +13471,10 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                         **counts,
                     }
                 )
+            elif path == "/api/study/overview":
+                course_id = int(qs.get("course_id", ["0"])[0] or 0)
+                week_label = qs.get("week", [""])[0]
+                self.send_json(study_overview(conn, course_id, week_label))
             elif path == "/api/wrong-questions":
                 rows = conn.execute("SELECT * FROM wrong_questions ORDER BY created_at DESC LIMIT 100").fetchall()
                 self.send_json(rows_to_dicts(rows))

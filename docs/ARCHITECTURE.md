@@ -42,8 +42,16 @@ in [Desktop Architecture](DESKTOP_ARCHITECTURE.md).
 
 The current SQLite model includes terms, courses, weeks/modules, files, file
 versions, document chunks, questions, solutions, notes, stars, attempts, wrong
-questions, bookmarks, study sessions, AI conversations/messages, sync events,
-AI index state, and app settings.
+questions, bookmarks, study sessions, per-Material Study Engine state, AI
+conversations/messages, sync events, AI index state, and app settings.
+
+Study Engine V1 stores one user-owned `material_study_state` row against
+canonical Material identity. Progress and explicit review intent remain
+independent. Explicit portable FSRS card fields are scheduled locally through
+the StudyHub-owned `ReviewScheduler` adapter over `fsrs` 6.3.2; no opaque
+Python object, optimizer, network call, or AI ranking is involved. Course and
+Learning Unit rollups and the deterministic queue are derived through bounded
+reads. See [Study Engine](STUDY_ENGINE.md).
 
 StudyHub is now in an additive Strangler transition for the academic-content
 domain. The current product still uses legacy `files` and `file_versions` as
@@ -138,14 +146,16 @@ normal same-origin and CSRF mutation boundary. The six-item primary navigation
 is unchanged. Legacy `sync_events` remains the operational local-scan log and
 is not overloaded or migrated.
 
-Phase 2 also implements the `studyhub-backup-v1` export boundary for durable
+Phase 2 also implements the versioned `studyhub-backup` export boundary for durable
 user-owned state. It projects allowlisted fields from one coherent SQLite read
 snapshot, reached through a dedicated read-only/query-only connection for HTTP
 and CLI entry points, into canonical JSON members, validates the bounded ZIP,
 and atomically publishes it under the active profile's `exports/` directory. Original and
 Canvas-retained files, remote/provider facts, derived content, credentials,
 absolute paths, and AI history without durable portable identities are
-excluded. The browser route accepts no destination
+excluded. The current v2 writer includes portable Study Engine state in
+`data/study_records.json`; the strict reader remains compatible with legacy v1
+archives, which contain no such state. The browser route accepts no destination
 path and returns safe metadata only.
 
 The desktop restore boundary uses a native single-file picker to copy
@@ -178,7 +188,7 @@ Restore Apply reuses the canonical planner under a process-local apply lock and
 a caller-owned SQLite `BEGIN IMMEDIATE` transaction. It requires the exact approved plan
 revision and a complete set of narrow
 `KEEP_LOCAL`/`RESTORE_BACKUP`/`SKIP`/`RELINK` decisions,
-applies only supported user-owned state, rechecks explicitly inspected source
+applies only supported versioned user-owned state, rechecks explicitly inspected source
 candidates, and commits once. Exact relink reuses the canonical ingestion/domain
 projection by reference and consumes its private capability only after commit.
 The same transaction now records a private, versioned Restore operation only
@@ -228,7 +238,8 @@ canonical contract is
 [Backup Export Format](BACKUP_FORMAT.md).
 
 Backup archives remain untrusted after ZIP and checksum verification. Preview
-and Apply share one semantic v1 validator for exact field types, bounds, enums,
+and Apply share one semantic version-aware validator for exact field types,
+bounds, enums,
 hashes, controls, and safe relative paths. Material-overlay Apply performs a
 narrow in-transaction synchronization of the existing `files` row, existing
 Phase-1 `materials` projection, and derived local search metadata. Explicit

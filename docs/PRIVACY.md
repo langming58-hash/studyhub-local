@@ -258,6 +258,13 @@ source bytes or remote-authoritative facts are changed.
 
 ## Public Data Boundary
 
+Study Engine progress, explicit review flags, and portable FSRS card state are
+private `USER_OWNED` data. They remain in the active runtime profile and the
+versioned user-owned backup contract. They are not emitted to logs,
+diagnostics, static assets, release artifacts, or the read-only MCP surface,
+and scheduling requires no OpenAI, Canvas, CredentialStore, or other network
+access.
+
 Public examples, fixtures, tests, screenshots, documentation, and demo assets
 use synthetic data only. Never publish:
 

@@ -168,7 +168,13 @@ def main() -> int:
         match_restore_id = "a" * 32
         staged = stage(match, archive, match_restore_id)
 
-        check("pr28_merge_contract_present", hasattr(match, "connect_backup_db_readonly") and match.BACKUP_FORMAT_VERSION == 1, failures)
+        check(
+            "versioned_backup_contract_present",
+            hasattr(match, "connect_backup_db_readonly")
+            and match.BACKUP_FORMAT_VERSION == 2
+            and 1 in match.BACKUP_SUPPORTED_FORMAT_VERSIONS,
+            failures,
+        )
         rust_source = (ROOT / "src-tauri/src/lib.rs").read_text(encoding="utf-8")
         check(
             "native_picker_boundary_is_narrow",
@@ -621,9 +627,9 @@ def main() -> int:
         server_source = (ROOT / "server.py").read_text(encoding="utf-8")
         check("restore_apply_is_separate_narrow_endpoint", 'parsed.path == "/api/backup/restore-apply"' in server_source, failures)
         check(
-            "preview_uses_current_schema_without_adding_migrations",
-            len(match.SCHEMA_MIGRATIONS) == 6
-            and match_conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=6").fetchone()[0] == 1,
+            "preview_uses_current_schema_without_extra_migrations",
+            len(match.SCHEMA_MIGRATIONS) == 7
+            and match_conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=7").fetchone()[0] == 1,
             failures,
         )
 

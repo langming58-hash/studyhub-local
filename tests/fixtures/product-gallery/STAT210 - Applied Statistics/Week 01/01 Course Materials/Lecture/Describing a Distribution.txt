@@ -1,0 +1,6 @@
+STAT210 Applied Statistics
+Week 01: Describing a Distribution
+
+Center, spread, and shape provide complementary summaries. A responsible description also notes unusual observations and the context in which measurements were collected.
+
+This is newly written synthetic material for StudyHub product testing.

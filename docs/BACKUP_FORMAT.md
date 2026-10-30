@@ -1,6 +1,6 @@
 # Backup Export Format
 
-Status: **AUTHORITATIVE `studyhub-backup-v1` EXPORT CONTRACT**.
+Status: **AUTHORITATIVE `studyhub-backup-v2` EXPORT CONTRACT**.
 
 StudyHub's implemented backup surface exports a privacy-safe, portable
 projection of durable `USER_OWNED` state. It is not a database dump or an
@@ -15,16 +15,17 @@ relinking, Redo, scheduling, cloud backup, and encryption are not implemented.
 
 - Archive format: ZIP
 - Manifest identity: `studyhub-backup`
-- Current format version: `1`
-- Conventional name: `studyhub-backup-v1`
+- Current writer format version: `2`
+- Supported reader format versions: `1`, `2`
+- Conventional current name: `studyhub-backup-v2`
 
 The backup format version is independent of the application version and SQLite
-migration number. Writers emit only the current version. The v1 validator
-rejects unknown versions. A future reader may explicitly support older
-versions, but removing or renaming required fields, changing required meaning,
-or adding required members requires a format-version bump. Optional additions
-must first define how older readers can safely ignore them; v1 itself uses an
-exact member and field allowlist.
+migration number. Writers emit only the current version. The strict reader
+supports v1 and v2 and rejects every other version. V1 remains an exact legacy
+contract and contains no Material Study Engine records. V2 adds an allowlisted
+`material_study_state` record type to the existing study dataset. Removing or
+renaming required fields, changing required meaning, or adding required
+members requires another format-version bump.
 
 ## Archive Layout
 
@@ -46,7 +47,7 @@ data/whats_new_state.json
 Every data member is UTF-8 canonical JSON with this envelope:
 
 ```json
-{"dataset":"notes","format_version":1,"records":[]}
+{"dataset":"notes","format_version":2,"records":[]}
 ```
 
 Objects use stable field names, records sort by portable identity, and JSON
@@ -56,7 +57,7 @@ not have a native stable ID use a canonical semantic identity plus a
 deterministic occurrence index. This preserves duplicate records without
 exposing row IDs and produces the same identity set for equivalent multisets.
 
-Identity rules by v1 dataset are deliberately narrow:
+Identity rules by the current dataset are deliberately narrow:
 
 - terms, courses, learning units, materials, and academic-change events retain
   their existing domain stable IDs or references derived from them
@@ -67,6 +68,9 @@ Identity rules by v1 dataset are deliberately narrow:
   payload, not identity
 - study sessions use course/start identity plus occurrence index; mutable or
   presentation state remains payload
+- Material Study Engine records use canonical stable Material identity;
+  progress, explicit review intent, timestamps, and portable FSRS fields remain
+  payload
 - local source descriptors key from the associated stable Material identity
 - AI history and Canvas connector selection have no claimed v1 identity and
   remain empty
@@ -91,13 +95,14 @@ credential, signed URL, source absolute path, or runtime database path.
 
 ## Included User-Owned State
 
-The v1 projection includes only allowlisted fields:
+The v2 projection includes only allowlisted fields:
 
 - terms and local/user-managed course presentation state
 - managed learning units
 - user material presentation/classification overlays
 - safe descriptors for local user-owned sources
-- notes, stars, bookmarks, attempts, wrong-question state, and study sessions
+- notes, stars, bookmarks, attempts, wrong-question state, study sessions, and
+  per-Material Study Engine progress/review state
 - What's New acknowledgements keyed by academic-event stable identity
 
 Canvas compatibility courses are included only when they carry an explicit
@@ -138,7 +143,7 @@ empty in v1. This is an intentional omission, not a restore promise.
 
 ## AI History
 
-`data/ai_history.json` is a required but empty v1 member, and the manifest sets
+`data/ai_history.json` is a required but empty member, and the manifest sets
 `ai_history_included: false`. Current conversation/message rows do not have an
 immutable portable identity: conversation titles and scopes can change, while
 integer row IDs are runtime-local. StudyHub therefore does not claim false
@@ -188,7 +193,8 @@ resembles an older draft.
 Incoming archives are untrusted input even when every manifest hash has been
 recomputed. The canonical validator used by both Preview and Apply therefore
 validates exact JSON types, boolean/integer separation, bounded text and
-timestamps, control characters, closed v1 enums, SHA-256 syntax, numeric
+timestamps, control characters, version-specific closed enums and fields,
+SHA-256 syntax, numeric
 ranges, and bounded safe source-relative paths before planning begins. It does
 not coerce strings, integers, or booleans and does not sanitize malformed input.
 
@@ -277,7 +283,7 @@ archive snapshot, opens only the existing current-profile database, starts
 target state, or inspected source candidate fails closed and rolls back.
 
 Safe `CREATE`, `UPDATE_USER_STATE`, and explicitly selected `RESTORE_BACKUP`
-actions restore allowlisted v1 terms,
+actions restore allowlisted versioned terms,
 local courses, managed learning units, material overlays on resolved Materials,
 notes, stars, attempts, wrong-question state, study sessions, bookmarks, and
 acknowledgement of an existing identical academic-change event. Multiset records
@@ -321,7 +327,7 @@ aggregate summary. Read-only Undo Preview validates postimages, dependencies,
 and later Restore overlap; explicit Undo Apply repeats those gates under the
 Restore lock and `BEGIN IMMEDIATE`, then reverses the exact ChangeSet atomically.
 The private journal remains bounded with capacity derived
-from backup v1's maximum uncompressed size, record count, dual pre/post images,
+from the backup format's maximum uncompressed size, record count, dual pre/post images,
 and serialization overhead; an incomplete ChangeSet always aborts Restore
 atomically rather than truncating recovery data.
 

@@ -474,7 +474,12 @@ def main() -> int:
         manifest = json.loads(members_one["manifest.json"])
 
         check("valid_synthetic_export_created", archive_one.is_file() and result_one["format"] == "studyhub-backup", failures)
-        check("manifest_version_correct", manifest["format_version"] == 1 and validation["format_version"] == 1, failures)
+        check(
+            "manifest_version_correct",
+            manifest["format_version"] == server_one.BACKUP_FORMAT_VERSION
+            and validation["format_version"] == server_one.BACKUP_FORMAT_VERSION,
+            failures,
+        )
         check("allowed_members_only", set(members_one) == set(server_one.BACKUP_MEMBERS), failures)
         check("member_checksums_correct", all(hashlib.sha256(members_one[name]).hexdigest() == item["sha256"] for name, item in manifest["entries"].items()), failures)
         check("record_counts_correct", validation["total_records"] == manifest["total_records"] and validation["total_records"] > 0, failures)
@@ -707,7 +712,7 @@ def main() -> int:
             failures,
         )
         check(
-            "exporter_and_validator_share_v1_bounds",
+            "exporter_and_validator_share_versioned_bounds",
             server_one.BACKUP_TERM_NAME_MAX == 120
             and server_one.BACKUP_MATERIAL_NAME_MAX == 240
             and server_one.BACKUP_NOTE_BODY_MAX == 10_000

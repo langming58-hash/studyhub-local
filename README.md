@@ -49,7 +49,11 @@ This is an early unsigned beta. It is not Developer ID signed or notarized.
 
 ![Clean first run in Simplified Chinese](docs/assets/screenshots/first-run-zh-CN.png)
 
-These screenshots show an empty production workspace and contain no course material or personal information.
+![Synthetic Study Engine gallery](docs/assets/screenshots/product-study-engine.png)
+
+The first two screenshots show an empty production workspace. The populated
+Study Engine gallery uses synthetic CS101, ECON201, and STAT210 text fixtures
+only. No screenshot contains personal information or real course material.
 
 ## Features
 
@@ -59,6 +63,7 @@ These screenshots show an empty production workspace and contain no course mater
 - Ask AI within the current question, file, week, or course scope
 - Follow citations to the source file and page/slide when reliably available
 - Keep local notes, stars, conversations, practice records, and wrong-question records
+- Track per-material progress, flag Needs Review, and use a deterministic local FSRS review queue
 - Retrieve teacher-provided questions only; StudyHub does not generate practice questions
 - Run without OpenAI for local organization, preview, search, notes, and study records
 

@@ -32,7 +32,7 @@ const state = {
       error: "",
     },
   },
-  studyMode: "practice",
+  studyMode: "overview",
   searchFiltersOpen: false,
   sidebarCollapsed: localStorage.getItem("studyhub.sidebarCollapsed") === "true",
   whatsNew: {
@@ -115,7 +115,7 @@ function routeFromLocation() {
   if (parts[0] === "course" && parts[1]) return { view: "course", courseId: Number(parts[1]) };
   if (parts[0] === "week" && parts[1] && parts[2]) return { view: "week", courseId: Number(parts[1]), week: parts[2] };
   if (parts[0] === "file" && parts[1]) return { view: "file", fileId: Number(parts[1]), page: Number(parts[2] || 0) };
-  if (parts[0] === "study") return { view: "study", mode: parts[1] || "practice" };
+  if (parts[0] === "study") return { view: "study", mode: parts[1] || "overview" };
   if (parts[0] === "whats-new") return { view: "whats-new" };
   if (["home", "courses", "search", "ai", "settings"].includes(parts[0])) return { view: parts[0] };
   return { view: "home" };
@@ -573,6 +573,10 @@ function fileCard(file, selectable = false) {
   const suspicious = file.suspicious ? `<span class="chip warn">${escapeHtml(file.suspicious)}</span>` : "";
   const missing = file.source_missing ? `<span class="chip warn">${escapeHtml(t("file.originalMissing"))}</span>` : "";
   const star = file.star_id ? "★" : "☆";
+  const progress = file.progress_state && file.progress_state !== "NOT_STARTED"
+    ? `<span class="chip study-state">${escapeHtml(t(`study.state.${file.progress_state.toLowerCase()}`))}</span>`
+    : "";
+  const review = file.needs_review ? `<span class="chip review">${escapeHtml(t("study.needsReview"))}</span>` : "";
   return `
     <article class="file-row">
       ${selectable ? `<input class="material-check" type="checkbox" data-material-select="${file.id}" aria-label="${escapeHtml(t("common.select", { name: file.display_name || file.filename }))}" ${state.selectedMaterialIds.has(Number(file.id)) ? "checked" : ""} />` : ""}
@@ -581,7 +585,7 @@ function fileCard(file, selectable = false) {
         <span class="file-row-text">
           <strong class="file-name">${escapeHtml(file.display_name || file.filename)}</strong>
           <span class="muted">${escapeHtml(fileMetaLine(file))}</span>
-          ${missing}${suspicious}
+          <span class="chips">${progress}${review}${missing}${suspicious}</span>
         </span>
       </button>
       <div class="file-row-actions">
@@ -716,13 +720,16 @@ async function resumePendingFirstRunAction() {
 
 async function renderHome() {
   setTitle(t("nav.home"));
-  const [recent, wrong, changes] = await Promise.all([
+  const [recent, study, changes] = await Promise.all([
     api("/api/recent"),
-    api("/api/wrong-questions"),
+    api("/api/study/overview"),
     fetchWhatsNew(true, 5),
   ]);
   const lastFileId = Number(localStorage.getItem("studyhub.lastFileId") || 0);
-  const continueFile = recent.find((file) => Number(file.id) === lastFileId) || recent[0];
+  const continueFile = study.continue?.find((file) => Number(file.id) === lastFileId)
+    || study.continue?.[0]
+    || recent.find((file) => Number(file.id) === lastFileId)
+    || recent[0];
   const activeCourses = state.courses.filter((course) => Number(course.file_count || 0) > 0);
   view.innerHTML = `
     ${firstRunPanel()}
@@ -767,9 +774,9 @@ async function renderHome() {
           <p class="eyebrow">${escapeHtml(t("home.review"))}</p>
           <h2>${escapeHtml(t("home.studyQueue"))}</h2>
         </div>
-        <button class="button secondary" data-view="study" data-study-mode="wrong">${escapeHtml(t("home.openStudy"))}</button>
+        <button class="button secondary" data-view="study" data-study-mode="overview">${escapeHtml(t("home.openStudy"))}</button>
       </div>
-      ${wrong.length ? `<div class="study-list">${wrong.slice(0, 4).map(wrongRow).join("")}</div>` : empty(t("home.noWrong"))}
+      ${study.queue?.length ? `<div class="study-queue">${study.queue.slice(0, 4).map(studyQueueRow).join("")}</div>` : empty(t("study.queueEmpty"))}
     </section>
   `;
   bindLibrarySetupForm();
@@ -1536,6 +1543,7 @@ async function renderStarred() {
 
 function studyTabs() {
   const tabs = [
+    ["overview", t("study.overview")],
     ["practice", t("study.practice")],
     ["wrong", t("study.wrong")],
     ["exam", t("study.exam")],
@@ -1551,7 +1559,8 @@ async function renderStudy(mode = state.studyMode) {
   state.studyMode = mode;
   setTitle(t("nav.study"), t("study.eyebrow"));
   let body = "";
-  if (mode === "wrong") body = await studyWrongPanel();
+  if (mode === "overview") body = await studyOverviewPanel();
+  else if (mode === "wrong") body = await studyWrongPanel();
   else if (mode === "exam") body = studyExamPanel();
   else body = studyPracticePanel();
   view.innerHTML = `
@@ -1566,6 +1575,55 @@ async function renderStudy(mode = state.studyMode) {
     $("#practiceType").addEventListener("change", loadPracticeQuestions);
     await loadPracticeQuestions();
   }
+}
+
+function studyQueueRow(file) {
+  const reason = t(`study.queue.${String(file.queue_reason || "not_started").toLowerCase()}`);
+  return `
+    <article class="study-queue-row">
+      <button class="file-row-main" data-preview="${file.id}">
+        <span class="file-badge">${extensionIcon(file.extension)}</span>
+        <span class="file-row-text">
+          <strong>${escapeHtml(file.display_name || file.filename)}</strong>
+          <span class="muted">${escapeHtml(courseLabel(file))} · ${escapeHtml(learningUnitLabel(file.week_label || ""))}</span>
+        </span>
+      </button>
+      <span class="chip ${file.queue_reason === "FSRS_DUE" || file.queue_reason === "NEEDS_REVIEW" ? "review" : ""}">${escapeHtml(reason)}</span>
+      ${file.queue_reason === "FSRS_DUE" || file.queue_reason === "NEEDS_REVIEW" ? `
+        <div class="review-grades" aria-label="${escapeHtml(t("study.reviewGrade"))}">
+          ${["again", "hard", "good", "easy"].map((grade) => `<button class="button secondary compact" data-study-review="${file.id}" data-grade="${grade}">${escapeHtml(t(`study.grade.${grade}`))}</button>`).join("")}
+        </div>` : `<button class="button secondary compact" data-preview="${file.id}">${escapeHtml(t("common.open"))}</button>`}
+    </article>`;
+}
+
+function studyRollup(row, label) {
+  const percent = Number(row.progress_percent || 0);
+  return `
+    <article class="study-rollup">
+      <div><strong>${escapeHtml(label)}</strong><span class="muted">${row.completed}/${row.total} ${escapeHtml(t("study.completedShort"))}</span></div>
+      <progress value="${percent}" max="100" aria-label="${escapeHtml(t("study.progressLabel", { name: label, percent }))}">${percent}%</progress>
+      <span class="muted">${row.in_progress} ${escapeHtml(t("study.inProgressShort"))} · ${row.needs_review} ${escapeHtml(t("study.reviewShort"))}</span>
+    </article>`;
+}
+
+async function studyOverviewPanel() {
+  const data = await api("/api/study/overview");
+  const summary = data.summary || {};
+  return `
+    <section class="study-summary-grid" aria-label="${escapeHtml(t("study.overview"))}">
+      <div><strong>${summary.in_progress || 0}</strong><span>${escapeHtml(t("study.continue"))}</span></div>
+      <div><strong>${summary.review_due || 0}</strong><span>${escapeHtml(t("study.due"))}</span></div>
+      <div><strong>${summary.needs_review || 0}</strong><span>${escapeHtml(t("study.needsReview"))}</span></div>
+      <div><strong>${summary.completed || 0}/${summary.total || 0}</strong><span>${escapeHtml(t("study.completed"))}</span></div>
+    </section>
+    <section class="section-block quiet-section">
+      <div class="section-head"><div><p class="eyebrow">${escapeHtml(t("study.nextEyebrow"))}</p><h2>${escapeHtml(t("study.next"))}</h2></div></div>
+      ${data.queue?.length ? `<div class="study-queue">${data.queue.slice(0, 12).map(studyQueueRow).join("")}</div>` : empty(t("study.queueEmpty"))}
+    </section>
+    <section class="study-progress-grid">
+      <div class="section-block quiet-section"><div class="section-head"><h2>${escapeHtml(t("study.byCourse"))}</h2></div><div class="study-rollups">${(data.courses || []).map((row) => studyRollup(row, courseLabel(row))).join("")}</div></div>
+      <div class="section-block quiet-section"><div class="section-head"><h2>${escapeHtml(t("study.byUnit"))}</h2></div><div class="study-rollups">${(data.learning_units || []).map((row) => studyRollup(row, `${courseLabel(row)} · ${learningUnitLabel(row.week_label || "")}`)).join("")}</div></div>
+    </section>`;
 }
 
 function studyPracticePanel() {
@@ -2100,7 +2158,7 @@ function empty(text) {
 
 async function route(viewName = state.view, options = {}) {
   if (viewName === "askgpt") viewName = "ai";
-  if (["practice", "wrong", "exam"].includes(viewName)) {
+  if (["overview", "practice", "wrong", "exam"].includes(viewName)) {
     state.studyMode = viewName === "exam" ? "exam" : viewName;
     viewName = "study";
   }
@@ -2147,6 +2205,7 @@ async function openFileDrawer(fileId, page = 0, options = {}) {
     .filter(Boolean)
     .map((line) => `<span>${escapeHtml(line)}</span>`)
     .join("");
+  renderStudyControls(file);
   $("#fileDetails").innerHTML = `
     <div><span>${escapeHtml(t("file.filename"))}</span><strong>${escapeHtml(file.filename)}</strong></div>
     <div><span>${escapeHtml(t("week.type"))}</span><strong>${escapeHtml(file.mime_type || file.extension || t("common.unknown"))}</strong></div>
@@ -2164,6 +2223,26 @@ async function openFileDrawer(fileId, page = 0, options = {}) {
   const savedWidth = localStorage.getItem("studyhub.previewWidth");
   if (savedWidth) document.querySelector(".drawer-panel").style.setProperty("--studyhub-preview-width", savedWidth);
   if (options.history !== false) recordRoute({ view: "file", fileId, page: Number(page || 0) }, options.replace);
+}
+
+function renderStudyControls(file) {
+  const progress = file.progress_state || "NOT_STARTED";
+  $("#studyControls").innerHTML = `
+    <div class="segmented-study" role="group" aria-label="${escapeHtml(t("study.materialProgress"))}">
+      ${["NOT_STARTED", "IN_PROGRESS", "COMPLETED"].map((value) => `<button class="button ${progress === value ? "primary" : "secondary"} compact" data-study-progress="${file.id}" data-progress-state="${value}" aria-pressed="${progress === value ? "true" : "false"}">${escapeHtml(t(`study.state.${value.toLowerCase()}`))}</button>`).join("")}
+    </div>
+    <label class="study-review-toggle"><input type="checkbox" data-study-needs-review="${file.id}" ${file.needs_review ? "checked" : ""}/> ${escapeHtml(t("study.needsReview"))}</label>
+    ${file.fsrs_due_at ? `<p class="muted">${escapeHtml(t("study.nextReview"))}: ${escapeHtml(file.fsrs_due_at)}</p>` : ""}`;
+}
+
+async function updateStudyState(fileId, payload) {
+  await postJson("/api/study/material", { file_id: Number(fileId), ...payload });
+  if (!$("#fileDrawer").hidden && Number(state.selectedFile?.id) === Number(fileId)) {
+    const refreshed = await api(`/api/file?id=${fileId}`);
+    state.selectedFile = refreshed;
+    renderStudyControls(refreshed);
+  }
+  if (state.view === "study") await renderStudy(state.studyMode);
 }
 
 async function loadFileNotes(fileId) {
@@ -2859,6 +2938,20 @@ document.addEventListener("click", async (event) => {
     route("study");
     return;
   }
+  if (target.dataset.studyProgress) {
+    await updateStudyState(target.dataset.studyProgress, {
+      action: "set_progress",
+      progress_state: target.dataset.progressState,
+    });
+    return;
+  }
+  if (target.dataset.studyReview) {
+    await updateStudyState(target.dataset.studyReview, {
+      action: "review",
+      grade: target.dataset.grade,
+    });
+    return;
+  }
   if (target.dataset.runScan) {
     await scanLibrary();
     return;
@@ -3066,7 +3159,14 @@ document.addEventListener("click", async (event) => {
   if (target.dataset.context) return copyContext(Number(target.dataset.context));
 });
 
-document.addEventListener("change", (event) => {
+document.addEventListener("change", async (event) => {
+  if (event.target.matches("[data-study-needs-review]")) {
+    await updateStudyState(event.target.dataset.studyNeedsReview, {
+      action: "set_needs_review",
+      needs_review: event.target.checked,
+    });
+    return;
+  }
   if (event.target.matches("[data-restore-decision]")) {
     state.restore.decisions[event.target.dataset.restoreDecision] = event.target.value;
     renderSettings();
