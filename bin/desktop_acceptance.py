@@ -89,7 +89,7 @@ def start_backend(
     assert process.stdout is not None
     lines: queue.Queue[str] = queue.Queue()
     threading.Thread(target=output_lines, args=(process.stdout, lines), daemon=True).start()
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if process.poll() is not None:
             stderr = process.stderr.read() if process.stderr else ""
@@ -103,7 +103,9 @@ def start_backend(
             return process, match.group(1), int(match.group(2))
     process.kill()
     process.wait(timeout=5)
-    raise AssertionError("desktop backend did not report its assigned localhost port")
+    stderr = process.stderr.read() if process.stderr else ""
+    detail = f": {stderr[:500]}" if stderr.strip() else ""
+    raise AssertionError(f"desktop backend did not report its assigned localhost port{detail}")
 
 
 def get_json(url: str, path: str) -> object:
@@ -208,7 +210,8 @@ def source_checks() -> dict[str, bool]:
         "release_build_uses_no_shell": "subprocess.run" in builder and "shell=True" not in builder,
         "release_build_uses_project_rust_toolchain": 'ROOT / ".tools" / "cargo"' in builder
         and 'ROOT / ".tools" / "rustup"' in builder,
-        "clean_clone_check_prepares_resource_root": '"backend" / "studyhub-backend").mkdir' in desktop_check,
+        "clean_clone_check_prepares_resource_root": 'backend_root / "studyhub-backend"' in desktop_check
+        and 'backend_root / "studyhub-markitdown"' in desktop_check,
         "release_has_no_system_python_fallback": 'resolve("backend/studyhub-backend"' in rust
         and "cfg(not(debug_assertions))" in rust,
         "packaged_backend_uses_one_folder": '"--onedir"' in backend_builder,

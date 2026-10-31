@@ -345,21 +345,21 @@ def check_snapshot_consistency(tmp: Path) -> bool:
 
     changing = write_text(tmp / "snapshot" / "Changing During Extract.txt", "changing-alpha-content", mtime=1_700_000_300)
     expected_before_change = digest(changing)
-    original_extract = server.extract_text
+    original_extract = server.extract_document
     mutation = {"done": False}
 
-    def mutating_extract(path: Path) -> str:
+    def mutating_extract(path: Path):
         if path.name == changing.name and not mutation["done"]:
             mutation["done"] = True
             write_text(path, "changing-beta-content", mtime=1_700_000_400)
-            return "changing-beta-content"
+            return server.ExtractedDocument("changing-beta-content", "synthetic", "1")
         return original_extract(path)
 
-    server.extract_text = mutating_extract
+    server.extract_document = mutating_extract
     try:
         changing_result = server.ingest_material_candidate(conn, make_candidate(server, changing, course, week))
     finally:
-        server.extract_text = original_extract
+        server.extract_document = original_extract
     expected_after_change = digest(changing)
     changing_row = conn.execute("SELECT * FROM files WHERE id=?", (changing_result.legacy_file_id,)).fetchone()
     changing_material = material_for_file(conn, changing_result.legacy_file_id)
@@ -451,14 +451,14 @@ def check_batch_import_and_failure_safety(tmp: Path) -> bool:
     stable_hash = digest(stable)
     valid_a = write_text(tmp / "failure" / "Valid A.txt", "Valid A should not be partially committed.")
     failing = write_text(tmp / "failure" / "Failing.txt", "This extraction will fail.")
-    original_extract = server.extract_text
+    original_extract = server.extract_document
 
-    def failing_extract(path: Path) -> str:
+    def failing_extract(path: Path):
         if path.name == "Failing.txt":
             raise RuntimeError("synthetic extraction failure")
         return original_extract(path)
 
-    server.extract_text = failing_extract
+    server.extract_document = failing_extract
     failed_without_damage = False
     try:
         server.register_material_paths(
@@ -483,7 +483,7 @@ def check_batch_import_and_failure_safety(tmp: Path) -> bool:
             and failing_row is None
         )
     finally:
-        server.extract_text = original_extract
+        server.extract_document = original_extract
     conn.close()
     return (
         imported["detected"] == 6

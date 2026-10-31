@@ -33,6 +33,7 @@ Question Bank.csv
 __pycache__/
 *.py[cod]
 node_modules/
+static/vendor/reader/
 .tools/
 .venv-desktop/
 .desktop-build/
@@ -40,6 +41,7 @@ node_modules/
 .release/
 src-tauri/target/
 src-tauri/backend/studyhub-backend/*
+src-tauri/backend/studyhub-markitdown
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/

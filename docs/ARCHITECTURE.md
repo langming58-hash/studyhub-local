@@ -261,10 +261,17 @@ resources are retrieval or derived layers and can be rebuilt.
 
 Visual preview and readable extraction are separate:
 
-- PDFs and images can be previewed directly.
-- text, code, CSV, notebooks, and active web formats use escaped readable text.
-- PowerPoint and Word may use local LibreOffice conversion to cached PDF.
+- PDFs use the StudyHub Reader with packaged PDF.js; images remain local-only.
+- text, code, CSV, notebooks, and active web formats use escaped readable text;
+  selected code formats receive non-executing local Prism highlighting.
+- PowerPoint and Word may use local LibreOffice conversion to cached PDF, then
+  the same PDF.js Reader. XLSX/DOCX/PPTX extraction prefers local MarkItDown,
+  isolated behind a private packaged helper pipe rather than exposed through
+  HTTP, Tauri commands, or command-line file arguments.
+- macOS OCR is a bounded, on-device last fallback and never mutates originals.
 - cached derivatives never replace the original file.
+- Ask/search/citation grounding remains backend chunk based and never treats
+  Reader DOM or visual rendering as authoritative content.
 
 See [Preview Matrix](design/PREVIEW_MATRIX.md) for current format behavior.
 

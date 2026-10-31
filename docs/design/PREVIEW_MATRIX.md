@@ -10,13 +10,13 @@ back into the user's study folder.
 
 | File type | Primary visual preview | Fallback preview | Readable text extraction | Optional dependency |
 | --- | --- | --- | --- | --- |
-| PDF | Browser PDF viewer from original file | Original file can still be opened | `pdftotext` by page when available | Poppler |
-| PPTX / PPT | Cached PDF generated locally by LibreOffice | Clear unavailable state plus Readable Text tab | PPTX slide XML by slide and paragraph; legacy PPT text extraction is limited | LibreOffice |
-| DOCX / DOC | Cached PDF generated locally by LibreOffice | Clear unavailable state plus Readable Text tab | DOCX paragraph XML; legacy DOC text extraction is limited | LibreOffice |
-| XLSX / XLS | Not promoted to PDF yet | Clear unavailable state plus Open Original | Future workbook/sheet-aware extraction | Future work |
-| Images | Browser image preview from original file | Open Original | No text extraction by default | None |
-| TXT / MD / CSV | Escaped text preview | Open Original | Direct text read | None |
-| Python / R / IPYNB | Escaped code/text preview | Open Original | Source/cell text read | None |
+| PDF | StudyHub Reader using local PDF.js 6.4.299 | Safe extracted text, then Open Original | `pdftotext`, MarkItDown fallback, then bounded on-device OCR | Poppler optional; bundled mac-ocr fallback on macOS |
+| PPTX / PPT | Cached PDF generated locally by LibreOffice, rendered by PDF.js | Readable Text, then Open Original | MarkItDown for PPTX with built-in structured fallback; legacy PPT remains limited | LibreOffice optional |
+| DOCX / DOC | Cached PDF generated locally by LibreOffice, rendered by PDF.js | Readable Text, then Open Original | MarkItDown for DOCX with built-in structured fallback; legacy DOC remains limited | LibreOffice optional |
+| XLSX / XLS | Readable Text in the StudyHub Reader | Open Original | MarkItDown workbook extraction for XLSX; legacy XLS remains limited | None for XLSX |
+| Images | StudyHub image reader from the authorized original | Open Original | Bounded on-device OCR fallback on macOS | Bundled mac-ocr |
+| TXT / MD / CSV | Escaped Reader text | Open Original | Direct text read | None |
+| Python / R / IPYNB | Escaped text with local Prism highlighting | Open Original | Source/cell text read | None |
 | HTML / SVG / XML | Escaped text preview only | Open Original | Direct text read | None |
 | Unknown binary | Clear unavailable state | Open Original | None | None |
 
@@ -34,3 +34,20 @@ when available, with:
 
 The original Office document remains the source of truth. The cached PDF is only
 a visual preview derivative.
+
+## Reader Security And Cache Policy
+
+- PDF.js, Prism, and their workers/assets are packaged locally; Reader has no
+  CDN or runtime asset fetch.
+- Reader accepts a StudyHub `file_id`, never a browser-provided filesystem path
+  or arbitrary URL.
+- PDF script execution/XFA are disabled and no PDF annotation link layer is
+  mounted in V1.
+- extracted Markdown/HTML is displayed as text, never injected as active HTML;
+  DOMPurify is therefore not required by the current rendering policy.
+- mac-ocr accepts only allowlisted local files, has a 50 MiB input limit,
+  60-page PDF limit, 90-second timeout, and never receives URL input. OCR and
+  conversion derivatives live in runtime cache.
+- cache identity includes source digest plus extraction/converter version.
+- Reader DOM is not an AI source. Search, citations, and Ask continue to use
+  backend extraction chunks and provenance.

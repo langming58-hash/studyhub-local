@@ -52,8 +52,8 @@ enhancement and is not a V1 completion blocker.
 - extend the implemented Study Engine V1 with evidence-driven session,
   wrong-question, anchored-note, and manual review-item improvements without
   inventing teacher content
-- improve extraction and graceful capability discovery for PDFs, Office files,
-  OCR, and workbook-aware reading
+- validate and refine the implemented Reader V1: packaged PDF.js, local
+  MarkItDown Office/XLSX extraction, and bounded macOS OCR fallback
 - extend the implemented Canvas connector, selected-course file preview, and
   explicit provenance-aware acquisition into compliant Production
   authentication, account UX, recovery, and target-domain Course mapping
