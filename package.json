@@ -4,11 +4,12 @@
   "description": "Local-first course material hub with source-grounded AI study tools.",
   "license": "MIT",
   "scripts": {
+    "postinstall": "python3 bin/prepare_reader_assets.py",
     "dev": "python3 bin/run_development.py",
-    "lint": "python3 -m py_compile server.py bin/*.py",
-    "typecheck": "python3 -m py_compile server.py bin/*.py",
-    "test": "python3 bin/privacy_acceptance.py && python3 bin/security_acceptance.py && python3 bin/study_engine_acceptance.py && python3 bin/bridge_acceptance.py && python3 bin/askgpt_acceptance.py && python3 bin/p2_acceptance.py && python3 bin/extraction_acceptance.py && python3 bin/document_preview_acceptance.py && python3 bin/ai_workspace_acceptance.py && python3 bin/ui_ia_acceptance.py && python3 bin/whats_new_ui_acceptance.py && python3 bin/first_run_acceptance.py && python3 bin/i18n_acceptance.py && python3 bin/ai_rendering_acceptance.py && python3 bin/product_completeness_acceptance.py && python3 bin/environment_isolation_acceptance.py && python3 bin/synthetic_scenario_acceptance.py && python3 bin/domain_foundation_acceptance.py && python3 bin/ingestion_core_acceptance.py && python3 bin/credential_store_acceptance.py && python3 bin/credential_transport_acceptance.py && python3 bin/canvas_discovery_acceptance.py && python3 bin/canvas_course_selection_acceptance.py && python3 bin/canvas_sync_plan_acceptance.py && python3 bin/canvas_file_acquisition_acceptance.py && python3 bin/academic_change_journal_acceptance.py && python3 bin/backup_export_acceptance.py && python3 bin/backup_restore_preview_acceptance.py && python3 bin/backup_restore_apply_acceptance.py && python3 bin/backup_restore_relink_preview_acceptance.py && python3 bin/backup_restore_relink_apply_acceptance.py && python3 bin/backup_restore_multi_relink_acceptance.py && python3 bin/backup_restore_operation_acceptance.py && python3 bin/backup_restore_undo_preview_acceptance.py && python3 bin/backup_restore_undo_apply_acceptance.py && python3 bin/backup_recovery_closure_acceptance.py && python3 bin/desktop_acceptance.py && python3 bin/release_desktop_acceptance.py",
-    "build": "python3 -m py_compile server.py bin/*.py",
+    "lint": "python3 -m py_compile server.py reader_extractors.py bin/*.py",
+    "typecheck": "python3 -m py_compile server.py reader_extractors.py bin/*.py",
+    "test": "python3 bin/privacy_acceptance.py && python3 bin/security_acceptance.py && python3 bin/study_engine_acceptance.py && python3 bin/bridge_acceptance.py && python3 bin/askgpt_acceptance.py && python3 bin/p2_acceptance.py && python3 bin/extraction_acceptance.py && python3 bin/document_preview_acceptance.py && python3 bin/reader_v1_acceptance.py && python3 bin/ai_workspace_acceptance.py && python3 bin/ui_ia_acceptance.py && python3 bin/whats_new_ui_acceptance.py && python3 bin/first_run_acceptance.py && python3 bin/i18n_acceptance.py && python3 bin/ai_rendering_acceptance.py && python3 bin/product_completeness_acceptance.py && python3 bin/environment_isolation_acceptance.py && python3 bin/synthetic_scenario_acceptance.py && python3 bin/domain_foundation_acceptance.py && python3 bin/ingestion_core_acceptance.py && python3 bin/credential_store_acceptance.py && python3 bin/credential_transport_acceptance.py && python3 bin/canvas_discovery_acceptance.py && python3 bin/canvas_course_selection_acceptance.py && python3 bin/canvas_sync_plan_acceptance.py && python3 bin/canvas_file_acquisition_acceptance.py && python3 bin/academic_change_journal_acceptance.py && python3 bin/backup_export_acceptance.py && python3 bin/backup_restore_preview_acceptance.py && python3 bin/backup_restore_apply_acceptance.py && python3 bin/backup_restore_relink_preview_acceptance.py && python3 bin/backup_restore_relink_apply_acceptance.py && python3 bin/backup_restore_multi_relink_acceptance.py && python3 bin/backup_restore_operation_acceptance.py && python3 bin/backup_restore_undo_preview_acceptance.py && python3 bin/backup_restore_undo_apply_acceptance.py && python3 bin/backup_recovery_closure_acceptance.py && python3 bin/desktop_acceptance.py && python3 bin/release_desktop_acceptance.py",
+    "build": "python3 bin/prepare_reader_assets.py && python3 -m py_compile server.py reader_extractors.py bin/*.py",
     "ci": "python3 bin/privacy_check.py && npm run lint && npm run test && npm run build",
     "desktop:setup": "python3 bin/setup_desktop.py",
     "desktop:backend": ".venv-desktop/bin/python bin/build_desktop_backend.py",
@@ -29,9 +30,14 @@
     "serve": "python3 server.py serve --port 8765 --no-scan"
   },
   "dependencies": {
-    "katex": "^0.18.4"
+    "katex": "^0.18.4",
+    "pdfjs-dist": "6.4.299",
+    "prismjs": "1.30.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4"
+  },
+  "optionalDependencies": {
+    "mac-ocr": "1.1.1"
   }
 }

@@ -208,7 +208,8 @@ def source_checks() -> dict[str, bool]:
         "release_build_uses_no_shell": "subprocess.run" in builder and "shell=True" not in builder,
         "release_build_uses_project_rust_toolchain": 'ROOT / ".tools" / "cargo"' in builder
         and 'ROOT / ".tools" / "rustup"' in builder,
-        "clean_clone_check_prepares_resource_root": '"backend" / "studyhub-backend").mkdir' in desktop_check,
+        "clean_clone_check_prepares_resource_root": 'backend_root / "studyhub-backend"' in desktop_check
+        and 'backend_root / "studyhub-markitdown"' in desktop_check,
         "release_has_no_system_python_fallback": 'resolve("backend/studyhub-backend"' in rust
         and "cfg(not(debug_assertions))" in rust,
         "packaged_backend_uses_one_folder": '"--onedir"' in backend_builder,

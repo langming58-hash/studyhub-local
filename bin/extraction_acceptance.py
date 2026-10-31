@@ -72,11 +72,11 @@ def main() -> int:
         pdf.parent.mkdir(parents=True)
         pdf.write_bytes(b"%PDF-1.4\n% synthetic placeholder for scanner regression\n")
 
-        old_extract_text = server.extract_text
+        old_extract_document = server.extract_document
         old_extract_chunks = server.extract_document_chunks
         old_error_for = server.extraction_error_for
 
-        server.extract_text = lambda path: ""
+        server.extract_document = lambda path: server.ExtractedDocument("", "pdftotext", "missing")
         server.extract_document_chunks = lambda path, text: []
         server.extraction_error_for = lambda path, text: "PDF text extraction unavailable: pdftotext was not found. Install Poppler and rescan the library."
         stats1 = server.scan_library(root)
@@ -84,7 +84,7 @@ def main() -> int:
         first_state = counts_for_file(server, first["id"])
 
         recovered_text = "Recovered synthetic source text. The tutorial asks about separable differential equations. Q1. Explain the recovered concept."
-        server.extract_text = lambda path: recovered_text
+        server.extract_document = lambda path: server.ExtractedDocument(recovered_text, "synthetic", "1", page_labels=("Page 1",))
         server.extract_document_chunks = lambda path, text: server.chunk_plain_text(text, "p.1", page_start=1)
         server.extraction_error_for = lambda path, text: "" if text else old_error_for(path, text)
         stats2 = server.scan_library(root)
@@ -114,7 +114,7 @@ def main() -> int:
             },
         )
 
-        server.extract_text = old_extract_text
+        server.extract_document = old_extract_document
         server.extract_document_chunks = old_extract_chunks
         server.extraction_error_for = old_error_for
 

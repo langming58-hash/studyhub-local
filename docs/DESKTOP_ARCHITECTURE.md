@@ -34,7 +34,9 @@ optional OpenAI synchronization, and the read-only MCP endpoint.
 | Build-time | Tauri CLI and crates | Build the macOS `.app` and DMG |
 | Runtime required | macOS WebKit | Render the existing StudyHub UI in the Tauri window |
 | Runtime bundled | PyInstaller one-folder backend | Python 3.13, SQLite, standard library, and `certifi` |
-| Runtime bundled | Compiled Tauri shell and static assets | Existing UI and local KaTeX distribution |
+| Runtime bundled | Compiled Tauri shell and static assets | Existing UI, KaTeX, PDF.js and Prism distributions |
+| Runtime bundled | MarkItDown 0.1.9 private helper | Local Office/XLSX and PDF-fallback text extraction; plugins disabled |
+| Runtime bundled (macOS) | mac-ocr 1.1.1 universal binary | Bounded Apple Vision OCR fallback with no URL input |
 | Runtime optional | Poppler `pdftotext` / `pdfinfo` | Searchable PDF extraction and page metadata |
 | Runtime optional | LibreOffice | High-fidelity local PPT/DOC visual preview conversion |
 | Runtime optional | OpenAI API access | Source-grounded AI explanations and opt-in file search |
@@ -175,9 +177,18 @@ requirements for opening the resulting app.
 
 ## Document Support
 
-- PDF visual preview works through the WebView. Searchable extraction degrades
-  when Poppler is missing.
-- PPTX/DOCX visual preview uses local LibreOffice when available.
+- PDF visual preview uses packaged PDF.js with selectable text, find, page
+  navigation, zoom, fit-width, lazy rendering, and route restoration.
+- PDF extraction prefers Poppler, then MarkItDown, then bounded on-device OCR.
+- PPTX/DOCX visual preview uses local LibreOffice when available and renders
+  the cached derivative through the same PDF.js Reader.
+- XLSX/DOCX/PPTX readable extraction prefers packaged MarkItDown 0.1.9.
+- The packaged MarkItDown dependency graph is isolated in one private helper
+  process. The backend sends bounded local conversion requests over inherited
+  stdin/stdout pipes; source paths are never command-line arguments, browser
+  inputs, logs, or public response fields. The helper has no network-facing
+  interface and is reused for the backend lifetime to avoid per-file startup
+  cost.
 - Without LibreOffice, supported Office XML text remains readable/searchable and
   the visual pane explains the missing optional capability.
 - Neither optional tool may block application startup.
