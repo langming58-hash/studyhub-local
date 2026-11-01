@@ -268,7 +268,9 @@ Visual preview and readable extraction are separate:
   the same PDF.js Reader. XLSX/DOCX/PPTX extraction prefers local MarkItDown,
   isolated behind a private packaged helper pipe rather than exposed through
   HTTP, Tauri commands, or command-line file arguments.
-- macOS OCR is a bounded, on-device last fallback and never mutates originals.
+- packaged PDF extraction and macOS OCR preserve bounded page-aware text so
+  search, Ask, teacher questions, and citations retain reliable `p.N` grounding.
+  OCR is an on-device last fallback and never mutates originals.
 - cached derivatives never replace the original file.
 - Ask/search/citation grounding remains backend chunk based and never treats
   Reader DOM or visual rendering as authoritative content.

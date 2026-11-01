@@ -179,7 +179,9 @@ requirements for opening the resulting app.
 
 - PDF visual preview uses packaged PDF.js with selectable text, find, page
   navigation, zoom, fit-width, lazy rendering, and route restoration.
-- PDF extraction prefers Poppler, then MarkItDown, then bounded on-device OCR.
+- PDF extraction prefers Poppler, then the packaged helper's local pypdfium2
+  path, then MarkItDown and bounded on-device OCR. The pypdfium2 and OCR paths
+  preserve page-aware text for `p.N` search, Ask, question, and citation grounding.
 - PPTX/DOCX visual preview uses local LibreOffice when available and renders
   the cached derivative through the same PDF.js Reader.
 - XLSX/DOCX/PPTX readable extraction prefers packaged MarkItDown 0.1.9.

@@ -129,11 +129,24 @@ def main() -> int:
         image = root / "synthetic.png"
         image.write_bytes(b"synthetic-image-input")
         fake = root / "mac-ocr"
-        fake.write_text('#!/bin/sh\nprintf \'%s\\n\' \'{"page":1,"pageCount":1,"text":"Synthetic OCR text"}\'\n', encoding="utf-8")
+        fake.write_text(
+            '#!/bin/sh\n'
+            'printf \'%s\\n\' \'{"page":1,"pageCount":2,"text":"Synthetic OCR page one"}\'\n'
+            'printf \'%s\\n\' \'{"page":2,"pageCount":2,"text":"Synthetic OCR page two"}\'\n',
+            encoding="utf-8",
+        )
         fake.chmod(0o755)
         before = hashlib.sha256(image.read_bytes()).hexdigest()
         ocr = reader.extract_with_mac_ocr(image, [root], fake, timeout_seconds=2)
-        checks["ocr_bounded_adapter"] = ocr.ocr_used and ocr.page_labels == ("Page 1",) and "Synthetic OCR text" in ocr.text
+        checks["ocr_bounded_adapter"] = (
+            ocr.ocr_used
+            and ocr.page_labels == ("Page 1", "Page 2")
+            and ocr.page_texts == (
+                (1, "Synthetic OCR page one"),
+                (2, "Synthetic OCR page two"),
+            )
+            and "Synthetic OCR page two" in ocr.text
+        )
         checks["ocr_source_unchanged"] = before == hashlib.sha256(image.read_bytes()).hexdigest()
         try:
             reader.extract_with_mac_ocr(Path("https://example.invalid/input.png"), [root], fake)

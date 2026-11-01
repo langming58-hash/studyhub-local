@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import importlib
+import importlib.util
 import os
 import atexit
 import select
@@ -18,6 +19,8 @@ from typing import Callable, Iterable
 MAX_EXTRACTED_CHARS = 200_000
 MAX_INPUT_BYTES = 50 * 1024 * 1024
 MAX_OCR_PAGES = 60
+MAX_PDF_TEXT_PAGES = 500
+MAX_HELPER_RESPONSE_CHARS = MAX_EXTRACTED_CHARS * 2 + 64_000
 MIN_USEFUL_TEXT_CHARS = 64
 MARKITDOWN_VERSION = "0.1.9"
 MAC_OCR_VERSION = "1.1.1"
@@ -33,6 +36,7 @@ class ExtractedDocument:
     text: str
     method: str
     version: str
+    page_texts: tuple[tuple[int, str], ...] = ()
     page_labels: tuple[str, ...] = ()
     slide_labels: tuple[str, ...] = ()
     ocr_used: bool = False
@@ -114,13 +118,101 @@ def _run_markitdown_helper(source: Path, operation: str) -> dict[str, object] | 
         except (OSError, BrokenPipeError, subprocess.TimeoutExpired):
             _stop_markitdown_helper()
             return {}
-    if not response or len(response) > MAX_EXTRACTED_CHARS * 2:
+    if not response or len(response) > MAX_HELPER_RESPONSE_CHARS:
         return {}
     try:
         payload = json.loads(response)
     except (json.JSONDecodeError, TypeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _bounded_page_texts(raw_pages: object) -> tuple[tuple[int, str], ...]:
+    if not isinstance(raw_pages, list) or len(raw_pages) > MAX_PDF_TEXT_PAGES:
+        return ()
+    pages: list[tuple[int, str]] = []
+    remaining = MAX_EXTRACTED_CHARS
+    for expected, item in enumerate(raw_pages, start=1):
+        if not isinstance(item, dict):
+            return ()
+        try:
+            page = int(item.get("page"))
+        except (TypeError, ValueError):
+            return ()
+        if page != expected or page < 1:
+            return ()
+        text = str(item.get("text") or "").strip()
+        if len(text) > remaining:
+            text = text[:remaining]
+        pages.append((page, text))
+        remaining -= len(text)
+        if remaining <= 0:
+            break
+    return tuple(pages)
+
+
+def _page_document(page_texts: tuple[tuple[int, str], ...], method: str, version: str) -> ExtractedDocument:
+    text = "\n\n".join(value for _page, value in page_texts if value)[:MAX_EXTRACTED_CHARS]
+    return ExtractedDocument(
+        text,
+        method,
+        version,
+        page_texts=page_texts,
+        page_labels=tuple(f"Page {page}" for page, _value in page_texts),
+    )
+
+
+def extract_pdf_pages(path: Path, allowed_roots: Iterable[Path]) -> ExtractedDocument:
+    """Extract bounded page text locally while preserving page identity."""
+    source = _bounded_local_file(path, allowed_roots)
+    helper_result = _run_markitdown_helper(source, "pdf_pages")
+    if helper_result and helper_result.get("ok") is True:
+        helper_pages = _bounded_page_texts(helper_result.get("pages"))
+        if helper_pages:
+            return _page_document(helper_pages, "pypdfium2", "packaged")
+    try:
+        pypdfium2 = importlib.import_module("pypdfium2")
+        document = pypdfium2.PdfDocument(source)
+    except Exception:
+        return ExtractedDocument("", "pypdfium2", "missing")
+    try:
+        if len(document) < 1 or len(document) > MAX_PDF_TEXT_PAGES:
+            return ExtractedDocument("", "pypdfium2", "bounded")
+        raw_pages: list[dict[str, object]] = []
+        remaining = MAX_EXTRACTED_CHARS
+        for number, page in enumerate(document, start=1):
+            try:
+                text_page = page.get_textpage()
+                try:
+                    text = str(text_page.get_text_range() or "").strip()[:remaining]
+                finally:
+                    text_page.close()
+            finally:
+                page.close()
+            raw_pages.append({"page": number, "text": text})
+            remaining -= len(text)
+            if remaining <= 0:
+                break
+        return _page_document(_bounded_page_texts(raw_pages), "pypdfium2", "local")
+    except Exception:
+        return ExtractedDocument("", "pypdfium2", "failed")
+    finally:
+        document.close()
+
+
+def local_pdf_extraction_available() -> bool:
+    configured = os.environ.get(MARKITDOWN_HELPER_ENV, "").strip()
+    if configured:
+        try:
+            helper = Path(configured).resolve(strict=True)
+            if helper.is_file() and os.access(helper, os.X_OK):
+                return True
+        except OSError:
+            pass
+    try:
+        return importlib.util.find_spec("pypdfium2") is not None or importlib.util.find_spec("markitdown") is not None
+    except (ImportError, AttributeError, ValueError):
+        return False
 
 
 def extract_with_markitdown(path: Path, allowed_roots: Iterable[Path]) -> ExtractedDocument:
@@ -143,11 +235,13 @@ def extract_with_markitdown(path: Path, allowed_roots: Iterable[Path]) -> Extrac
 
 def _pdf_page_count(source: Path) -> int | None:
     helper_result = _run_markitdown_helper(source, "pdf_page_count")
-    if helper_result is not None:
+    if helper_result and helper_result.get("ok") is True:
         try:
-            return int(helper_result.get("page_count") or 0)
+            page_count = int(helper_result.get("page_count") or 0)
+            if page_count > 0:
+                return page_count
         except (TypeError, ValueError):
-            return None
+            pass
     try:
         pypdfium2 = importlib.import_module("pypdfium2")
         return len(pypdfium2.PdfDocument(source))
@@ -188,8 +282,7 @@ def extract_with_mac_ocr(
         return ExtractedDocument("", "mac-ocr", MAC_OCR_VERSION)
     if completed.returncode != 0:
         return ExtractedDocument("", "mac-ocr", MAC_OCR_VERSION)
-    texts: list[str] = []
-    labels: list[str] = []
+    page_texts: list[tuple[int, str]] = []
     for line in completed.stdout.splitlines():
         if not line.strip():
             continue
@@ -198,15 +291,17 @@ def extract_with_mac_ocr(
         except json.JSONDecodeError:
             return ExtractedDocument("", "mac-ocr", MAC_OCR_VERSION)
         page = int(item.get("page") or 1)
-        labels.append(f"Page {page}")
         value = str(item.get("text") or "").strip()
-        if value:
-            texts.append(f"Page {page}\n\n{value}")
+        page_texts.append((page, value))
+    bounded_pages = _bounded_page_texts(
+        [{"page": page, "text": value} for page, value in page_texts]
+    )
     return ExtractedDocument(
-        "\n\n".join(texts)[:MAX_EXTRACTED_CHARS],
+        "\n\n".join(value for _page, value in bounded_pages if value)[:MAX_EXTRACTED_CHARS],
         "mac-ocr",
         MAC_OCR_VERSION,
-        page_labels=tuple(labels),
+        page_texts=bounded_pages,
+        page_labels=tuple(f"Page {page}" for page, _value in bounded_pages),
         ocr_used=True,
     )
 
@@ -227,6 +322,9 @@ def extract_document(
         text = pdftotext(source).strip()
         if len(text) >= MIN_USEFUL_TEXT_CHARS:
             return ExtractedDocument(text[:MAX_EXTRACTED_CHARS], "pdftotext", "system")
+        pages = extract_pdf_pages(source, allowed_roots)
+        if pages.text.strip():
+            return pages
         result = extract_with_markitdown(source, allowed_roots)
         if len(result.text.strip()) >= MIN_USEFUL_TEXT_CHARS:
             return result

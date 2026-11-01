@@ -85,7 +85,7 @@ def main() -> int:
 
         recovered_text = "Recovered synthetic source text. The tutorial asks about separable differential equations. Q1. Explain the recovered concept."
         server.extract_document = lambda path: server.ExtractedDocument(recovered_text, "synthetic", "1", page_labels=("Page 1",))
-        server.extract_document_chunks = lambda path, text: server.chunk_plain_text(text, "p.1", page_start=1)
+        server.extract_document_chunks = lambda path, document: server.chunk_plain_text(document.text, "p.1", page_start=1)
         server.extraction_error_for = lambda path, text: "" if text else old_error_for(path, text)
         stats2 = server.scan_library(root)
         second = file_row(server, "Tutorial_04.pdf")

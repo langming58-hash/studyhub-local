@@ -14,6 +14,7 @@ from pypdfium2 import PdfDocument
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_INPUT_BYTES = 50 * 1024 * 1024
 MAX_EXTRACTED_CHARS = 200_000
+MAX_PDF_TEXT_PAGES = 500
 ALLOWED_EXTENSIONS = {".docx", ".pdf", ".pptx", ".xlsx"}
 
 
@@ -40,6 +41,29 @@ def handle(raw: bytes) -> dict[str, object]:
     operation = str(request.get("operation") or "")
     if operation == "pdf_page_count" and source.suffix.lower() == ".pdf":
         return {"ok": True, "page_count": len(PdfDocument(source))}
+    if operation == "pdf_pages" and source.suffix.lower() == ".pdf":
+        document = PdfDocument(source)
+        try:
+            if len(document) < 1 or len(document) > MAX_PDF_TEXT_PAGES:
+                raise ValueError("pdf_page_bound")
+            pages: list[dict[str, object]] = []
+            remaining = MAX_EXTRACTED_CHARS
+            for number, page in enumerate(document, start=1):
+                try:
+                    text_page = page.get_textpage()
+                    try:
+                        text = str(text_page.get_text_range() or "").strip()[:remaining]
+                    finally:
+                        text_page.close()
+                finally:
+                    page.close()
+                pages.append({"page": number, "text": text})
+                remaining -= len(text)
+                if remaining <= 0:
+                    break
+            return {"ok": True, "pages": pages}
+        finally:
+            document.close()
     if operation == "convert":
         result = CONVERTER.convert_local(str(source))
         return {

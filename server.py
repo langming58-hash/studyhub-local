@@ -44,7 +44,11 @@ if str(SERVER_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVER_ROOT))
 
 from fsrs import Card, Rating, Scheduler, State
-from reader_extractors import ExtractedDocument, extract_document as run_document_extraction
+from reader_extractors import (
+    ExtractedDocument,
+    extract_document as run_document_extraction,
+    local_pdf_extraction_available,
+)
 
 try:
     import certifi
@@ -109,7 +113,7 @@ RESTORE_INBOX_DIR = DATA_DIR / "restore-inbox"
 RESTORE_RELINK_INBOX_DIR = DATA_DIR / "restore-relink-inbox"
 CACHE_DIR = configured_path("STUDYHUB_CACHE_DIR", RUNTIME_DIR / "cache")
 TEXT_CACHE_DIR = CACHE_DIR / "text"
-TEXT_EXTRACTION_VERSION = "extract-v3-reader-local"
+TEXT_EXTRACTION_VERSION = "extract-v4-page-grounded"
 LOG_DIR = configured_path("STUDYHUB_LOG_DIR", RUNTIME_DIR / "logs")
 STATIC_DIR = configured_path("STUDYHUB_STATIC_DIR", APP_ROOT / "static")
 KATEX_DIST_DIR = configured_path("STUDYHUB_KATEX_DIR", APP_ROOT / "node_modules" / "katex" / "dist")
@@ -1955,9 +1959,9 @@ def convert_office_document_to_pdf(row: sqlite3.Row | dict[str, Any], source_pat
 
 
 def pdf_extraction_dependency_error() -> str:
-    if configured_tool("pdftotext", "STUDYHUB_PDFTOTEXT"):
+    if configured_tool("pdftotext", "STUDYHUB_PDFTOTEXT") or local_pdf_extraction_available():
         return ""
-    return "PDF text extraction unavailable: pdftotext was not found. Install Poppler and rescan the library."
+    return "PDF readable-text extraction is unavailable because no local extractor is available."
 
 
 def extraction_error_for(path: Path, text: str) -> str:
@@ -2236,9 +2240,18 @@ def chunk_plain_text(text: str, source_location: str = "", page_start: int | Non
     return chunks
 
 
-def extract_document_chunks(path: Path, fallback_text: str) -> list[dict[str, Any]]:
+def extract_document_chunks(path: Path, extracted: str | ExtractedDocument) -> list[dict[str, Any]]:
+    fallback_text = extracted.text if isinstance(extracted, ExtractedDocument) else extracted
+    page_texts = extracted.page_texts if isinstance(extracted, ExtractedDocument) else ()
     ext = path.suffix.lower()
     if ext == ".pdf":
+        if page_texts:
+            out: list[dict[str, Any]] = []
+            for page, page_text in page_texts:
+                out.extend(chunk_plain_text(page_text, f"p.{page}", page_start=page))
+            for i, chunk in enumerate(out):
+                chunk["chunk_index"] = i
+            return out
         pages = pdf_page_count(path)
         if pages:
             out: list[dict[str, Any]] = []
@@ -9969,7 +9982,7 @@ def _legacy_scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
                     text_cache_path.write_text(text, encoding="utf-8", errors="ignore")
                     write_extraction_metadata(digest, extraction)
                     text_cache = str(text_cache_path)
-                    chunks = extract_document_chunks(path, text)
+                    chunks = extract_document_chunks(path, extraction)
                     stats.indexed_text += 1
                 else:
                     text_cache = ""
@@ -10158,7 +10171,7 @@ def index_material_content(
             text_cache_path.write_text(text, encoding="utf-8", errors="ignore")
             write_extraction_metadata(digest, extraction)
             text_cache = str(text_cache_path)
-            chunks = extract_document_chunks(path, text)
+            chunks = extract_document_chunks(path, extraction)
         else:
             text_cache = ""
     elif text_cache_available(text_cache):
@@ -11607,10 +11620,10 @@ def api_preflight(conn: sqlite3.Connection) -> dict[str, Any]:
                 "pdf_text_missing",
                 "warning",
                 "PDF text support is missing",
-                "StudyHub can list PDF files, but cannot read searchable text from many PDFs until Poppler is installed.",
+                "StudyHub can list PDF files, but no local readable-text extractor is currently available.",
                 "PDF preview still works. Ask AI may not understand PDFs whose text has not been read.",
-                "Install Poppler, then scan again.",
-                "Expected command-line tools: pdftotext and pdfinfo.",
+                "Repair the packaged Reader tools or install Poppler, then scan again.",
+                "Poppler remains an optional local accelerator when packaged extraction is available.",
             )
         )
     if not (KATEX_DIST_DIR / "katex.min.js").exists():

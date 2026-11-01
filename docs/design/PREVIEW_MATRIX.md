@@ -10,7 +10,7 @@ back into the user's study folder.
 
 | File type | Primary visual preview | Fallback preview | Readable text extraction | Optional dependency |
 | --- | --- | --- | --- | --- |
-| PDF | StudyHub Reader using local PDF.js 6.4.299 | Safe extracted text, then Open Original | `pdftotext`, MarkItDown fallback, then bounded on-device OCR | Poppler optional; bundled mac-ocr fallback on macOS |
+| PDF | StudyHub Reader using local PDF.js 6.4.299 | Safe extracted text, then Open Original | `pdftotext`, packaged page-aware pypdfium2, MarkItDown fallback, then page-aware bounded on-device OCR | Poppler optional; packaged extraction and bundled mac-ocr fallback on macOS |
 | PPTX / PPT | Cached PDF generated locally by LibreOffice, rendered by PDF.js | Readable Text, then Open Original | MarkItDown for PPTX with built-in structured fallback; legacy PPT remains limited | LibreOffice optional |
 | DOCX / DOC | Cached PDF generated locally by LibreOffice, rendered by PDF.js | Readable Text, then Open Original | MarkItDown for DOCX with built-in structured fallback; legacy DOC remains limited | LibreOffice optional |
 | XLSX / XLS | Readable Text in the StudyHub Reader | Open Original | MarkItDown workbook extraction for XLSX; legacy XLS remains limited | None for XLSX |
