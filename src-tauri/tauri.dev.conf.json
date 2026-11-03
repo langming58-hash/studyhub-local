@@ -2,6 +2,11 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "StudyHub Dev",
   "identifier": "io.studyhublocal.desktop.dev",
+  "app": {
+    "security": {
+      "capabilities": ["studyhub-development"]
+    }
+  },
   "bundle": {
     "active": false
   }

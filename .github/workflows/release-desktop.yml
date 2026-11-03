@@ -60,6 +60,8 @@ jobs:
         run: npm run desktop:setup
       - name: Check desktop Rust workspace
         run: npm run desktop:check
+      - name: Run desktop Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Build app and DMG
         run: npm run desktop:build
       - name: Name artifact and generate SHA-256

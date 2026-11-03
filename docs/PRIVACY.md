@@ -126,10 +126,17 @@ The implemented Canvas discovery boundary stores a versioned connection record
 behind that slot: normalized HTTPS Canvas origin plus access token. The
 Development profile has a narrow manual-token configuration command for local
 testing, while Production rejects manual-token enrollment before touching
-credential storage. Status/remove commands remain non-secret management
-operations. No frontend, HTTP route, MCP tool, diagnostic, log, or SQLite row
-may read the raw token. The backend uses the record only for read-only identity
+credential storage. Production connection is OAuth-only: the institution OAuth
+client secret, the OAuth access token, and the OAuth refresh token are stored
+only in native CredentialStore and are never sent to the Python backend, the
+frontend, localhost HTTP, MCP, diagnostics, logs, SQLite, or browser storage.
+OAuth state is generated from OS cryptographic randomness, is one-time and
+expiring, and lives only in native process memory. The backend continues to
+receive only a currently valid origin-bound access credential through the
+private `canvas_default` transport and uses it only for read-only identity
 validation and current-user course discovery against the bound origin.
+Disconnect removes authentication but preserves imported materials, study
+state, and the What's New journal.
 
 The implemented Canvas CourseOffering selection foundation persists only a
 non-secret authority ID derived from the normalized Canvas origin, remote

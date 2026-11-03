@@ -144,7 +144,7 @@ def main() -> int:
         frontend = (ROOT / "static/app.js").read_text(encoding="utf-8")
         catalog = (ROOT / "static/i18n/catalog.js").read_text(encoding="utf-8")
         build_rs = (ROOT / "src-tauri/build.rs").read_text(encoding="utf-8")
-        capability = (ROOT / "src-tauri/capabilities/default.json").read_text(encoding="utf-8")
+        capability = (ROOT / "src-tauri/capabilities/studyhub-production.json").read_text(encoding="utf-8")
         check("pr30_merge_foundation_present", hasattr(target, "apply_staged_restore") and hasattr(target, "verify_restore_source_candidates"), failures)
         check("native_picker_command_exists", "choose_restore_relink_file" in rust and '"choose_restore_relink_file"' in build_rs, failures)
         check("native_picker_minimum_permission", '"allow-choose-restore-relink-file"' in capability, failures)

@@ -89,7 +89,13 @@ current truth, not the final module boundary.
 Phase 2 also implements the first narrow Canvas connector foundation:
 origin-bound connection records, Development-only manual token enrollment for
 local testing, authenticated current-user validation, and read-only current-user
-course discovery. Production end-user Canvas authentication is not implemented.
+course discovery. Production end-user Canvas authentication is OAuth-only:
+the native parent performs a system-browser authorization flow with a
+cryptographically random, one-time, expiring state, exchanges the code over
+HTTPS bound to the exact configured Canvas origin, validates the user with
+`/api/v1/users/self`, and persists an OAuth credential record whose access and
+refresh tokens and client secret stay inside native CredentialStore. Production
+manual-token enrollment fails closed.
 Discovery results can now be persisted into an additive Canvas CourseOffering
 foundation: stable origin-bound remote identity, remote-authoritative
 last-known course metadata, and separate user-owned selected/deselected state.
@@ -247,8 +253,8 @@ relink may create the single missing canonical Source/Blob/MaterialVersion graph
 or update the existing user-owned Source locator while preserving stable
 Material identity. It does not run global reconciliation or migrate schema.
 
-Not implemented yet: production Canvas OAuth, remote Term mapping, remote
-deletion semantics, notifications, automatic/background sync, SourceAnchor, Evidence,
+Not implemented yet: remote Term mapping, remote deletion semantics,
+notifications, automatic/background sync, SourceAnchor, Evidence,
 DerivedArtifact/ProcessingRecipe, Entity Resolution, the Assessments target
 model, background jobs, and target-domain UI reads.
 
@@ -297,7 +303,10 @@ See [Preview Matrix](design/PREVIEW_MATRIX.md) for current format behavior.
   `canvas_default` credential operation. The current Canvas connector can use
   that boundary for read-only identity validation, course discovery, and
   selected-offering file discovery and explicit file acquisition when an
-  approved mechanism has stored a valid connection record. Bearer credentials
+  approved mechanism has stored a valid connection record. For Production OAuth
+  records, the native parent refreshes the access token before projecting an
+  origin-bound credential to the backend; the backend never receives the client
+  secret or refresh token. Bearer credentials
   remain confined to same-origin Canvas API requests and are not attached to
   ephemeral file-download URLs or redirects.
 - OpenAI is optional, server-side, and scoped to indexed source material.

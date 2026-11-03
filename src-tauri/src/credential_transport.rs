@@ -13,7 +13,7 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 
 use crate::credential_handoff::{
-    CredentialHandoffBroker, HandoffError, HandoffFailure, HandoffRequest,
+    CanvasDefaultResolver, CredentialHandoffBroker, HandoffError, HandoffFailure, HandoffRequest,
 };
 use crate::credential_store::{credential_store_for_profile, CredentialStore};
 use crate::RuntimeProfile;
@@ -170,11 +170,15 @@ pub(crate) fn spawn_backend_credential_transport(
     pending: PendingCredentialTransport,
     child_id: u32,
     profile: RuntimeProfile,
+    canvas_default_resolver: Option<CanvasDefaultResolver>,
 ) {
     thread::spawn(move || {
         let stream = pending.into_parent_stream();
         let store = credential_store_for_profile(profile);
-        let broker = CredentialHandoffBroker::new(store);
+        let broker = match canvas_default_resolver {
+            Some(resolver) => CredentialHandoffBroker::with_canvas_default_resolver(store, resolver),
+            None => CredentialHandoffBroker::new(store),
+        };
         let _ = serve_backend_credential_transport(stream, broker, child_id);
     });
 }

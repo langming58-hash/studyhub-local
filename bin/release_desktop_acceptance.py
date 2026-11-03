@@ -32,7 +32,7 @@ def main() -> int:
     readme_zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
     workflow = (ROOT / ".github" / "workflows" / "release-desktop.yml").read_text(encoding="utf-8")
     frontend = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-    capability = (ROOT / "src-tauri" / "capabilities" / "default.json").read_text(encoding="utf-8")
+    capability = (ROOT / "src-tauri" / "capabilities" / "studyhub-production.json").read_text(encoding="utf-8")
 
     results = {
         "version_consistent": package["version"] == VERSION

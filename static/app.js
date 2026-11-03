@@ -54,6 +54,22 @@ const state = {
     lastContextKey: "",
     draft: localStorage.getItem("studyhub.askDraft") || "",
   },
+  canvas: {
+    status: "unavailable",
+    authMode: null,
+    origin: null,
+    displayName: null,
+    courses: [],
+    enrollmentState: "active",
+    selectedIds: new Set(),
+    selectionRevision: "",
+    selectionPreview: null,
+    syncPlan: null,
+    syncRevision: "",
+    syncSelectedIds: new Set(),
+    busy: false,
+    error: "",
+  },
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -1961,10 +1977,233 @@ function restoreUndoMarkup() {
   `;
 }
 
+async function loadCanvasStatus() {
+  const result = await desktopInvoke("canvas_connection_status");
+  if (result && typeof result === "object") {
+    state.canvas.status = result.status || "unavailable";
+    state.canvas.authMode = result.authMode || null;
+    state.canvas.origin = result.origin || null;
+    state.canvas.displayName = result.displayName || null;
+  } else {
+    state.canvas.status = "unavailable";
+  }
+}
+
+function canvasCourseCard(course) {
+  const id = `canvas-course-${String(course.remote_course_id).replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  const selected = state.canvas.selectedIds.has(String(course.remote_course_id));
+  const label = [course.name, course.course_code, course.term_name].filter(Boolean).join(" · ");
+  return `
+    <label class="canvas-course-row" for="${id}">
+      <input type="checkbox" id="${id}" data-canvas-course="${escapeHtml(course.remote_course_id)}" ${selected ? "checked" : ""} />
+      <span>${escapeHtml(label || course.name)}</span>
+      <span class="muted">${escapeHtml(course.workflow_state || "")}</span>
+    </label>`;
+}
+
+function canvasSectionHtml() {
+  const c = state.canvas;
+  const heading = `<p class="eyebrow">${escapeHtml(t("canvas.eyebrow"))}</p><h2 id="canvasHeading">${escapeHtml(t("canvas.heading"))}</h2>`;
+  let body = "";
+
+  if (c.status === "unavailable") {
+    body = `
+      <div id="canvasStatus" class="settings-status" role="status" aria-live="polite">${escapeHtml(t("canvas.unavailable"))}</div>
+      <p class="muted">${escapeHtml(t("canvas.unavailableHelp"))}</p>`;
+  } else if (c.status === "not_connected") {
+    body = `
+      <div id="canvasStatus" class="settings-status" role="status" aria-live="polite">${escapeHtml(t("canvas.notConnected"))}</div>
+      <div class="settings-actions">
+        <button class="button primary" type="button" data-canvas-connect="1">${escapeHtml(t("canvas.connect"))}</button>
+      </div>
+      <p class="muted">${escapeHtml(t("canvas.privacyHelp"))}</p>`;
+  } else if (c.status === "connecting") {
+    body = `
+      <div id="canvasStatus" class="settings-status" role="status" aria-live="polite" aria-busy="true">${escapeHtml(t("canvas.connecting"))}</div>
+      <div id="canvasOAuthCodeStep">
+        <label class="settings-field">${escapeHtml(t("canvas.codeLabel"))}
+          <input id="canvasOAuthCode" type="text" inputmode="numeric" autocomplete="off" placeholder="${escapeHtml(t("canvas.codePlaceholder"))}" />
+        </label>
+        <div class="settings-actions">
+          <button class="button primary" type="button" data-canvas-complete="1" disabled>${escapeHtml(t("canvas.complete"))}</button>
+          <button class="button secondary" type="button" data-canvas-cancel="1">${escapeHtml(t("common.cancel"))}</button>
+        </div>
+      </div>`;
+  } else if (c.status === "connected") {
+    const display = c.displayName ? `<span class="canvas-identity">${escapeHtml(c.displayName)}</span>` : "";
+    body = `
+      <div id="canvasStatus" class="settings-status" role="status" aria-live="polite">${escapeHtml(t("status.connected"))}${display}</div>
+      ${c.origin ? `<p class="muted">${escapeHtml(c.origin)}</p>` : ""}
+      <div class="settings-actions">
+        <button class="button secondary" type="button" data-canvas-refresh-courses="1" ${c.busy ? "disabled aria-busy=\"true\"" : ""}>${escapeHtml(t("canvas.refreshCourses"))}</button>
+        <button class="button secondary" type="button" data-canvas-sync-preview="1" ${c.busy ? "disabled aria-busy=\"true\"" : ""}>${escapeHtml(t("canvas.syncNow"))}</button>
+        <button class="button danger" type="button" data-canvas-disconnect="1">${escapeHtml(t("canvas.disconnect"))}</button>
+      </div>
+      <div id="canvasDiscovery">
+        <div class="canvas-toolbar">
+          <label class="settings-field inline">${escapeHtml(t("canvas.enrollment"))}
+            <select id="canvasEnrollment" data-canvas-enrollment="1">
+              <option value="active" ${c.enrollmentState === "active" ? "selected" : ""}>${escapeHtml(t("canvas.active"))}</option>
+              <option value="completed" ${c.enrollmentState === "completed" ? "selected" : ""}>${escapeHtml(t("canvas.completed"))}</option>
+              <option value="invited_or_pending" ${c.enrollmentState === "invited_or_pending" ? "selected" : ""}>${escapeHtml(t("canvas.pending"))}</option>
+            </select>
+          </label>
+        </div>
+        <div id="canvasCourseList" class="settings-list compact" role="group" aria-label="${escapeHtml(t("canvas.courses"))}">
+          ${c.courses.map(canvasCourseCard).join("") || `<p class="muted">${escapeHtml(t("canvas.noCourses"))}</p>`}
+        </div>
+        ${c.selectionPreview ? `<div id="canvasSelectionPreview" class="notice info" role="status" aria-live="polite">${escapeHtml(t("canvas.selectionPreview", { added: c.selectionPreview.select?.length || 0, removed: c.selectionPreview.remove?.length || 0 }))}</div>` : ""}
+        <div class="settings-actions">
+          <button class="button secondary" type="button" data-canvas-preview-selection="1" ${c.busy ? "disabled aria-busy=\"true\"" : ""}>${escapeHtml(t("canvas.previewSelection"))}</button>
+          <button class="button primary" type="button" data-canvas-apply-selection="1" ${!c.selectionPreview ? "disabled" : ""}>${escapeHtml(t("canvas.applySelection"))}</button>
+        </div>
+        ${c.syncPlan ? `<div id="canvasSyncPlan" class="settings-list compact" role="group" aria-label="${escapeHtml(t("canvas.syncPlan"))}">${canvasSyncPlanHtml()}</div>` : ""}
+        ${c.syncPlan ? `<div class="settings-actions"><button class="button primary" type="button" data-canvas-sync-apply="1" ${!c.syncSelectedIds.size ? "disabled" : ""}>${escapeHtml(t("canvas.applySync"))}</button></div>` : ""}
+      </div>`;
+  } else if (c.status === "reconnect_required") {
+    body = `
+      <div id="canvasStatus" class="settings-status" role="status" aria-live="polite">${escapeHtml(t("canvas.reconnectRequired"))}</div>
+      <p class="muted">${escapeHtml(t("canvas.reconnectRequiredHelp"))}</p>
+      <div class="settings-actions">
+        <button class="button primary" type="button" data-canvas-connect="1">${escapeHtml(t("canvas.reconnect"))}</button>
+      </div>`;
+  } else {
+    body = `
+      <div id="canvasStatus" class="settings-status" role="status" aria-live="polite">${escapeHtml(t("canvas.error"))}</div>
+      <div class="settings-actions">
+        <button class="button secondary" type="button" data-canvas-refresh-status="1">${escapeHtml(t("common.retry"))}</button>
+      </div>`;
+  }
+
+  return `
+    <section class="settings-card" id="canvasSection" aria-labelledby="canvasHeading">
+      ${heading}
+      ${c.error ? `<div class="notice error" role="alert">${escapeHtml(c.error)}</div>` : ""}
+      ${body}
+    </section>`;
+}
+
+function canvasSyncPlanHtml() {
+  const plan = state.canvas.syncPlan || {};
+  const items = Array.isArray(plan.actions) ? plan.actions : [];
+  return items.map((action) => {
+    const id = `canvas-sync-${String(action.remote_file_stable_id || action.remote_file_id || "").replace(/[^a-zA-Z0-9_-]/g, "")}`;
+    const eligible = ["ADD", "POTENTIAL_CONTENT_CHANGE", "METADATA_CHANGE"].includes(action.action);
+    const checked = state.canvas.syncSelectedIds.has(String(action.remote_file_stable_id));
+    return `
+      <label class="canvas-course-row" for="${id}">
+        <input type="checkbox" id="${id}" data-canvas-sync-item="${escapeHtml(action.remote_file_stable_id)}" data-canvas-sync-action="${escapeHtml(action.action)}" ${eligible && checked ? "checked" : ""} ${eligible ? "" : "disabled"} />
+        <span>${escapeHtml(action.display_name || action.filename || "")}</span>
+        <span class="muted">${escapeHtml(t(`canvas.action.${action.action}`))}</span>
+      </label>`;
+  }).join("") || `<p class="muted">${escapeHtml(t("canvas.noSyncActions"))}</p>`;
+}
+
+async function refreshCanvasCourses() {
+  state.canvas.busy = true;
+  state.canvas.error = "";
+  await renderSettings();
+  try {
+    const payload = await postJson("/api/canvas/courses", { enrollment_state: state.canvas.enrollmentState });
+    state.canvas.courses = payload.courses || [];
+    state.canvas.selectionPreview = null;
+  } catch (error) {
+    state.canvas.error = error.message || String(error);
+  } finally {
+    state.canvas.busy = false;
+  }
+  await renderSettings();
+}
+
+async function previewCanvasSelection() {
+  state.canvas.busy = true;
+  state.canvas.error = "";
+  await renderSettings();
+  try {
+    const payload = await postJson("/api/canvas/course-selection/preview", {
+      enrollment_state: state.canvas.enrollmentState,
+      remote_course_ids: Array.from(state.canvas.selectedIds),
+    });
+    state.canvas.selectionPreview = payload.plan;
+    state.canvas.selectionRevision = payload.plan?.revision || "";
+  } catch (error) {
+    state.canvas.error = error.message || String(error);
+    state.canvas.selectionPreview = null;
+  } finally {
+    state.canvas.busy = false;
+  }
+  await renderSettings();
+}
+
+async function applyCanvasSelection() {
+  if (!state.canvas.selectionPreview) return;
+  state.canvas.busy = true;
+  state.canvas.error = "";
+  await renderSettings();
+  try {
+    await postJson("/api/canvas/course-selection/apply", {
+      enrollment_state: state.canvas.enrollmentState,
+      remote_course_ids: Array.from(state.canvas.selectedIds),
+      selection_revision: state.canvas.selectionRevision,
+    });
+    state.canvas.selectionPreview = null;
+    toast(t("canvas.selectionApplied"));
+  } catch (error) {
+    state.canvas.error = error.message || String(error);
+  } finally {
+    state.canvas.busy = false;
+  }
+  await renderSettings();
+}
+
+async function previewCanvasSync() {
+  state.canvas.busy = true;
+  state.canvas.error = "";
+  await renderSettings();
+  try {
+    const payload = await postJson("/api/canvas/sync-preview", {});
+    state.canvas.syncPlan = payload.plan;
+    state.canvas.syncRevision = payload.plan?.revision || "";
+    state.canvas.syncSelectedIds = new Set(
+      (payload.plan?.actions || [])
+        .filter((action) => ["ADD", "POTENTIAL_CONTENT_CHANGE", "METADATA_CHANGE"].includes(action.action))
+        .map((action) => String(action.remote_file_stable_id)),
+    );
+  } catch (error) {
+    state.canvas.error = error.message || String(error);
+    state.canvas.syncPlan = null;
+  } finally {
+    state.canvas.busy = false;
+  }
+  await renderSettings();
+}
+
+async function applyCanvasSync() {
+  if (!state.canvas.syncPlan || !state.canvas.syncSelectedIds.size) return;
+  state.canvas.busy = true;
+  state.canvas.error = "";
+  await renderSettings();
+  try {
+    await postJson("/api/canvas/sync-apply", {
+      plan_revision: state.canvas.syncRevision,
+      remote_file_stable_ids: Array.from(state.canvas.syncSelectedIds),
+    });
+    state.canvas.syncPlan = null;
+    toast(t("canvas.syncApplied"));
+    await loadBase();
+  } catch (error) {
+    state.canvas.error = error.message || String(error);
+  } finally {
+    state.canvas.busy = false;
+  }
+  await renderSettings();
+}
+
 async function renderSettings() {
   setTitle(t("nav.settings"), t("settings.eyebrow"));
   setPageActions(true);
   state.health = await api("/api/health");
+  await loadCanvasStatus();
   const ai = await api("/api/ai-status");
   const allTerms = await api("/api/terms?include_archived=1");
   const latestUndo = await api("/api/backup/restore-undo-latest");
@@ -2003,6 +2242,7 @@ async function renderSettings() {
   const askReady = ai.openAI === "Configured" && ai.vectorStore === "Configured" ? t("status.ready") : t("status.notReady");
   view.innerHTML = `
     <section class="settings-layout">
+      ${canvasSectionHtml()}
       <section class="section-block quiet-section">
         <div class="section-head">
           <div><p class="eyebrow">${escapeHtml(t("settings.general"))}</p><h2>${escapeHtml(t("settings.language"))}</h2></div>
@@ -3155,6 +3395,91 @@ document.addEventListener("click", async (event) => {
     await route("file", { fileId: Number(target.dataset.whatsNewOpen) });
     return;
   }
+  if (target.dataset.canvasConnect) {
+    state.canvas.busy = true;
+    state.canvas.error = "";
+    await renderSettings();
+    try {
+      const result = await desktopInvoke("start_canvas_oauth");
+      state.canvas.status = "connecting";
+    } catch (error) {
+      state.canvas.error = error.message || String(error);
+    } finally {
+      state.canvas.busy = false;
+    }
+    await renderSettings();
+    return;
+  }
+  if (target.dataset.canvasCancel) {
+    await desktopInvoke("cancel_canvas_oauth");
+    await loadCanvasStatus();
+    await renderSettings();
+    return;
+  }
+  if (target.dataset.canvasComplete) {
+    const code = $("#canvasOAuthCode")?.value?.trim();
+    if (!code) return;
+    state.canvas.busy = true;
+    state.canvas.error = "";
+    await renderSettings();
+    try {
+      await desktopInvoke("complete_canvas_oauth", { code });
+      await loadCanvasStatus();
+      await refreshCanvasCourses();
+      toast(t("canvas.connectedToast"));
+    } catch (error) {
+      state.canvas.error = error.message || String(error);
+      await loadCanvasStatus();
+    } finally {
+      state.canvas.busy = false;
+    }
+    await renderSettings();
+    return;
+  }
+  if (target.dataset.canvasDisconnect) {
+    if (!confirm(t("canvas.confirmDisconnect"))) return;
+    state.canvas.busy = true;
+    state.canvas.error = "";
+    await renderSettings();
+    try {
+      await desktopInvoke("disconnect_canvas", { revoke: false });
+      state.canvas.courses = [];
+      state.canvas.syncPlan = null;
+      state.canvas.selectionPreview = null;
+      await loadCanvasStatus();
+    } catch (error) {
+      state.canvas.error = error.message || String(error);
+    } finally {
+      state.canvas.busy = false;
+    }
+    await renderSettings();
+    return;
+  }
+  if (target.dataset.canvasRefreshStatus) {
+    await loadCanvasStatus();
+    await renderSettings();
+    return;
+  }
+  if (target.dataset.canvasRefreshCourses) {
+    await refreshCanvasCourses();
+    return;
+  }
+  if (target.dataset.canvasPreviewSelection) {
+    await previewCanvasSelection();
+    return;
+  }
+  if (target.dataset.canvasApplySelection) {
+    await applyCanvasSelection();
+    return;
+  }
+  if (target.dataset.canvasSyncPreview) {
+    await previewCanvasSync();
+    return;
+  }
+  if (target.dataset.canvasSyncApply) {
+    await applyCanvasSync();
+    return;
+  }
   if (target.dataset.view) return route(target.dataset.view);
   if (target.dataset.course && !target.dataset.week) return renderCourse(Number(target.dataset.course));
   if (target.dataset.week) return renderWeek(Number(target.dataset.course), target.dataset.week);
@@ -3165,6 +3490,27 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("change", async (event) => {
+  if (event.target.matches("[data-canvas-enrollment]")) {
+    state.canvas.enrollmentState = event.target.value;
+    state.canvas.selectionPreview = null;
+    await refreshCanvasCourses();
+    return;
+  }
+  if (event.target.matches("[data-canvas-course]")) {
+    const id = String(event.target.dataset.canvasCourse);
+    if (event.target.checked) state.canvas.selectedIds.add(id);
+    else state.canvas.selectedIds.delete(id);
+    state.canvas.selectionPreview = null;
+    renderSettings();
+    return;
+  }
+  if (event.target.matches("[data-canvas-sync-item]")) {
+    const id = String(event.target.dataset.canvasSyncItem);
+    if (event.target.checked) state.canvas.syncSelectedIds.add(id);
+    else state.canvas.syncSelectedIds.delete(id);
+    renderSettings();
+    return;
+  }
   if (event.target.matches("[data-study-needs-review]")) {
     await updateStudyState(event.target.dataset.studyNeedsReview, {
       action: "set_needs_review",

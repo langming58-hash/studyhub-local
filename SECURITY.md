@@ -30,7 +30,7 @@ MCP is read-only. It may list/search/fetch indexed study-library content by safe
 
 ## Credential Boundary
 
-Native credentials are not exposed through frontend JavaScript, localhost HTTP, MCP, diagnostics, browser storage, SQLite, logs, or Tauri raw-secret commands. The internal credential handoff boundary is typed, child-authorized, restart-invalidated, and covered with synthetic participants. StudyHub now supports a development-only manual Canvas connection enrollment boundary for local developer testing. Production manual-token enrollment fails closed until a compliant OAuth or institution-authorized authentication flow exists.
+Native credentials are not exposed through frontend JavaScript, localhost HTTP, MCP, diagnostics, browser storage, SQLite, logs, or Tauri raw-secret commands. The internal credential handoff boundary is typed, child-authorized, restart-invalidated, and covered with synthetic participants. StudyHub supports a development-only manual Canvas connection enrollment boundary for local developer testing; Production manual-token enrollment fails closed before any credential-store access. Production Canvas connection is OAuth-only, gated on an institutionally provisioned OAuth client, with the client secret, refresh token, and access token held only inside the native credential store.
 
 The macOS/Unix desktop shell additionally creates a private inherited stream
 between the Tauri parent and the exact spawned Python backend child. Only
@@ -47,10 +47,17 @@ metadata before persistence. Canvas API bearer credentials are never attached
 to ephemeral file URLs or redirects. Downloads are HTTPS-only, reject unsafe
 literal network targets, enforce redirect and 256 MiB streaming limits, and
 remain inside profile-owned storage. Hostname DNS address pinning is not yet
-implemented and is documented as a residual SSRF limitation. OAuth, Canvas
-passwords, Developer Key provisioning, token refresh, production end-user
-connection UX, account management, background sync, remote deletion, and
-Canvas writes remain not implemented.
+implemented and is documented as a residual SSRF limitation. Production Canvas
+OAuth uses the institution's authorization flow: the native parent generates a
+one-shot, expiring, cryptographically random state, opens the institution
+authorization URL in the system browser, validates the returned authorization
+code, exchanges it over HTTPS bound to the exact configured Canvas origin, and
+validates the connection with `/api/v1/users/self` before persisting an OAuth
+credential record. The native parent owns token refresh with a bounded safety
+margin and serialized refresh, and the Python backend continues to receive only
+an origin-bound access credential through `canvas_default`. Canvas passwords,
+generic self-service Developer Key provisioning, background sync, remote
+deletion, and Canvas writes remain not implemented.
 
 ## Academic Materials
 

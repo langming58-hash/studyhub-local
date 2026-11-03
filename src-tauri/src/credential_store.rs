@@ -11,6 +11,8 @@ use crate::RuntimeProfile;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(crate) enum CredentialSlot {
     CanvasDefault,
+    CanvasOAuth,
+    CanvasOAuthClient,
     DevelopmentSmokeTest,
 }
 
@@ -18,6 +20,8 @@ impl CredentialSlot {
     fn account_name(self) -> &'static str {
         match self {
             Self::CanvasDefault => "canvas.default",
+            Self::CanvasOAuth => "canvas.oauth",
+            Self::CanvasOAuthClient => "canvas.oauth-client",
             Self::DevelopmentSmokeTest => "development.smoke-test",
         }
     }

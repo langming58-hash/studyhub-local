@@ -28,7 +28,7 @@ def main() -> int:
     credential_handoff = credential_handoff_path.read_text(encoding="utf-8")
     credential_transport_path = ROOT / "src-tauri" / "src" / "credential_transport.rs"
     credential_transport = credential_transport_path.read_text(encoding="utf-8")
-    capability = json.loads((ROOT / "src-tauri" / "capabilities" / "default.json").read_text(encoding="utf-8"))
+    capability = json.loads((ROOT / "src-tauri" / "capabilities" / "studyhub-production.json").read_text(encoding="utf-8"))
     cargo = (ROOT / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
     desktop_arch = (ROOT / "docs" / "DESKTOP_ARCHITECTURE.md").read_text(encoding="utf-8")
     privacy = (ROOT / "docs" / "PRIVACY.md").read_text(encoding="utf-8")

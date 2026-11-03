@@ -212,7 +212,7 @@ def main() -> int:
         app_js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
         index_html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         tauri_source = (ROOT / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
-        capability = (ROOT / "src-tauri" / "capabilities" / "default.json").read_text(encoding="utf-8")
+        capability = (ROOT / "src-tauri" / "capabilities" / "studyhub-production.json").read_text(encoding="utf-8")
         after_by_content = sorted(after_management.values())
         before_by_content = sorted(before.values())
 

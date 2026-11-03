@@ -283,6 +283,43 @@ storage. Request input cannot override the bound origin, pagination and
 redirects are same-origin guarded, and discovery results remain metadata only
 rather than StudyHub academic-domain rows.
 
+## Production Canvas OAuth Connection
+
+Production Canvas authentication is OAuth-only and institution-authorized. A
+native `CanvasOAuthClientConfig` record holds the Canvas origin, `client_id`,
+`client_secret`, and redirect URI; the whole provider config (including the
+client secret) is stored only in CredentialStore. No production WebView asks an
+ordinary student for a Developer Key secret, and there is no production PAT
+paste box.
+
+The native `CanvasCredentialManager` owns the connection state machine:
+
+- `UNAVAILABLE` — no institution OAuth client is provisioned;
+- `NOT_CONNECTED` — a client exists but the user has not authorized;
+- `CONNECTING` — one authorization attempt is active;
+- `CONNECTED` — a valid OAuth credential exists and was identity-validated;
+- `RECONNECT_REQUIRED` — the credential is no longer refreshable/valid;
+- `ERROR` — a recoverable, sanitized failure.
+
+`start_canvas_oauth` generates a 128-bit OS-random, one-time, expiring state,
+opens the institution authorization URL in the system browser, and the user
+returns the authorization code. `complete_canvas_oauth` exchanges that code
+over HTTPS bound to the exact configured Canvas origin (no arbitrary token
+endpoint, no cross-origin redirect, bounded body and timeouts) and validates the
+connection with `/api/v1/users/self` before persisting a versioned
+`studyhub-canvas-connection-v2` record. OAuth state lives only in native process
+memory, is consumed exactly once, and rejects missing, mismatched, reused, or
+expired state.
+
+The access and refresh tokens stay in CredentialStore. The Python backend still
+asks for the narrow `canvas_default` operation and receives only a currently
+valid origin-bound access credential; the native parent refreshes the token
+before projection with a bounded safety margin and a serialized refresh lock,
+and never sends the client secret or refresh token to the backend. Disconnect
+deletes the local Canvas credential without deleting imported materials,
+MaterialVersions, study state, or the What's New journal; explicit remote
+revoke is optional and separate.
+
 Current platform scope: the live transport is implemented for Unix/macOS.
 Windows remains not implemented for this boundary until a separately reviewed
 safe equivalent is selected.

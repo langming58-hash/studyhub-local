@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-disconnect-canvas"
+description = "Enables the disconnect_canvas command without any pre-configured scope."
+commands.allow = ["disconnect_canvas"]
+
+[[permission]]
+identifier = "deny-disconnect-canvas"
+description = "Denies the disconnect_canvas command without any pre-configured scope."
+commands.deny = ["disconnect_canvas"]
