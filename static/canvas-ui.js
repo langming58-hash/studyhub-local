@@ -21,6 +21,14 @@
     return syncActionEligibleIds(actions).some((id) => selected.has(id));
   }
 
+  function oauthResponseReady(value) {
+    return typeof value === "string" && value.trim().length > 0;
+  }
+
+  function updateOauthCompleteState(input, button) {
+    if (input && button) button.disabled = !oauthResponseReady(input.value);
+  }
+
   function canvasCourseCard(course, selectedIds, escapeHtml) {
     const id = "canvas-course-" + String(course.remote_course_id).replace(/[^a-zA-Z0-9_-]/g, "");
     const selected = selectedIds.has(String(course.remote_course_id));
@@ -81,7 +89,7 @@
         '<label class="settings-field">' + escapeHtml(t("canvas.responseLabel")) +
         '<input id="canvasOAuthResponse" type="text" autocomplete="off" placeholder="' + escapeHtml(t("canvas.responsePlaceholder")) + '" /></label>' +
         '<div class="settings-actions">' +
-        '<button class="button primary" type="button" data-canvas-complete="1" disabled>' + escapeHtml(t("canvas.complete")) + "</button>" +
+        '<button class="button primary" type="button" id="canvasOAuthComplete" data-canvas-complete="1" disabled>' + escapeHtml(t("canvas.complete")) + "</button>" +
         '<button class="button secondary" type="button" data-canvas-cancel="1">' + escapeHtml(t("common.cancel")) + "</button>" +
         "</div></div>";
     } else if (c.status === "connected") {
@@ -172,6 +180,8 @@
     eligibleSyncAction: eligibleSyncAction,
     syncActionEligibleIds: syncActionEligibleIds,
     canApplySync: canApplySync,
+    oauthResponseReady: oauthResponseReady,
+    updateOauthCompleteState: updateOauthCompleteState,
     canvasCourseCard: canvasCourseCard,
     canvasSyncPlanHtml: canvasSyncPlanHtml,
     canvasSectionHtml: canvasSectionHtml,

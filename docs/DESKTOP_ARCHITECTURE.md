@@ -320,6 +320,13 @@ deletes the local Canvas credential without deleting imported materials,
 MaterialVersions, study state, or the What's New journal; explicit remote
 revoke is optional and separate.
 
+Each OAuth record is bound to the non-secret client properties that issued it:
+the Canvas origin, `client_id`, and redirect URI. A refresh fails closed before
+any network request if the current provisioned client no longer matches that
+binding. Rotating the `client_secret` for the same origin/client/redirect
+binding remains valid; sending an old authority's refresh token to a different
+configured Canvas origin or client is never allowed.
+
 Current platform scope: the live transport is implemented for Unix/macOS.
 Windows remains not implemented for this boundary until a separately reviewed
 safe equivalent is selected.

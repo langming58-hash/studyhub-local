@@ -125,11 +125,41 @@ const errorHtml = ui.canvasSectionHtml(baseCanvas({ status: "error", error: "can
 check("error_has_role_alert", errorHtml.includes('role="alert"'));
 check("error_no_loop_connect", !errorHtml.includes('data-canvas-connect="1"'));
 
+// OAuth response input interaction (same helpers the real input handler uses).
+check("oauth_response_ready_empty_false", ui.oauthResponseReady("") === false);
+check("oauth_response_ready_spaces_false", ui.oauthResponseReady("   ") === false);
+check(
+  "oauth_response_ready_nonempty_true",
+  ui.oauthResponseReady("https://canvas.example.edu/login/oauth2/auth?state=x&code=y") === true,
+);
+
+function buttonFixture(disabled) {
+  return { disabled };
+}
+let button = buttonFixture(true);
+ui.updateOauthCompleteState({ value: "" }, button);
+check("complete_disabled_for_empty", button.disabled === true);
+button = buttonFixture(true);
+ui.updateOauthCompleteState({ value: "   " }, button);
+check("complete_disabled_for_spaces", button.disabled === true);
+button = buttonFixture(true);
+ui.updateOauthCompleteState({ value: "https://canvas.example.edu/response" }, button);
+check("complete_enabled_for_url", button.disabled === false);
+ui.updateOauthCompleteState({ value: "" }, button);
+check("complete_redisabled_after_clear", button.disabled === true);
+
+const fs = require("fs");
+const path = require("path");
+const appJs = fs.readFileSync(path.join(__dirname, "..", "static", "app.js"), "utf8");
+check("complete_payload_uses_responseUrl", appJs.includes('complete_canvas_oauth", { responseUrl }'));
+check("complete_payload_not_code_or_token", !appJs.includes('complete_canvas_oauth", { code }') && !appJs.includes('complete_canvas_oauth", { token }'));
+check("app_wires_response_input_event", appJs.includes('matches("#canvasOAuthResponse")') && appJs.includes("updateOauthCompleteState"));
+
 // Responsive: this harness cannot compute layout geometry. It can only verify
 // that the renderer emits no fixed inline width that would force horizontal
 // overflow. Actual viewport geometry remains a limitation reported separately.
 const connectedNoInlineWidth = !/<[^>]*style="[^"]*width:/i.test(connected);
-check("responsive_no_fixed_inline_width", connectedNoInlineWidth);
+check("responsive_narrow_structural_check_only", connectedNoInlineWidth);
 
 if (failures > 0) {
   console.error(`Canvas UI acceptance failures: ${failures}`);

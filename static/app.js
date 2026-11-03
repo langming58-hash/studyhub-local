@@ -3430,6 +3430,15 @@ document.addEventListener("change", async (event) => {
   }
 });
 
+document.addEventListener("input", (event) => {
+  if (event.target.matches("#canvasOAuthResponse")) {
+    const button = document.getElementById("canvasOAuthComplete");
+    if (button && window.StudyHubCanvasUI) {
+      window.StudyHubCanvasUI.updateOauthCompleteState(event.target, button);
+    }
+  }
+});
+
 $("#closeDrawer").addEventListener("click", () => {
   $("#fileDrawer").hidden = true;
   window.StudyHubReader?.destroy();
