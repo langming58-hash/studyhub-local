@@ -982,6 +982,73 @@ textarea {
   background: white;
 }
 
+.reader-shell {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  background: #e9e7e2;
+}
+
+.reader-toolbar {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 4;
+}
+
+.reader-divider { width: 1px; height: 24px; background: var(--line); margin: 0 4px; }
+.reader-page-label input { width: 56px; text-align: center; }
+.reader-search { margin-left: auto; }
+.reader-search input { width: min(180px, 20vw); }
+.reader-status { min-height: 0; padding: 0 12px; font-size: 12px; color: var(--muted); background: var(--panel); }
+.reader-pages { min-height: 0; overflow: auto; padding: 18px; scroll-padding-top: 18px; }
+.reader-page {
+  position: relative;
+  margin: 0 auto 18px;
+  max-width: 100%;
+  background: white;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .15);
+}
+.reader-page canvas { display: block; max-width: none; }
+.reader-page-number { position: absolute; right: 8px; bottom: 6px; color: #777; font-size: 11px; }
+.reader-text-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  opacity: 1;
+  line-height: 1;
+  text-size-adjust: none;
+  transform-origin: 0 0;
+  z-index: 2;
+}
+.reader-text-layer span, .reader-text-layer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0 0;
+}
+.reader-text-layer ::selection { background: rgba(44, 112, 210, .35); }
+.reader-loading, .reader-fallback-notice { padding: 18px; color: var(--muted); }
+.reader-image-wrap { height: 100%; overflow: auto; display: grid; place-items: start center; padding: 18px; }
+.reader-image-wrap img { max-width: 100%; height: auto; }
+.reader-text-wrap { height: 100%; overflow: auto; background: white; padding: 18px; }
+.reader-text-wrap pre { border: 0; background: transparent; overflow: visible; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+
+@media (max-width: 760px) {
+  .reader-toolbar { flex-wrap: wrap; }
+  .reader-search { margin-left: 0; }
+  .reader-search input { width: 120px; }
+  .reader-pages { padding: 8px; }
+}
+
 .context-panel {
   min-height: 0;
   display: grid;

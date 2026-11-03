@@ -21,6 +21,9 @@
     "resources": {
       "../static/": "static/",
       "../node_modules/katex/dist/": "katex/",
+      "../node_modules/mac-ocr/bin/mac-ocr": "reader-tools/mac-ocr",
+      "../node_modules/mac-ocr/LICENSE": "reader-tools/LICENSE.mac-ocr",
+      "backend/studyhub-markitdown": "reader-tools/studyhub-markitdown",
       "backend/studyhub-backend/": "backend/"
     },
     "macOS": {

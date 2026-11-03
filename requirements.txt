@@ -1,2 +1,3 @@
 certifi>=2026.7.22
 fsrs==6.3.2
+markitdown[docx,pdf,pptx,xlsx]==0.1.9

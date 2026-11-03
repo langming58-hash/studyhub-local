@@ -75,6 +75,7 @@ def run_detection_cases() -> dict[str, bool]:
 
 
 def public_source_has_no_private_deny_data() -> bool:
+    generated_roots = {".desktop-build", ".git", ".tools", ".venv-desktop", "node_modules", "target", "__pycache__"}
     forbidden_obfuscation_patterns = [
         re.compile(r"FORBIDDEN_TEXT\s*="),
         re.compile(r"REAL_[A-Z_]+\s*="),
@@ -83,7 +84,7 @@ def public_source_has_no_private_deny_data() -> bool:
         re.compile(r"HOME\s*="),
     ]
     for path in ROOT.rglob("*"):
-        if not path.is_file() or ".git" in path.parts:
+        if not path.is_file() or set(path.relative_to(ROOT).parts) & generated_roots:
             continue
         if set(path.relative_to(ROOT).parts) & {"data", "cache", "logs", "node_modules", "__pycache__"}:
             continue

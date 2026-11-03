@@ -115,7 +115,10 @@ normal manifest/lockfile.
 
 | Capability | Status | Preferred foundation or authority | Mode | StudyHub owns |
 | --- | --- | --- | --- | --- |
-| PDF rendering | TARGET DECISION, not implemented | PDF.js | Dependency behind an adapter | MaterialViewer behavior, SourceAnchor integration, academic navigation |
+| PDF rendering | IMPLEMENTED V1 | PDF.js 6.4.299, Apache-2.0 | Local dependency behind the Reader boundary | MaterialViewer behavior, SourceAnchor integration, academic navigation |
+| Document extraction | IMPLEMENTED V1 | MarkItDown 0.1.9, MIT | Local adapter with plugins disabled | extraction order, bounds, provenance, cache identity |
+| On-device OCR | IMPLEMENTED MACOS FALLBACK | mac-ocr 1.1.1, MIT / Apple Vision | Bundled native adapter | allowlist, thresholds, timeouts, derivatives, source immutability |
+| Code highlighting | IMPLEMENTED V1 | PrismJS 1.30.0, MIT | Local selected-language assets | safe text-only rendering; no execution |
 | Rich text | TARGET DECISION, not implemented | Tiptap | Dependency with narrow extensions | Academic/source-reference extensions and persistence semantics |
 | Spaced repetition | IMPLEMENTED V1 | `fsrs` 6.3.2 (`py-fsrs` upstream), MIT | Dependency behind `ReviewScheduler` | portable card state, deterministic queue, academic-learning integration, user state |
 | Canvas | TARGET BOUNDARY, not implemented | Official Canvas API is authoritative | Connector plus audited references | CanvasConnector, SyncPlan, normalization, provenance, change detection, ingestion |

@@ -39,9 +39,8 @@ const MAX_BACKUP_ARCHIVE_BYTES: u64 = 20 * 1024 * 1024;
 static RESTORE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 const RESTORE_RELINK_CAPABILITY_VERSION: u8 = 1;
 const SUPPORTED_ACADEMIC_EXTENSIONS: &[&str] = &[
-    "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "tsv", "txt", "md",
-    "py", "ipynb", "r", "html", "htm", "xhtml", "xml", "svg", "png", "jpg", "jpeg",
-    "webp",
+    "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv", "tsv", "txt", "md", "py", "ipynb",
+    "r", "html", "htm", "xhtml", "xml", "svg", "png", "jpg", "jpeg", "webp",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -97,6 +96,8 @@ struct BackendConfig {
     packaged: bool,
     static_dir: PathBuf,
     katex_dir: PathBuf,
+    mac_ocr_path: PathBuf,
+    markitdown_helper_path: PathBuf,
     profile: RuntimeProfile,
     runtime_dir: PathBuf,
     data_dir: PathBuf,
@@ -148,7 +149,15 @@ fn backend_config(app: &tauri::App) -> Result<BackendConfig, String> {
     };
 
     #[cfg(debug_assertions)]
-    let (executable, prefix_args, packaged, static_dir, katex_dir) = {
+    let (
+        executable,
+        prefix_args,
+        packaged,
+        static_dir,
+        katex_dir,
+        mac_ocr_path,
+        markitdown_helper_path,
+    ) = {
         let root = development_root();
         (
             PathBuf::from(
@@ -158,11 +167,21 @@ fn backend_config(app: &tauri::App) -> Result<BackendConfig, String> {
             false,
             root.join("static"),
             root.join("node_modules/katex/dist"),
+            root.join("node_modules/mac-ocr/bin/mac-ocr"),
+            root.join("src-tauri/backend/studyhub-markitdown"),
         )
     };
 
     #[cfg(not(debug_assertions))]
-    let (executable, prefix_args, packaged, static_dir, katex_dir) = (
+    let (
+        executable,
+        prefix_args,
+        packaged,
+        static_dir,
+        katex_dir,
+        mac_ocr_path,
+        markitdown_helper_path,
+    ) = (
         app.path()
             .resolve("backend/studyhub-backend", BaseDirectory::Resource)
             .map_err(|error| error.to_string())?,
@@ -174,6 +193,12 @@ fn backend_config(app: &tauri::App) -> Result<BackendConfig, String> {
         app.path()
             .resolve("katex", BaseDirectory::Resource)
             .map_err(|error| error.to_string())?,
+        app.path()
+            .resolve("reader-tools/mac-ocr", BaseDirectory::Resource)
+            .map_err(|error| error.to_string())?,
+        app.path()
+            .resolve("reader-tools/studyhub-markitdown", BaseDirectory::Resource)
+            .map_err(|error| error.to_string())?,
     );
 
     Ok(BackendConfig {
@@ -182,6 +207,8 @@ fn backend_config(app: &tauri::App) -> Result<BackendConfig, String> {
         packaged,
         static_dir,
         katex_dir,
+        mac_ocr_path,
+        markitdown_helper_path,
         profile,
         runtime_dir: app_data.clone(),
         data_dir: app_data.join("data"),
@@ -249,6 +276,8 @@ fn start_backend(config: &BackendConfig) -> Result<BackendProcess, String> {
         "STUDYHUB_DATA_DIR",
         "STUDYHUB_DESKTOP_TEST_ROOT",
         "STUDYHUB_LOG_DIR",
+        "STUDYHUB_MAC_OCR",
+        "STUDYHUB_MARKITDOWN_HELPER",
         "STUDYHUB_RUNTIME_DIR",
         "STUDYHUB_RUNTIME_PROFILE",
         "STUDY_LIBRARY_PATH",
@@ -272,6 +301,8 @@ fn start_backend(config: &BackendConfig) -> Result<BackendProcess, String> {
         .env("STUDYHUB_CONFIG_PATH", &config.config_path)
         .env("STUDYHUB_STATIC_DIR", &config.static_dir)
         .env("STUDYHUB_KATEX_DIR", &config.katex_dir)
+        .env("STUDYHUB_MAC_OCR", &config.mac_ocr_path)
+        .env("STUDYHUB_MARKITDOWN_HELPER", &config.markitdown_helper_path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -584,16 +615,14 @@ fn json_string(value: &str) -> String {
 
 fn valid_restore_context(restore_id: &str, source_stable_id: &str) -> bool {
     restore_id.len() == 32
-        && restore_id.chars().all(|value| value.is_ascii_hexdigit() && !value.is_ascii_uppercase())
+        && restore_id
+            .chars()
+            .all(|value| value.is_ascii_hexdigit() && !value.is_ascii_uppercase())
         && !source_stable_id.is_empty()
         && source_stable_id.len() <= 200
-        && source_stable_id
-            .chars()
-            .enumerate()
-            .all(|(index, value)| {
-                value.is_ascii_alphanumeric()
-                    || (index > 0 && matches!(value, '.' | '_' | ':' | '-'))
-            })
+        && source_stable_id.chars().enumerate().all(|(index, value)| {
+            value.is_ascii_alphanumeric() || (index > 0 && matches!(value, '.' | '_' | ':' | '-'))
+        })
 }
 
 fn next_relink_id() -> Result<String, String> {

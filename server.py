@@ -39,7 +39,16 @@ from pathlib import Path
 from typing import Any, Callable
 from xml.etree import ElementTree
 
+SERVER_ROOT = Path(__file__).resolve().parent
+if str(SERVER_ROOT) not in sys.path:
+    sys.path.insert(0, str(SERVER_ROOT))
+
 from fsrs import Card, Rating, Scheduler, State
+from reader_extractors import (
+    ExtractedDocument,
+    extract_document as run_document_extraction,
+    local_pdf_extraction_available,
+)
 
 try:
     import certifi
@@ -104,10 +113,11 @@ RESTORE_INBOX_DIR = DATA_DIR / "restore-inbox"
 RESTORE_RELINK_INBOX_DIR = DATA_DIR / "restore-relink-inbox"
 CACHE_DIR = configured_path("STUDYHUB_CACHE_DIR", RUNTIME_DIR / "cache")
 TEXT_CACHE_DIR = CACHE_DIR / "text"
-TEXT_EXTRACTION_VERSION = "extract-v2-office-paragraphs"
+TEXT_EXTRACTION_VERSION = "extract-v4-page-grounded"
 LOG_DIR = configured_path("STUDYHUB_LOG_DIR", RUNTIME_DIR / "logs")
 STATIC_DIR = configured_path("STUDYHUB_STATIC_DIR", APP_ROOT / "static")
 KATEX_DIST_DIR = configured_path("STUDYHUB_KATEX_DIR", APP_ROOT / "node_modules" / "katex" / "dist")
+MAC_OCR_PATH = configured_path("STUDYHUB_MAC_OCR", APP_ROOT / "node_modules" / "mac-ocr" / "bin" / "mac-ocr")
 DESKTOP_MODE = os.environ.get("STUDYHUB_DESKTOP", "").strip().lower() in {"1", "true", "yes", "on"}
 PACKAGED_BACKEND = bool(getattr(sys, "frozen", False))
 
@@ -1183,6 +1193,7 @@ TEXT_EXTRACTABLE_EXTS = {
     ".pdf",
     ".docx",
     ".pptx",
+    ".xlsx",
     ".csv",
     ".tsv",
     ".txt",
@@ -1195,6 +1206,10 @@ TEXT_EXTRACTABLE_EXTS = {
     ".xml",
     ".svg",
     ".ipynb",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
 }
 ACTIVE_WEB_PREVIEW_EXTS = {".html", ".htm", ".xhtml", ".xml", ".svg"}
 OFFICE_PDF_PREVIEW_EXTS = {".doc", ".docx", ".ppt", ".pptx"}
@@ -1287,6 +1302,38 @@ def text_cache_filename(digest: str) -> str:
 
 def expected_text_cache_path(digest: str) -> Path:
     return TEXT_CACHE_DIR / text_cache_filename(digest)
+
+
+def expected_extraction_metadata_path(digest: str) -> Path:
+    return TEXT_CACHE_DIR / f"{digest}-{TEXT_EXTRACTION_VERSION}.json"
+
+
+def write_extraction_metadata(digest: str, result: ExtractedDocument) -> None:
+    expected_extraction_metadata_path(digest).write_text(
+        json.dumps(
+            {
+                "method": result.method,
+                "version": result.version,
+                "page_labels": list(result.page_labels),
+                "slide_labels": list(result.slide_labels),
+                "ocr_used": result.ocr_used,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+
+def read_extraction_metadata(digest: str) -> dict[str, Any]:
+    path = expected_extraction_metadata_path(digest)
+    if not path.is_file():
+        return {"method": "legacy-cache", "version": "unknown", "ocr_used": False}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"method": "unknown", "version": "unknown", "ocr_used": False}
+    return value if isinstance(value, dict) else {"method": "unknown", "version": "unknown", "ocr_used": False}
 
 
 def safe_child_path(root: Path, *components: Any) -> Path:
@@ -1912,9 +1959,9 @@ def convert_office_document_to_pdf(row: sqlite3.Row | dict[str, Any], source_pat
 
 
 def pdf_extraction_dependency_error() -> str:
-    if configured_tool("pdftotext", "STUDYHUB_PDFTOTEXT"):
+    if configured_tool("pdftotext", "STUDYHUB_PDFTOTEXT") or local_pdf_extraction_available():
         return ""
-    return "PDF text extraction unavailable: pdftotext was not found. Install Poppler and rescan the library."
+    return "PDF readable-text extraction is unavailable because no local extractor is available."
 
 
 def extraction_error_for(path: Path, text: str) -> str:
@@ -2105,7 +2152,7 @@ def xml_text_items_from_zip(path: Path, prefix: str) -> list[tuple[str, str]]:
     return items
 
 
-def extract_text(path: Path) -> str:
+def extract_text_legacy(path: Path) -> str:
     ext = path.suffix.lower()
     try:
         if ext == ".pdf":
@@ -2129,6 +2176,40 @@ def extract_text(path: Path) -> str:
     except Exception:
         return ""
     return ""
+
+
+def reader_ocr_executable() -> Path | None:
+    if sys.platform != "darwin":
+        return None
+    try:
+        candidate = MAC_OCR_PATH.resolve(strict=True)
+    except OSError:
+        return None
+    return candidate if candidate.is_file() and os.access(candidate, os.X_OK) else None
+
+
+def extract_document(path: Path) -> ExtractedDocument:
+    # Scanner/import callers establish source authority first. The extractor is
+    # then restricted to this exact file rather than its containing directory.
+    allowed_roots = [path.resolve()]
+    try:
+        return run_document_extraction(
+            path,
+            allowed_roots,
+            pdftotext=extract_text_from_pdf,
+            legacy_office=extract_text_legacy,
+            plain_text=extract_text_legacy,
+            ocr_executable=reader_ocr_executable(),
+        )
+    except (OSError, PermissionError, ValueError, subprocess.SubprocessError):
+        return ExtractedDocument("", "unavailable", TEXT_EXTRACTION_VERSION)
+
+
+def extract_text(path: Path) -> str:
+    try:
+        return extract_document(path).text
+    except (OSError, PermissionError, ValueError, subprocess.SubprocessError):
+        return ""
 
 
 def chunk_plain_text(text: str, source_location: str = "", page_start: int | None = None, slide_start: int | None = None) -> list[dict[str, Any]]:
@@ -2159,9 +2240,18 @@ def chunk_plain_text(text: str, source_location: str = "", page_start: int | Non
     return chunks
 
 
-def extract_document_chunks(path: Path, fallback_text: str) -> list[dict[str, Any]]:
+def extract_document_chunks(path: Path, extracted: str | ExtractedDocument) -> list[dict[str, Any]]:
+    fallback_text = extracted.text if isinstance(extracted, ExtractedDocument) else extracted
+    page_texts = extracted.page_texts if isinstance(extracted, ExtractedDocument) else ()
     ext = path.suffix.lower()
     if ext == ".pdf":
+        if page_texts:
+            out: list[dict[str, Any]] = []
+            for page, page_text in page_texts:
+                out.extend(chunk_plain_text(page_text, f"p.{page}", page_start=page))
+            for i, chunk in enumerate(out):
+                chunk["chunk_index"] = i
+            return out
         pages = pdf_page_count(path)
         if pages:
             out: list[dict[str, Any]] = []
@@ -9884,13 +9974,15 @@ def _legacy_scan_library(study_root: Path = DEFAULT_STUDY_ROOT) -> ScanStats:
             else:
                 stats.new_files += 1
             if needs_reindex and not suspicious:
-                text = extract_text(path)
+                extraction = extract_document(path)
+                text = extraction.text
                 extraction_error = extraction_error_for(path, text)
                 if text:
                     text_cache_path = expected_text_cache_path(digest)
                     text_cache_path.write_text(text, encoding="utf-8", errors="ignore")
+                    write_extraction_metadata(digest, extraction)
                     text_cache = str(text_cache_path)
-                    chunks = extract_document_chunks(path, text)
+                    chunks = extract_document_chunks(path, extraction)
                     stats.indexed_text += 1
                 else:
                     text_cache = ""
@@ -10071,13 +10163,15 @@ def index_material_content(
     chunks: list[dict[str, Any]] = []
     extraction_error = ""
     if needs_reindex and not suspicious:
-        text = extract_text(path)
+        extraction = extract_document(path)
+        text = extraction.text
         extraction_error = extraction_error_for(path, text)
         if text:
             text_cache_path = expected_text_cache_path(digest)
             text_cache_path.write_text(text, encoding="utf-8", errors="ignore")
+            write_extraction_metadata(digest, extraction)
             text_cache = str(text_cache_path)
-            chunks = extract_document_chunks(path, text)
+            chunks = extract_document_chunks(path, extraction)
         else:
             text_cache = ""
     elif text_cache_available(text_cache):
@@ -11526,10 +11620,10 @@ def api_preflight(conn: sqlite3.Connection) -> dict[str, Any]:
                 "pdf_text_missing",
                 "warning",
                 "PDF text support is missing",
-                "StudyHub can list PDF files, but cannot read searchable text from many PDFs until Poppler is installed.",
+                "StudyHub can list PDF files, but no local readable-text extractor is currently available.",
                 "PDF preview still works. Ask AI may not understand PDFs whose text has not been read.",
-                "Install Poppler, then scan again.",
-                "Expected command-line tools: pdftotext and pdfinfo.",
+                "Repair the packaged Reader tools or install Poppler, then scan again.",
+                "Poppler remains an optional local accelerator when packaged extraction is available.",
             )
         )
     if not (KATEX_DIST_DIR / "katex.min.js").exists():
@@ -13359,6 +13453,32 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 file_id = int(qs.get("id", ["0"])[0])
                 row = get_file(conn, file_id)
                 self.send_json(public_file(row, include_text=read_cached_text(row, 8000)))
+            elif path == "/api/reader":
+                file_id = int(qs.get("id", ["0"])[0])
+                row = get_file(conn, file_id)
+                source_path = Path(row["original_path"]).resolve()
+                if not material_path_allowed(row, source_path):
+                    raise PermissionError("Reader source is outside the StudyHub material allowlist.")
+                if not source_path.is_file():
+                    raise FileNotFoundError("Original file is missing. Scan Library to refresh your file list.")
+                ext = source_path.suffix.lower()
+                if ext == ".pdf" or ext in OFFICE_PDF_PREVIEW_EXTS:
+                    visual_type = "pdf"
+                elif ext in IMAGE_PREVIEW_EXTS:
+                    visual_type = "image"
+                else:
+                    visual_type = "text"
+                self.send_json(
+                    {
+                        "file_id": file_id,
+                        "filename": row["filename"],
+                        "extension": ext,
+                        "visual_type": visual_type,
+                        "preview_url": f"/preview/{file_id}",
+                        "readable_text": read_cached_text(row, 200_000),
+                        "extraction": read_extraction_metadata(row["sha256"] or row["hash"] or ""),
+                    }
+                )
             elif path == "/api/notes":
                 self.send_json(self.handle_notes_get(conn, qs))
             elif path == "/api/conversations":

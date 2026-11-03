@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+import zipfile
 from pathlib import Path
 
 
@@ -25,7 +26,69 @@ ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "src-tauri" / "target" / "release" / "bundle" / "macos" / "StudyHub Local.app"
 APP_RESOURCES = APP / "Contents" / "Resources"
 PACKAGED_BACKEND = APP_RESOURCES / "backend" / "studyhub-backend"
+PACKAGED_MARKITDOWN = APP_RESOURCES / "reader-tools" / "studyhub-markitdown"
+PACKAGED_MAC_OCR = APP_RESOURCES / "reader-tools" / "mac-ocr"
 URL_RE = re.compile(r"^StudyHub Local running at (http://localhost:(\d+))$")
+OCR_FIXTURE_TEXT = "STUDYHUB OCR 12345"
+OCR_FIXTURE_TOKEN = "12345"
+
+
+def write_synthetic_docx(path: Path) -> None:
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+        )
+        archive.writestr(
+            "_rels/.rels",
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+        )
+        archive.writestr(
+            "word/document.xml",
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Synthetic packaged MarkItDown smoke</w:t></w:r></w:p></w:body></w:document>',
+        )
+
+
+def write_synthetic_pdf(path: Path, text: str) -> None:
+    escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    stream = f"BT /F1 18 Tf 72 720 Td ({escaped}) Tj ET".encode("ascii")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
+    ]
+    body = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for index, value in enumerate(objects, start=1):
+        offsets.append(len(body))
+        body.extend(f"{index} 0 obj\n".encode() + value + b"\nendobj\n")
+    xref = len(body)
+    body.extend(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode())
+    for offset in offsets:
+        body.extend(f"{offset:010d} 00000 n \n".encode())
+    body.extend(f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
+    path.write_bytes(bytes(body))
+
+
+def write_synthetic_ocr_fixture(path: Path) -> None:
+    """Write a high-contrast, deterministic image for the packaged mac-ocr smoke."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    font = ImageFont.load_default(size=48)
+    probe = Image.new("L", (8, 8), 255)
+    left, top, right, bottom = ImageDraw.Draw(probe).textbbox(
+        (0, 0), OCR_FIXTURE_TEXT, font=font, spacing=24
+    )
+    padding = 48
+    width = (right - left) + 2 * padding
+    height = (bottom - top) + 2 * padding
+    logical = Image.new("L", (width, height), 255)
+    draw = ImageDraw.Draw(logical)
+    draw.text((padding - left, padding - top), OCR_FIXTURE_TEXT, font=font, fill=0, spacing=24)
+    scaled = logical.resize((width * 4, height * 4), Image.NEAREST)
+    scaled.save(path)
 
 
 def output_lines(stream: object, results: queue.Queue[str]) -> None:
@@ -62,6 +125,8 @@ def start_backend(
         katex_dir = ROOT / "node_modules" / "katex" / "dist"
         cwd = ROOT
     env.pop("STUDY_LIBRARY_PATH", None)
+    env.pop("STUDYHUB_MAC_OCR", None)
+    env.pop("STUDYHUB_MARKITDOWN_HELPER", None)
     env.update(
         {
             "HOST": "127.0.0.1",
@@ -76,6 +141,9 @@ def start_backend(
     )
     if study_root is not None:
         env["STUDY_LIBRARY_PATH"] = str(study_root)
+    if packaged:
+        env["STUDYHUB_MAC_OCR"] = str(PACKAGED_MAC_OCR)
+        env["STUDYHUB_MARKITDOWN_HELPER"] = str(PACKAGED_MARKITDOWN)
     runtime.mkdir(parents=True, exist_ok=True)
     process = subprocess.Popen(
         command,
@@ -89,7 +157,7 @@ def start_backend(
     assert process.stdout is not None
     lines: queue.Queue[str] = queue.Queue()
     threading.Thread(target=output_lines, args=(process.stdout, lines), daemon=True).start()
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if process.poll() is not None:
             stderr = process.stderr.read() if process.stderr else ""
@@ -103,7 +171,9 @@ def start_backend(
             return process, match.group(1), int(match.group(2))
     process.kill()
     process.wait(timeout=5)
-    raise AssertionError("desktop backend did not report its assigned localhost port")
+    stderr = process.stderr.read() if process.stderr else ""
+    detail = f": {stderr[:500]}" if stderr.strip() else ""
+    raise AssertionError(f"desktop backend did not report its assigned localhost port{detail}")
 
 
 def get_json(url: str, path: str) -> object:
@@ -208,7 +278,8 @@ def source_checks() -> dict[str, bool]:
         "release_build_uses_no_shell": "subprocess.run" in builder and "shell=True" not in builder,
         "release_build_uses_project_rust_toolchain": 'ROOT / ".tools" / "cargo"' in builder
         and 'ROOT / ".tools" / "rustup"' in builder,
-        "clean_clone_check_prepares_resource_root": '"backend" / "studyhub-backend").mkdir' in desktop_check,
+        "clean_clone_check_prepares_resource_root": 'backend_root / "studyhub-backend"' in desktop_check
+        and 'backend_root / "studyhub-markitdown"' in desktop_check,
         "release_has_no_system_python_fallback": 'resolve("backend/studyhub-backend"' in rust
         and "cfg(not(debug_assertions))" in rust,
         "packaged_backend_uses_one_folder": '"--onedir"' in backend_builder,
@@ -230,6 +301,10 @@ def packaged_checks(results: dict[str, bool]) -> None:
             "packaged_katex_assets_exist": (APP_RESOURCES / "katex" / "katex.min.js").is_file(),
             "packaged_server_source_absent": not (APP_RESOURCES / "server.py").exists(),
             "packaged_backend_placeholder_absent": not (PACKAGED_BACKEND / ".gitkeep").exists(),
+            "packaged_markitdown_resource_executable": PACKAGED_MARKITDOWN.is_file()
+            and os.access(PACKAGED_MARKITDOWN, os.X_OK),
+            "packaged_mac_ocr_resource_executable": PACKAGED_MAC_OCR.is_file()
+            and os.access(PACKAGED_MAC_OCR, os.X_OK),
         }
     )
     if not all(results[name] for name in ("packaged_app_exists", "packaged_sidecar_exists")):
@@ -237,6 +312,121 @@ def packaged_checks(results: dict[str, bool]) -> None:
 
     with tempfile.TemporaryDirectory(prefix="studyhub-packaged-acceptance-") as raw_tmp:
         temp_root = Path(raw_tmp)
+        smoke_docx = temp_root / "synthetic-smoke.docx"
+        write_synthetic_docx(smoke_docx)
+        smoke_docx_hash = hashlib.sha256(smoke_docx.read_bytes()).hexdigest()
+        try:
+            helper = subprocess.run(
+                [str(PACKAGED_MARKITDOWN)],
+                input=json.dumps({"operation": "convert", "path": str(smoke_docx)}) + "\n",
+                text=True,
+                capture_output=True,
+                timeout=90,
+                check=False,
+                cwd=temp_root,
+                env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(temp_root)},
+            )
+            helper_payload = json.loads(helper.stdout.splitlines()[0]) if helper.stdout.splitlines() else {}
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            helper = None
+            helper_payload = {}
+        if not isinstance(helper_payload, dict):
+            helper_payload = {}
+        results["packaged_markitdown_real_smoke"] = bool(
+            helper
+            and helper.returncode == 0
+            and helper_payload.get("ok") is True
+            and "Synthetic packaged MarkItDown smoke" in str(helper_payload.get("text") or "")
+        )
+        results["packaged_markitdown_smoke_source_unchanged"] = (
+            smoke_docx_hash == hashlib.sha256(smoke_docx.read_bytes()).hexdigest()
+        )
+        smoke_pdf = temp_root / "synthetic-smoke.pdf"
+        write_synthetic_pdf(smoke_pdf, "Synthetic packaged PDF page")
+        smoke_pdf_hash = hashlib.sha256(smoke_pdf.read_bytes()).hexdigest()
+        try:
+            pdf_helper = subprocess.run(
+                [str(PACKAGED_MARKITDOWN)],
+                input=json.dumps({"operation": "pdf_pages", "path": str(smoke_pdf)}) + "\n",
+                text=True,
+                capture_output=True,
+                timeout=90,
+                check=False,
+                cwd=temp_root,
+                env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(temp_root)},
+            )
+            pdf_payload = json.loads(pdf_helper.stdout.splitlines()[0]) if pdf_helper.stdout.splitlines() else {}
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            pdf_helper = None
+            pdf_payload = {}
+        pdf_pages = pdf_payload.get("pages", []) if isinstance(pdf_payload, dict) else []
+        results["packaged_pdf_pages_real_smoke"] = bool(
+            pdf_helper
+            and pdf_helper.returncode == 0
+            and pdf_payload.get("ok") is True
+            and len(pdf_pages) == 1
+            and pdf_pages[0].get("page") == 1
+            and "Synthetic packaged PDF page" in str(pdf_pages[0].get("text") or "")
+        )
+        results["packaged_pdf_smoke_source_unchanged"] = (
+            smoke_pdf_hash == hashlib.sha256(smoke_pdf.read_bytes()).hexdigest()
+        )
+
+        ocr_fixture = temp_root / "synthetic-ocr.png"
+        write_synthetic_ocr_fixture(ocr_fixture)
+        ocr_fixture_hash = hashlib.sha256(ocr_fixture.read_bytes()).hexdigest()
+        if sys.platform == "darwin":
+            try:
+                ocr = subprocess.run(
+                    [str(PACKAGED_MAC_OCR), str(ocr_fixture), "--format", "jsonl", "--pdf-dpi", "180"],
+                    text=True,
+                    capture_output=True,
+                    timeout=90,
+                    check=False,
+                    cwd=temp_root,
+                    env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(temp_root)},
+                )
+                ocr_returncode = ocr.returncode
+                ocr_stdout = ocr.stdout or ""
+                ocr_stderr = ocr.stderr or ""
+                ocr_items = [json.loads(line) for line in ocr_stdout.splitlines() if line.strip()]
+            except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+                ocr_returncode = None
+                ocr_stdout = ""
+                ocr_stderr = ""
+                ocr_items = []
+            recognized_parts: list[str] = []
+            for item in ocr_items:
+                if not isinstance(item, dict):
+                    continue
+                recognized_parts.append(str(item.get("text") or ""))
+                for observation in item.get("observations") or []:
+                    if isinstance(observation, dict):
+                        recognized_parts.append(str(observation.get("text") or ""))
+            recognized_text = "\n".join(part for part in recognized_parts if part)
+            passed = bool(
+                ocr_returncode == 0
+                and ocr_items
+                and any(isinstance(item, dict) and item.get("page") == 1 for item in ocr_items)
+                and recognized_text
+                and OCR_FIXTURE_TOKEN in recognized_text
+            )
+            if not passed:
+                safe_stderr = ocr_stderr.replace(str(temp_root), "<tmp>")
+                print(
+                    "mac-ocr packaged smoke diagnostics: "
+                    f"returncode={ocr_returncode} "
+                    f"recognized_text={recognized_text[:200]!r} "
+                    f"stderr={safe_stderr[:200]!r}",
+                    file=sys.stderr,
+                )
+            results["packaged_mac_ocr_real_smoke"] = passed
+        else:
+            results["packaged_mac_ocr_real_smoke"] = True
+        results["packaged_mac_ocr_smoke_source_unchanged"] = (
+            ocr_fixture_hash == hashlib.sha256(ocr_fixture.read_bytes()).hexdigest()
+        )
+
         clean_runtime = temp_root / "clean-runtime"
         clean_process, clean_url, clean_port = start_backend(clean_runtime, 0, packaged=True)
         try:
@@ -254,7 +444,7 @@ def packaged_checks(results: dict[str, bool]) -> None:
                     "packaged_clean_first_run_search_empty": clean_search == [],
                     "packaged_verified_https_bundle": clean_health.get("verifiedHttps") == "Available",
                     "packaged_openai_optional": clean_health.get("openAI") == "Not configured",
-                    "packaged_missing_poppler_is_nonfatal": clean_health.get("pdfTextExtraction") == "Unavailable",
+                    "packaged_pdf_fallback_available_without_poppler": clean_health.get("pdfTextExtraction") == "Available",
                     "packaged_missing_libreoffice_is_nonfatal": clean_health.get("officeVisualPreview") == "Unavailable",
                     "packaged_runtime_database_writable": (clean_runtime / "data" / "studyhub.sqlite").is_file(),
                 }

@@ -2182,6 +2182,7 @@ async function route(viewName = state.view, options = {}) {
     return openFileDrawer(fileId, Number(options.page || 0), { history: false });
   }
   if ($("#fileDrawer")) $("#fileDrawer").hidden = true;
+  window.StudyHubReader?.destroy();
   state.view = viewName;
   if (viewName === "study" && options.mode) state.studyMode = options.mode;
   if (options.history !== false) recordRoute({ view: viewName, mode: viewName === "study" ? state.studyMode : undefined }, options.replace);
@@ -2213,8 +2214,12 @@ async function openFileDrawer(fileId, page = 0, options = {}) {
     <div><span>${escapeHtml(t("common.source"))}</span><strong>${escapeHtml(file.source_label || file.source || t("file.local"))}</strong></div>
   `;
   $("#extractedText").textContent = file.extractedText || t("file.noReadableText");
-  const pageHash = page ? `#page=${page}` : "";
-  $("#previewFrame").innerHTML = `<iframe title="${escapeHtml(t("file.preview"))}" src="/preview/${file.id}${pageHash}"></iframe>`;
+  await window.StudyHubReader.open({
+    fileId: file.id,
+    page: page || 1,
+    mount: $("#previewFrame"),
+    onPageChange: (nextPage) => recordRoute({ view: "file", fileId: file.id, page: nextPage }, true),
+  });
   $("#askResponse").textContent = "";
   $("#askPrompt").value = "";
   $("#noteBody").value = "";
@@ -3186,6 +3191,7 @@ document.addEventListener("change", async (event) => {
 
 $("#closeDrawer").addEventListener("click", () => {
   $("#fileDrawer").hidden = true;
+  window.StudyHubReader?.destroy();
   if (window.location.hash.startsWith("#/file/") && state.selectedFile?.course_id && state.selectedFile?.week_label) {
     recordRoute({ view: "week", courseId: Number(state.selectedFile.course_id), week: state.selectedFile.week_label }, true);
   }
