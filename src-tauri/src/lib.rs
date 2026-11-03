@@ -946,11 +946,11 @@ fn cancel_canvas_oauth(state: tauri::State<'_, BackendState>) -> Result<String, 
 #[tauri::command]
 fn complete_canvas_oauth(
     state: tauri::State<'_, BackendState>,
-    code: String,
+    response_url: String,
 ) -> Result<String, String> {
     let status = state
         .canvas_manager
-        .complete_oauth(&code)
+        .complete_oauth(&response_url)
         .map_err(|error| error.to_string())?;
     Ok(canvas_status_json(&status))
 }
@@ -960,14 +960,16 @@ fn disconnect_canvas(
     state: tauri::State<'_, BackendState>,
     revoke: Option<bool>,
 ) -> Result<String, String> {
-    let revoked = state
+    let result = state
         .canvas_manager
         .disconnect(revoke.unwrap_or(false))
         .map_err(|error| error.to_string())?;
     let status = state.canvas_manager.status();
     Ok(serde_json::json!({
         "status": status.state.as_str(),
-        "remoteRevoked": revoked,
+        "remoteRevoked": result.remote_revoked,
+        "remoteRevokeAttempted": result.remote_revoke_attempted,
+        "remoteRevokeFailed": result.remote_revoke_failed,
     })
     .to_string())
 }

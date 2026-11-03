@@ -16,19 +16,30 @@ use crate::RuntimeProfile;
 
 pub(crate) const OAUTH_RECORD_PREFIX: &str = "studyhub-canvas-connection-v2";
 pub(crate) const OAUTH_CLIENT_PREFIX: &str = "studyhub-canvas-oauth-client-v1";
+pub(crate) const OAUTH_AUTH_PATH: &str = "/login/oauth2/auth";
+pub(crate) const OAUTH_TOKEN_PATH: &str = "/login/oauth2/token";
+pub(crate) const OAUTH_IDENTITY_PATH: &str = "/api/v1/users/self";
+pub(crate) const OAUTH_RESPONSE_PATH: &str = "/login/oauth2/auth";
+pub(crate) const OAUTH_OOB_REDIRECT: &str = "urn:ietf:wg:oauth:2.0:oob";
 
-const OAUTH_AUTH_PATH: &str = "/login/oauth2/auth";
-const OAUTH_TOKEN_PATH: &str = "/login/oauth2/token";
-const OAUTH_IDENTITY_PATH: &str = "/api/v1/users/self";
-const OAUTH_OOB_REDIRECT: &str = "urn:ietf:wg:oauth:2.0:oob";
+pub(crate) const CANVAS_READ_SCOPES: [&str; 4] = [
+    "url:GET|/api/v1/users/:id",
+    "url:GET|/api/v1/courses",
+    "url:GET|/api/v1/courses/:course_id/files",
+    "url:GET|/api/v1/courses/:course_id/files/:id",
+];
+
 const OAUTH_STATE_TTL_SECONDS: u64 = 600;
 const REFRESH_MARGIN_SECONDS: u64 = 60;
 const MAX_CLIENT_ID_BYTES: usize = 512;
 const MAX_CLIENT_SECRET_BYTES: usize = 8192;
 const MAX_REDIRECT_URI_BYTES: usize = 2048;
 const MAX_DISPLAY_NAME_BYTES: usize = 512;
-const MAX_TOKEN_RESPONSE_BYTES: usize = 64 * 1024;
-const MAX_IDENTITY_RESPONSE_BYTES: usize = 64 * 1024;
+const MAX_STATE_BYTES: usize = 256;
+const MAX_CODE_BYTES: usize = 4096;
+const MAX_TOKEN_BYTES: usize = 4096;
+const MAX_RESPONSE_URL_BYTES: usize = 8192;
+const MAX_HTTP_BODY_BYTES: usize = 64 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(25);
 
@@ -78,6 +89,7 @@ pub(crate) enum CanvasOAuthFailure {
     InvalidToken,
     InvalidClientConfig,
     MalformedRecord,
+    MalformedResponse,
     Missing,
     ReconnectRequired,
     Unauthorized,
@@ -137,6 +149,7 @@ fn error_code(failure: CanvasOAuthFailure) -> &'static str {
         CanvasOAuthFailure::InvalidToken => "canvas_invalid_token",
         CanvasOAuthFailure::InvalidClientConfig => "canvas_invalid_oauth_client",
         CanvasOAuthFailure::MalformedRecord => "canvas_malformed_connection_record",
+        CanvasOAuthFailure::MalformedResponse => "canvas_malformed_oauth_response",
         CanvasOAuthFailure::Missing => "canvas_connection_missing",
         CanvasOAuthFailure::ReconnectRequired => "canvas_reconnect_required",
         CanvasOAuthFailure::Unauthorized => "canvas_unauthorized",
@@ -152,75 +165,122 @@ fn error_code(failure: CanvasOAuthFailure) -> &'static str {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum CanvasRedirect {
-    Oob,
-    Loopback(String),
+pub(crate) struct CanvasOAuthRequest {
+    pub(crate) method: &'static str,
+    pub(crate) url: String,
+    pub(crate) headers: Vec<(String, String)>,
+    pub(crate) form: Vec<(String, String)>,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CanvasOAuthHttpResponse {
+    pub(crate) status: u16,
+    pub(crate) body: String,
+}
+
+pub(crate) trait CanvasOAuthHttp: Send + Sync {
+    fn send(&self, request: CanvasOAuthRequest) -> Result<CanvasOAuthHttpResponse, CanvasOAuthError>;
+}
+
+pub(crate) struct UreqCanvasOAuthHttp;
+
+impl CanvasOAuthHttp for UreqCanvasOAuthHttp {
+    fn send(&self, request: CanvasOAuthRequest) -> Result<CanvasOAuthHttpResponse, CanvasOAuthError> {
+        let agent = oauth_agent();
+        let response = match request.method {
+            "POST" => {
+                let mut builder = agent.post(&request.url).set("Accept", "application/json");
+                for (name, value) in &request.headers {
+                    builder = builder.set(name.as_str(), value.as_str());
+                }
+                let form: Vec<(&str, &str)> = request
+                    .form
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_str()))
+                    .collect();
+                builder.send_form(&form)
+            }
+            "GET" => {
+                let mut builder = agent.get(&request.url).set("Accept", "application/json");
+                for (name, value) in &request.headers {
+                    builder = builder.set(name.as_str(), value.as_str());
+                }
+                builder.call()
+            }
+            "DELETE" => {
+                let mut builder = agent.delete(&request.url);
+                for (name, value) in &request.headers {
+                    builder = builder.set(name.as_str(), value.as_str());
+                }
+                builder.call()
+            }
+            _ => return Err(CanvasOAuthError::new(CanvasOAuthFailure::ExchangeFailed)),
+        };
+        match response {
+            Ok(response) => {
+                let status = response.status();
+                let body = read_bounded_body(response)?;
+                Ok(CanvasOAuthHttpResponse { status, body })
+            }
+            Err(ureq::Error::Status(status, response)) => {
+                let body = read_bounded_body(response)?;
+                Ok(CanvasOAuthHttpResponse { status, body })
+            }
+            Err(ureq::Error::Transport(_)) => Err(CanvasOAuthError::new(
+                CanvasOAuthFailure::TransportFailure,
+            )),
+        }
+    }
+}
+
+fn oauth_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(CONNECT_TIMEOUT)
+        .timeout_read(READ_TIMEOUT)
+        .timeout_write(READ_TIMEOUT)
+        .redirects(0)
+        .build()
+}
+
+fn read_bounded_body(response: ureq::Response) -> Result<String, CanvasOAuthError> {
+    let mut reader = response.into_reader();
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let count = reader
+            .read(&mut chunk)
+            .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::TransportFailure))?;
+        if count == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..count]);
+        if buffer.len() > MAX_HTTP_BODY_BYTES {
+            return Err(CanvasOAuthError::new(
+                CanvasOAuthFailure::ResponseTooLarge,
+            ));
+        }
+    }
+    String::from_utf8(buffer)
+        .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::ExchangeFailed))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CanvasRedirect(String);
 
 impl CanvasRedirect {
     fn parse(raw: &str) -> Result<Self, CanvasOAuthError> {
         let value = raw.trim();
-        if value.is_empty() || value.len() > MAX_REDIRECT_URI_BYTES {
+        if value != OAUTH_OOB_REDIRECT || value.len() > MAX_REDIRECT_URI_BYTES {
             return Err(CanvasOAuthError::new(
                 CanvasOAuthFailure::InvalidClientConfig,
             ));
         }
-        if value == OAUTH_OOB_REDIRECT {
-            return Ok(Self::Oob);
-        }
-        let parsed = url_parse(value)?;
-        if parsed.scheme != "http" || !parsed.username.is_empty() || parsed.password.is_some() {
-            return Err(CanvasOAuthError::new(
-                CanvasOAuthFailure::InvalidClientConfig,
-            ));
-        }
-        let host = parsed
-            .host
-            .as_deref()
-            .map(str::to_ascii_lowercase)
-            .unwrap_or_default();
-        if host != "127.0.0.1" && host != "localhost" && host != "[::1]" {
-            return Err(CanvasOAuthError::new(
-                CanvasOAuthFailure::InvalidClientConfig,
-            ));
-        }
-        Ok(Self::Loopback(value.to_string()))
+        Ok(Self(value.to_string()))
     }
 
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Oob => OAUTH_OOB_REDIRECT,
-            Self::Loopback(value) => value,
-        }
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
     }
-
-    fn needs_code_input(&self) -> bool {
-        matches!(self, Self::Oob)
-    }
-}
-
-struct ParsedUrl {
-    scheme: String,
-    username: String,
-    password: Option<String>,
-    host: Option<String>,
-    path: String,
-    query: Option<String>,
-    fragment: Option<String>,
-}
-
-fn url_parse(raw: &str) -> Result<ParsedUrl, CanvasOAuthError> {
-    let parsed = tauri::Url::parse(raw)
-        .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::InvalidClientConfig))?;
-    Ok(ParsedUrl {
-        scheme: parsed.scheme().to_string(),
-        username: parsed.username().to_string(),
-        password: parsed.password().map(str::to_string),
-        host: parsed.host_str().map(str::to_string),
-        path: parsed.path().to_string(),
-        query: parsed.query().map(str::to_string),
-        fragment: parsed.fragment().map(str::to_string),
-    })
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -279,32 +339,27 @@ impl CanvasOAuthClientConfig {
                 CanvasOAuthFailure::MalformedRecord,
             ));
         }
-        let origin_hex = field(lines.next(), "origin_hex=", 1024)?;
-        let origin = decode_hex_to_string(&origin_hex, 512)
-            .and_then(|value| CanvasOrigin::parse(&value))
-            .map_err(map_connection_error)?;
-        let client_id = field(lines.next(), "client_id_hex=", MAX_CLIENT_ID_BYTES * 2)?;
-        let client_secret =
-            field(lines.next(), "client_secret_hex=", MAX_CLIENT_SECRET_BYTES * 2)?;
-        let redirect_raw =
-            field(lines.next(), "redirect_uri_hex=", MAX_REDIRECT_URI_BYTES * 2)?;
+        let origin_hex = required_field(lines.next(), "origin_hex=", 1024)?;
+        let client_id_hex = required_field(lines.next(), "client_id_hex=", MAX_CLIENT_ID_BYTES * 2)?;
+        let client_secret_hex =
+            required_field(lines.next(), "client_secret_hex=", MAX_CLIENT_SECRET_BYTES * 2)?;
+        let redirect_hex =
+            required_field(lines.next(), "redirect_uri_hex=", MAX_REDIRECT_URI_BYTES * 2)?;
         if lines.next().is_some() {
             return Err(CanvasOAuthError::new(
                 CanvasOAuthFailure::MalformedRecord,
             ));
         }
-        let client_id = decode_hex_to_string(&client_id, MAX_CLIENT_ID_BYTES)
+        let origin = decode_hex_to_string(&origin_hex, 512)
+            .and_then(|value| CanvasOrigin::parse(&value))
+            .map_err(map_connection_error)?;
+        let client_id = decode_hex_to_string(&client_id_hex, MAX_CLIENT_ID_BYTES)
             .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::MalformedRecord))?;
-        let client_secret = decode_hex_to_string(&client_secret, MAX_CLIENT_SECRET_BYTES)
+        let client_secret = decode_hex_to_string(&client_secret_hex, MAX_CLIENT_SECRET_BYTES)
             .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::MalformedRecord))?;
-        let redirect_raw = decode_hex_to_string(&redirect_raw, MAX_REDIRECT_URI_BYTES)
+        let redirect = decode_hex_to_string(&redirect_hex, MAX_REDIRECT_URI_BYTES)
             .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::MalformedRecord))?;
-        Self::new(
-            origin,
-            client_id,
-            client_secret,
-            CanvasRedirect::parse(&redirect_raw)?,
-        )
+        Self::new(origin, client_id, client_secret, CanvasRedirect::parse(&redirect)?)
     }
 
     pub(crate) fn origin(&self) -> &CanvasOrigin {
@@ -324,7 +379,7 @@ impl fmt::Debug for CanvasOAuthClientConfig {
     }
 }
 
-fn field(
+fn required_field(
     line: Option<&str>,
     prefix: &str,
     max_encoded_bytes: usize,
@@ -333,6 +388,22 @@ fn field(
         .and_then(|line| line.strip_prefix(prefix))
         .ok_or_else(|| CanvasOAuthError::new(CanvasOAuthFailure::MalformedRecord))?;
     if value.is_empty() || value.len() > max_encoded_bytes {
+        return Err(CanvasOAuthError::new(
+            CanvasOAuthFailure::MalformedRecord,
+        ));
+    }
+    Ok(value.to_string())
+}
+
+fn optional_field(
+    line: Option<&str>,
+    prefix: &str,
+    max_encoded_bytes: usize,
+) -> Result<String, CanvasOAuthError> {
+    let value = line
+        .and_then(|line| line.strip_prefix(prefix))
+        .ok_or_else(|| CanvasOAuthError::new(CanvasOAuthFailure::MalformedRecord))?;
+    if value.len() > max_encoded_bytes {
         return Err(CanvasOAuthError::new(
             CanvasOAuthFailure::MalformedRecord,
         ));
@@ -369,15 +440,15 @@ impl CanvasOAuthRecord {
     pub(crate) fn new(
         origin: CanvasOrigin,
         access_token: CanvasAccessToken,
-        refresh_token: Option<CanvasAccessToken>,
-        expires_at: Option<u64>,
+        refresh_token: CanvasAccessToken,
+        expires_at: u64,
         display_name: String,
     ) -> Self {
         Self {
             origin,
             access_token: Some(access_token),
-            refresh_token,
-            expires_at,
+            refresh_token: Some(refresh_token),
+            expires_at: Some(expires_at),
             display_name,
             needs_reconnect: false,
         }
@@ -428,28 +499,31 @@ impl CanvasOAuthRecord {
                 CanvasOAuthFailure::MalformedRecord,
             ));
         }
-        let origin_hex = field(lines.next(), "origin_hex=", 1024)?;
-        let access_hex = field(lines.next(), "access_token_hex=", 8192)?;
-        let refresh_hex = field(lines.next(), "refresh_token_hex=", 8192)?;
-        let expires_raw = field(lines.next(), "expires_at=", 32)?;
-        let display_hex = field(lines.next(), "display_name_hex=", MAX_DISPLAY_NAME_BYTES * 2)?;
-        let reconnect_raw = field(lines.next(), "needs_reconnect=", 2)?;
+        let origin_hex = required_field(lines.next(), "origin_hex=", 1024)?;
+        let access_hex = optional_field(lines.next(), "access_token_hex=", MAX_TOKEN_BYTES * 2)?;
+        let refresh_hex = optional_field(lines.next(), "refresh_token_hex=", MAX_TOKEN_BYTES * 2)?;
+        let expires_raw = optional_field(lines.next(), "expires_at=", 32)?;
+        let display_hex =
+            required_field(lines.next(), "display_name_hex=", MAX_DISPLAY_NAME_BYTES * 2)?;
+        let reconnect_raw = required_field(lines.next(), "needs_reconnect=", 2)?;
         if lines.next().is_some() {
             return Err(CanvasOAuthError::new(
                 CanvasOAuthFailure::MalformedRecord,
             ));
         }
-        let origin =
-            decode_hex_to_string(&origin_hex, 512).and_then(|value| CanvasOrigin::parse(&value))
-                .map_err(map_connection_error)?;
+        let origin = decode_hex_to_string(&origin_hex, 512)
+            .and_then(|value| CanvasOrigin::parse(&value))
+            .map_err(map_connection_error)?;
         let access = optional_token(&access_hex)?;
         let refresh = optional_token(&refresh_hex)?;
         let expires_at = if expires_raw.is_empty() {
             None
         } else {
-            Some(expires_raw.parse::<u64>().map_err(|_| {
-                CanvasOAuthError::new(CanvasOAuthFailure::MalformedRecord)
-            })?)
+            Some(
+                expires_raw
+                    .parse::<u64>()
+                    .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::MalformedRecord))?,
+            )
         };
         let display_name = decode_hex_to_string(&display_hex, MAX_DISPLAY_NAME_BYTES)
             .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::MalformedRecord))?;
@@ -462,6 +536,17 @@ impl CanvasOAuthRecord {
                 ))
             }
         };
+        if needs_reconnect {
+            if access.is_some() || refresh.is_some() || expires_at.is_some() {
+                return Err(CanvasOAuthError::new(
+                    CanvasOAuthFailure::MalformedRecord,
+                ));
+            }
+        } else if access.is_none() || expires_at.is_none() {
+            return Err(CanvasOAuthError::new(
+                CanvasOAuthFailure::MalformedRecord,
+            ));
+        }
         Ok(Self {
             origin,
             access_token: access,
@@ -487,7 +572,7 @@ impl CanvasOAuthRecord {
     pub(crate) fn is_expired(&self, now: u64) -> bool {
         match self.expires_at {
             Some(expires_at) => now + REFRESH_MARGIN_SECONDS >= expires_at,
-            None => false,
+            None => true,
         }
     }
 }
@@ -510,7 +595,7 @@ fn optional_token(encoded: &str) -> Result<Option<CanvasAccessToken>, CanvasOAut
     if encoded.is_empty() {
         return Ok(None);
     }
-    let value = decode_hex_to_string(encoded, 4096)
+    let value = decode_hex_to_string(encoded, MAX_TOKEN_BYTES)
         .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::MalformedRecord))?;
     CanvasAccessToken::new(value)
         .map(Some)
@@ -531,6 +616,14 @@ pub(crate) struct CanvasOAuthStart {
     pub(crate) needs_code_input: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CanvasDisconnectResult {
+    pub(crate) local_disconnected: bool,
+    pub(crate) remote_revoked: bool,
+    pub(crate) remote_revoke_attempted: bool,
+    pub(crate) remote_revoke_failed: bool,
+}
+
 #[derive(Clone)]
 struct PendingOAuthState {
     state: String,
@@ -540,6 +633,7 @@ struct PendingOAuthState {
 pub(crate) struct CanvasCredentialManager<S: CredentialStore> {
     profile: RuntimeProfile,
     store: S,
+    http: Arc<dyn CanvasOAuthHttp + Send + Sync>,
     now: NowFn,
     refresh_lock: Mutex<()>,
     pending_oauth: Mutex<Option<PendingOAuthState>>,
@@ -550,16 +644,23 @@ impl CanvasCredentialManager<CredentialStoreBackend> {
         Self::new(
             profile,
             crate::credential_store::credential_store_for_profile(profile),
+            Arc::new(UreqCanvasOAuthHttp),
             Arc::new(system_now_seconds),
         )
     }
 }
 
 impl<S: CredentialStore> CanvasCredentialManager<S> {
-    pub(crate) fn new(profile: RuntimeProfile, store: S, now: NowFn) -> Self {
+    pub(crate) fn new(
+        profile: RuntimeProfile,
+        store: S,
+        http: Arc<dyn CanvasOAuthHttp + Send + Sync>,
+        now: NowFn,
+    ) -> Self {
         Self {
             profile,
             store,
+            http,
             now,
             refresh_lock: Mutex::new(()),
             pending_oauth: Mutex::new(None),
@@ -600,9 +701,33 @@ impl<S: CredentialStore> CanvasCredentialManager<S> {
     }
 
     pub(crate) fn status(&self) -> CanvasStatus {
-        let oauth_record = self.load_record(CredentialSlot::CanvasOAuth);
-        if let Ok(record) = oauth_record {
-            if record.needs_reconnect {
+        if let Some(origin) = self.active_connecting_origin() {
+            return CanvasStatus {
+                state: CanvasConnectionState::Connecting,
+                auth_mode: None,
+                origin: Some(origin),
+                display_name: None,
+            };
+        }
+
+        match self.load_record(CredentialSlot::CanvasOAuth) {
+            Ok(record) => {
+                if record.needs_reconnect {
+                    return CanvasStatus {
+                        state: CanvasConnectionState::ReconnectRequired,
+                        auth_mode: Some("oauth"),
+                        origin: Some(record.origin.as_str().to_string()),
+                        display_name: nonempty(record.display_name()),
+                    };
+                }
+                if record.access_token().is_some() && !record.is_expired((self.now)()) {
+                    return CanvasStatus {
+                        state: CanvasConnectionState::Connected,
+                        auth_mode: Some("oauth"),
+                        origin: Some(record.origin.as_str().to_string()),
+                        display_name: nonempty(record.display_name()),
+                    };
+                }
                 return CanvasStatus {
                     state: CanvasConnectionState::ReconnectRequired,
                     auth_mode: Some("oauth"),
@@ -610,37 +735,32 @@ impl<S: CredentialStore> CanvasCredentialManager<S> {
                     display_name: nonempty(record.display_name()),
                 };
             }
-            if record.access_token().is_some() && !record.is_expired((self.now)()) {
+            Err(error) if error.failure() == CanvasOAuthFailure::Missing => {}
+            Err(_) => {
                 return CanvasStatus {
-                    state: CanvasConnectionState::Connected,
-                    auth_mode: Some("oauth"),
-                    origin: Some(record.origin.as_str().to_string()),
-                    display_name: nonempty(record.display_name()),
+                    state: CanvasConnectionState::Error,
+                    auth_mode: None,
+                    origin: None,
+                    display_name: None,
                 };
             }
-            return CanvasStatus {
-                state: CanvasConnectionState::ReconnectRequired,
-                auth_mode: Some("oauth"),
-                origin: Some(record.origin.as_str().to_string()),
-                display_name: nonempty(record.display_name()),
-            };
         }
 
         if self.profile == RuntimeProfile::Development {
-            match self.store.get_for_trusted_native_use(CredentialSlot::CanvasDefault) {
-                Ok(secret) => {
-                    if let Ok(record) = crate::canvas_connection::CanvasConnectionRecord::parse(
-                        secret.expose_for_trusted_native_use(),
-                    ) {
-                        return CanvasStatus {
-                            state: CanvasConnectionState::Connected,
-                            auth_mode: Some("pat"),
-                            origin: Some(record.origin().as_str().to_string()),
-                            display_name: None,
-                        };
-                    }
+            if let Ok(secret) = self
+                .store
+                .get_for_trusted_native_use(CredentialSlot::CanvasDefault)
+            {
+                if let Ok(record) = crate::canvas_connection::CanvasConnectionRecord::parse(
+                    secret.expose_for_trusted_native_use(),
+                ) {
+                    return CanvasStatus {
+                        state: CanvasConnectionState::Connected,
+                        auth_mode: Some("pat"),
+                        origin: Some(record.origin().as_str().to_string()),
+                        display_name: None,
+                    };
                 }
-                Err(_) => {}
             }
         }
 
@@ -669,6 +789,18 @@ impl<S: CredentialStore> CanvasCredentialManager<S> {
         }
     }
 
+    fn active_connecting_origin(&self) -> Option<String> {
+        let now = (self.now)();
+        let guard = self.pending_oauth.lock().expect("oauth lock");
+        let pending = guard.as_ref()?;
+        if now >= pending.created_at.saturating_add(OAUTH_STATE_TTL_SECONDS) {
+            return None;
+        }
+        self.load_client_config()
+            .ok()
+            .map(|config| config.origin().as_str().to_string())
+    }
+
     pub(crate) fn begin_oauth(&self) -> Result<CanvasOAuthStart, CanvasOAuthError> {
         let config = self.load_client_config()?;
         let state = generate_state()?;
@@ -679,7 +811,7 @@ impl<S: CredentialStore> CanvasCredentialManager<S> {
         });
         Ok(CanvasOAuthStart {
             auth_url,
-            needs_code_input: config.redirect.needs_code_input(),
+            needs_code_input: true,
         })
     }
 
@@ -687,72 +819,87 @@ impl<S: CredentialStore> CanvasCredentialManager<S> {
         *self.pending_oauth.lock().expect("oauth lock") = None;
     }
 
-    pub(crate) fn complete_oauth(&self, code: &str) -> Result<CanvasStatus, CanvasOAuthError> {
+    pub(crate) fn complete_oauth(&self, response_url: &str) -> Result<CanvasStatus, CanvasOAuthError> {
         let config = self.load_client_config()?;
-        let pending = self.take_pending_state()?;
-        self.complete_with_pending(&config, &pending.state, code)
-    }
-
-    pub(crate) fn complete_oauth_with_state(
-        &self,
-        code: &str,
-        state: &str,
-    ) -> Result<CanvasStatus, CanvasOAuthError> {
-        let config = self.load_client_config()?;
-        let pending = self.take_pending_state()?;
-        if state.is_empty() || pending.state != state {
+        let callback = parse_oauth_response(response_url, config.origin())?;
+        let pending = self.peek_pending_state()?;
+        if pending != callback.state {
             return Err(CanvasOAuthError::new(
                 CanvasOAuthFailure::StateMismatch,
             ));
         }
-        self.complete_with_pending(&config, &pending.state, code)
+        let _consumed = self.take_pending_state()?;
+        match callback.outcome {
+            OAuthOutcome::Denied => Err(CanvasOAuthError::new(
+                CanvasOAuthFailure::AccessDenied,
+            )),
+            OAuthOutcome::Code(code) => self.finish_oauth(&config, &code),
+        }
     }
 
-    fn take_pending_state(&self) -> Result<PendingOAuthState, CanvasOAuthError> {
-        let mut guard = self.pending_oauth.lock().expect("oauth lock");
+    fn peek_pending_state(&self) -> Result<String, CanvasOAuthError> {
+        let now = (self.now)();
+        let guard = self.pending_oauth.lock().expect("oauth lock");
         let pending = guard
-            .take()
+            .as_ref()
             .ok_or_else(|| CanvasOAuthError::new(CanvasOAuthFailure::StateMissing))?;
-        if (self.now)() >= pending.created_at.saturating_add(OAUTH_STATE_TTL_SECONDS) {
+        if now >= pending.created_at.saturating_add(OAUTH_STATE_TTL_SECONDS) {
             return Err(CanvasOAuthError::new(
                 CanvasOAuthFailure::StateExpired,
             ));
         }
-        Ok(pending)
+        Ok(pending.state.clone())
     }
 
-    fn complete_with_pending(
+    fn take_pending_state(&self) -> Result<String, CanvasOAuthError> {
+        let now = (self.now)();
+        let mut guard = self.pending_oauth.lock().expect("oauth lock");
+        let pending = guard
+            .take()
+            .ok_or_else(|| CanvasOAuthError::new(CanvasOAuthFailure::StateMissing))?;
+        if now >= pending.created_at.saturating_add(OAUTH_STATE_TTL_SECONDS) {
+            return Err(CanvasOAuthError::new(
+                CanvasOAuthFailure::StateExpired,
+            ));
+        }
+        Ok(pending.state)
+    }
+
+    fn finish_oauth(
         &self,
         config: &CanvasOAuthClientConfig,
-        _state: &str,
         code: &str,
     ) -> Result<CanvasStatus, CanvasOAuthError> {
         let code = code.trim();
-        if code.is_empty() || code.len() > 4096 {
+        if code.is_empty() || code.len() > MAX_CODE_BYTES {
             return Err(CanvasOAuthError::new(
                 CanvasOAuthFailure::ExchangeFailed,
             ));
         }
-        let token_payload = exchange_authorization_code(config, code)?;
+        let token_payload = self.exchange_code(config, code)?;
         let access_token = CanvasAccessToken::new(token_payload.access_token)
             .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::ExchangeFailed))?;
-        let refresh_token = token_payload
-            .refresh_token
-            .map(|value| CanvasAccessToken::new(value))
-            .transpose()
+        let refresh_token = CanvasAccessToken::new(
+            token_payload
+                .refresh_token
+                .ok_or_else(|| CanvasOAuthError::new(CanvasOAuthFailure::ExchangeFailed))?,
+        )
             .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::ExchangeFailed))?;
-        let display_name = validate_identity(config.origin(), &access_token)?;
-        let expires_at = token_payload.expires_in.map(|seconds| {
-            (self.now)().saturating_add(seconds.max(1))
-        });
+        let display_name = self.validate_identity(config.origin(), &access_token)?;
+        let expires_at = (self.now)().saturating_add(token_payload.expires_in);
         let record = CanvasOAuthRecord::new(
             config.origin().clone(),
-            access_token.clone(),
+            access_token,
             refresh_token,
             expires_at,
             display_name.clone(),
         );
-        self.persist_connected(&record, &access_token)?;
+        self.store
+            .store_replace(
+                CredentialSlot::CanvasOAuth,
+                &SecretValue::new(record.serialize()),
+            )
+            .map_err(map_store_error)?;
         Ok(CanvasStatus {
             state: CanvasConnectionState::Connected,
             auth_mode: Some("oauth"),
@@ -761,99 +908,202 @@ impl<S: CredentialStore> CanvasCredentialManager<S> {
         })
     }
 
-    fn persist_connected(
+    fn exchange_code(
         &self,
-        record: &CanvasOAuthRecord,
+        config: &CanvasOAuthClientConfig,
+        code: &str,
+    ) -> Result<TokenPayload, CanvasOAuthError> {
+        let url = format!("{}{}", config.origin().as_str(), OAUTH_TOKEN_PATH);
+        let client_secret = config
+            .client_secret
+            .expose_for_trusted_native_use()
+            .to_string();
+        let request = CanvasOAuthRequest {
+            method: "POST",
+            url,
+            headers: Vec::new(),
+            form: vec![
+                ("grant_type".to_string(), "authorization_code".to_string()),
+                ("client_id".to_string(), config.client_id.clone()),
+                ("client_secret".to_string(), client_secret),
+                ("redirect_uri".to_string(), config.redirect.as_str().to_string()),
+                ("code".to_string(), code.to_string()),
+            ],
+        };
+        let response = self.http.send(request)?;
+        let status = classify_status(response.status);
+        if let Some(failure) = status {
+            return Err(CanvasOAuthError::new(failure));
+        }
+        parse_token_payload(&response.body, true)
+    }
+
+    fn validate_identity(
+        &self,
+        origin: &CanvasOrigin,
         access_token: &CanvasAccessToken,
-    ) -> Result<(), CanvasOAuthError> {
-        self.store
-            .store_replace(
-                CredentialSlot::CanvasOAuth,
-                &SecretValue::new(record.serialize()),
-            )
-            .map_err(map_store_error)?;
-        let projection = crate::canvas_connection::CanvasConnectionRecord::new(
-            record.origin().clone(),
-            access_token.clone(),
-        );
-        self.store
-            .store_replace(
-                CredentialSlot::CanvasDefault,
-                &SecretValue::new(projection.serialize()),
-            )
-            .map_err(map_store_error)
+    ) -> Result<String, CanvasOAuthError> {
+        let url = format!("{}{}", origin.as_str(), OAUTH_IDENTITY_PATH);
+        let request = CanvasOAuthRequest {
+            method: "GET",
+            url,
+            headers: vec![(
+                "Authorization".to_string(),
+                format!("Bearer {}", access_token.expose_for_authorized_canvas_request()),
+            )],
+            form: Vec::new(),
+        };
+        let response = self.http.send(request)?;
+        let status = classify_status(response.status);
+        if let Some(failure) = status {
+            return Err(CanvasOAuthError::new(
+                failure_for_identity(failure),
+            ));
+        }
+        let payload: serde_json::Value = serde_json::from_str(&response.body)
+            .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::IdentityFailed))?;
+        if payload.get("id").is_none() {
+            return Err(CanvasOAuthError::new(
+                CanvasOAuthFailure::IdentityFailed,
+            ));
+        }
+        let display_name = payload
+            .get("name")
+            .or_else(|| payload.get("short_name"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        Ok(display_name)
     }
 
     pub(crate) fn resolve_canvas_default(&self) -> Result<SecretValue, CanvasOAuthError> {
-        if let Ok(record) = self.load_record(CredentialSlot::CanvasOAuth) {
-            if record.needs_reconnect {
-                return Err(CanvasOAuthError::new(
-                    CanvasOAuthFailure::ReconnectRequired,
-                ));
-            }
-            let now = (self.now)();
-            if record.access_token().is_some() && record.is_expired(now) {
-                let _guard = self.refresh_lock.lock().expect("refresh lock");
-                return self.refresh_and_project();
-            }
-            if let Some(access_token) = record.access_token() {
-                let projection = crate::canvas_connection::CanvasConnectionRecord::new(
-                    record.origin().clone(),
-                    access_token.clone(),
-                );
-                return Ok(SecretValue::new(projection.serialize()));
-            }
-            return Err(CanvasOAuthError::new(
-                CanvasOAuthFailure::ReconnectRequired,
-            ));
-        }
-        self.store
-            .get_for_trusted_native_use(CredentialSlot::CanvasDefault)
-            .map_err(|error| {
-                if error.failure() == CredentialStoreFailure::Missing {
-                    CanvasOAuthError::new(CanvasOAuthFailure::Missing)
-                } else {
-                    map_store_error(error)
+        match self.load_record(CredentialSlot::CanvasOAuth) {
+            Ok(record) => {
+                if record.needs_reconnect {
+                    return Err(CanvasOAuthError::new(
+                        CanvasOAuthFailure::ReconnectRequired,
+                    ));
                 }
-            })
+                if let Some(access_token) = record.access_token() {
+                    if !record.is_expired((self.now)()) {
+                        return Ok(SecretValue::new(project_record(&record, access_token)));
+                    }
+                }
+                let _guard = self.refresh_lock.lock().expect("refresh lock");
+                let reloaded = self.load_record(CredentialSlot::CanvasOAuth)?;
+                if reloaded.needs_reconnect {
+                    return Err(CanvasOAuthError::new(
+                        CanvasOAuthFailure::ReconnectRequired,
+                    ));
+                }
+                if let Some(access_token) = reloaded.access_token() {
+                    if !reloaded.is_expired((self.now)()) {
+                        return Ok(SecretValue::new(project_record(&reloaded, access_token)));
+                    }
+                }
+                self.refresh_and_project_locked(&reloaded)
+            }
+            Err(error) if error.failure() == CanvasOAuthFailure::Missing => {
+                self.resolve_development_pat_or_missing()
+            }
+            Err(error) => Err(error),
+        }
     }
 
-    fn refresh_and_project(&self) -> Result<SecretValue, CanvasOAuthError> {
+    fn resolve_development_pat_or_missing(&self) -> Result<SecretValue, CanvasOAuthError> {
+        if self.profile == RuntimeProfile::Development {
+            match self
+                .store
+                .get_for_trusted_native_use(CredentialSlot::CanvasDefault)
+            {
+                Ok(secret) => return Ok(secret),
+                Err(error) if error.failure() == CredentialStoreFailure::Missing => {}
+                Err(error) => return Err(map_store_error(error)),
+            }
+        }
+        Err(CanvasOAuthError::new(CanvasOAuthFailure::Missing))
+    }
+
+    fn refresh_and_project_locked(
+        &self,
+        record: &CanvasOAuthRecord,
+    ) -> Result<SecretValue, CanvasOAuthError> {
         let config = self.load_client_config()?;
-        let record = self.load_record(CredentialSlot::CanvasOAuth)?;
         let refresh_token = record
             .refresh_token
             .as_ref()
             .ok_or_else(|| CanvasOAuthError::new(CanvasOAuthFailure::ReconnectRequired))?;
-        match refresh_access_token(&config, refresh_token) {
-            Ok(payload) => {
+        let client_secret = config
+            .client_secret
+            .expose_for_trusted_native_use()
+            .to_string();
+        let request = CanvasOAuthRequest {
+            method: "POST",
+            url: format!("{}{}", config.origin().as_str(), OAUTH_TOKEN_PATH),
+            headers: Vec::new(),
+            form: vec![
+                ("grant_type".to_string(), "refresh_token".to_string()),
+                ("client_id".to_string(), config.client_id.clone()),
+                ("client_secret".to_string(), client_secret),
+                (
+                    "redirect_uri".to_string(),
+                    config.redirect.as_str().to_string(),
+                ),
+                (
+                    "refresh_token".to_string(),
+                    refresh_token.expose_for_authorized_canvas_request().to_string(),
+                ),
+            ],
+        };
+        match self.http.send(request) {
+            Ok(response) => {
+                if let Some(failure) = classify_status(response.status) {
+                    if is_definitive_refresh_failure(failure) {
+                        let reconnect = CanvasOAuthRecord::reconnect_required(
+                            record.origin().clone(),
+                            record.display_name().to_string(),
+                        );
+                        self.store
+                            .store_replace(
+                                CredentialSlot::CanvasOAuth,
+                                &SecretValue::new(reconnect.serialize()),
+                            )
+                            .map_err(map_store_error)?;
+                        return Err(CanvasOAuthError::new(
+                            CanvasOAuthFailure::ReconnectRequired,
+                        ));
+                    }
+                    return Err(CanvasOAuthError::new(failure));
+                }
+                let payload = parse_token_payload(&response.body, false)?;
                 let access_token = CanvasAccessToken::new(payload.access_token)
                     .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::ExchangeFailed))?;
-                let new_refresh_token = payload
-                    .refresh_token
-                    .map(|value| CanvasAccessToken::new(value))
-                    .transpose()
-                    .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::ExchangeFailed))?
-                    .or_else(|| record.refresh_token.clone());
-                let expires_at = payload.expires_in.map(|seconds| {
-                    (self.now)().saturating_add(seconds.max(1))
-                });
+                let refresh_token = if let Some(value) = payload.refresh_token {
+                    Some(
+                        CanvasAccessToken::new(value)
+                            .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::ExchangeFailed))?,
+                    )
+                } else {
+                    record.refresh_token.clone()
+                };
+                let expires_at = (self.now)().saturating_add(payload.expires_in);
                 let updated = CanvasOAuthRecord {
                     origin: record.origin().clone(),
                     access_token: Some(access_token.clone()),
-                    refresh_token: new_refresh_token,
-                    expires_at,
+                    refresh_token,
+                    expires_at: Some(expires_at),
                     display_name: record.display_name().to_string(),
                     needs_reconnect: false,
                 };
-                self.persist_connected(&updated, &access_token)?;
-                let projection = crate::canvas_connection::CanvasConnectionRecord::new(
-                    record.origin().clone(),
-                    access_token,
-                );
-                Ok(SecretValue::new(projection.serialize()))
+                self.store
+                    .store_replace(
+                        CredentialSlot::CanvasOAuth,
+                        &SecretValue::new(updated.serialize()),
+                    )
+                    .map_err(map_store_error)?;
+                Ok(SecretValue::new(project_record(&updated, &access_token)))
             }
-            Err(error) if is_definitive_refresh_failure(error.failure()) => {
+            Err(CanvasOAuthError { failure }) if is_definitive_refresh_failure(failure) => {
                 let reconnect = CanvasOAuthRecord::reconnect_required(
                     record.origin().clone(),
                     record.display_name().to_string(),
@@ -863,9 +1113,6 @@ impl<S: CredentialStore> CanvasCredentialManager<S> {
                         CredentialSlot::CanvasOAuth,
                         &SecretValue::new(reconnect.serialize()),
                     )
-                    .map_err(map_store_error)?;
-                self.store
-                    .delete(CredentialSlot::CanvasDefault)
                     .map_err(map_store_error)?;
                 Err(CanvasOAuthError::new(
                     CanvasOAuthFailure::ReconnectRequired,
@@ -878,10 +1125,18 @@ impl<S: CredentialStore> CanvasCredentialManager<S> {
     pub(crate) fn disconnect(
         &self,
         revoke: bool,
-    ) -> Result<bool, CanvasOAuthError> {
-        let mut revoked = false;
+    ) -> Result<CanvasDisconnectResult, CanvasOAuthError> {
+        let mut result = CanvasDisconnectResult {
+            local_disconnected: false,
+            remote_revoked: false,
+            remote_revoke_attempted: revoke,
+            remote_revoke_failed: false,
+        };
         if revoke {
-            revoked = self.revoke_remote()?;
+            match self.revoke_remote() {
+                Ok(revoked) => result.remote_revoked = revoked,
+                Err(_) => result.remote_revoke_failed = true,
+            }
         }
         for slot in [CredentialSlot::CanvasDefault, CredentialSlot::CanvasOAuth] {
             match self.store.delete(slot) {
@@ -891,14 +1146,11 @@ impl<S: CredentialStore> CanvasCredentialManager<S> {
             }
         }
         self.cancel_oauth();
-        Ok(revoked)
+        result.local_disconnected = true;
+        Ok(result)
     }
 
     fn revoke_remote(&self) -> Result<bool, CanvasOAuthError> {
-        let config = match self.load_client_config() {
-            Ok(config) => config,
-            Err(_) => return Ok(false),
-        };
         let record = match self.load_record(CredentialSlot::CanvasOAuth) {
             Ok(record) => record,
             Err(_) => return Ok(false),
@@ -906,20 +1158,25 @@ impl<S: CredentialStore> CanvasCredentialManager<S> {
         let Some(access_token) = record.access_token() else {
             return Ok(false);
         };
-        let client_secret = config
-            .client_secret
-            .expose_for_trusted_native_use()
-            .to_string();
-        post_token_form(
-            &format!("{}/login/oauth2/token", config.origin().as_str()),
-            &[
-                ("token", access_token.expose_for_authorized_canvas_request()),
-                ("client_id", &config.client_id),
-                ("client_secret", &client_secret),
-            ],
-        )
-        .map(|_| true)
-        .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::ServerFailure))
+        let request = CanvasOAuthRequest {
+            method: "DELETE",
+            url: format!("{}{}", record.origin().as_str(), OAUTH_TOKEN_PATH),
+            headers: vec![(
+                "Authorization".to_string(),
+                format!("Bearer {}", access_token.expose_for_authorized_canvas_request()),
+            )],
+            form: Vec::new(),
+        };
+        let response = self.http.send(request)?;
+        if (200..300).contains(&response.status) {
+            Ok(true)
+        } else if let Some(failure) = classify_status(response.status) {
+            Err(CanvasOAuthError::new(failure))
+        } else {
+            Err(CanvasOAuthError::new(
+                CanvasOAuthFailure::ServerFailure,
+            ))
+        }
     }
 
     fn load_record(
@@ -934,6 +1191,14 @@ impl<S: CredentialStore> CanvasCredentialManager<S> {
             Err(error) => Err(map_store_error(error)),
         }
     }
+}
+
+fn project_record(record: &CanvasOAuthRecord, access_token: &CanvasAccessToken) -> String {
+    crate::canvas_connection::CanvasConnectionRecord::new(
+        record.origin().clone(),
+        access_token.clone(),
+    )
+    .serialize()
 }
 
 fn nonempty(value: &str) -> Option<String> {
@@ -972,7 +1237,9 @@ fn build_authorization_url(
     url.push_str(&urlencode(state));
     url.push_str("&redirect_uri=");
     url.push_str(&urlencode(config.redirect.as_str()));
-    if url.len() > 8192 {
+    url.push_str("&scope=");
+    url.push_str(&urlencode(&CANVAS_READ_SCOPES.join(" ")));
+    if url.len() > MAX_RESPONSE_URL_BYTES {
         return Err(CanvasOAuthError::new(
             CanvasOAuthFailure::InvalidClientConfig,
         ));
@@ -993,139 +1260,154 @@ fn urlencode(value: &str) -> String {
     output
 }
 
-struct TokenPayload {
-    access_token: String,
-    refresh_token: Option<String>,
-    expires_in: Option<u64>,
+#[derive(Debug, Eq, PartialEq)]
+enum OAuthOutcome {
+    Code(String),
+    Denied,
 }
 
-fn exchange_authorization_code(
-    config: &CanvasOAuthClientConfig,
-    code: &str,
-) -> Result<TokenPayload, CanvasOAuthError> {
-    let token_url = format!("{}{}", config.origin().as_str(), OAUTH_TOKEN_PATH);
-    let client_secret = config
-        .client_secret
-        .expose_for_trusted_native_use()
-        .to_string();
-    let body = post_token_form(
-        &token_url,
-        &[
-            ("grant_type", "authorization_code"),
-            ("client_id", &config.client_id),
-            ("client_secret", &client_secret),
-            ("redirect_uri", config.redirect.as_str()),
-            ("code", code),
-        ],
-    )?;
-    parse_token_payload(&body)
+struct OAuthCallback {
+    state: String,
+    outcome: OAuthOutcome,
 }
 
-fn refresh_access_token(
-    config: &CanvasOAuthClientConfig,
-    refresh_token: &CanvasAccessToken,
-) -> Result<TokenPayload, CanvasOAuthError> {
-    let token_url = format!("{}{}", config.origin().as_str(), OAUTH_TOKEN_PATH);
-    let client_secret = config
-        .client_secret
-        .expose_for_trusted_native_use()
-        .to_string();
-    let body = post_token_form(
-        &token_url,
-        &[
-            ("grant_type", "refresh_token"),
-            ("client_id", &config.client_id),
-            ("client_secret", &client_secret),
-            (
-                "refresh_token",
-                refresh_token.expose_for_authorized_canvas_request(),
-            ),
-        ],
-    )?;
-    parse_token_payload(&body)
-}
+fn parse_oauth_response(
+    raw: &str,
+    origin: &CanvasOrigin,
+) -> Result<OAuthCallback, CanvasOAuthError> {
+    let value = raw.trim();
+    if value.is_empty() || value.len() > MAX_RESPONSE_URL_BYTES {
+        return Err(CanvasOAuthError::new(
+            CanvasOAuthFailure::MalformedResponse,
+        ));
+    }
+    let parsed = tauri::Url::parse(value)
+        .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::MalformedResponse))?;
+    if parsed.scheme() != "https"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(CanvasOAuthError::new(
+            CanvasOAuthFailure::MalformedResponse,
+        ));
+    }
+    if parsed.path() != OAUTH_RESPONSE_PATH || !url_matches_origin(&parsed, origin) {
+        return Err(CanvasOAuthError::new(
+            CanvasOAuthFailure::MalformedResponse,
+        ));
+    }
 
-fn post_token_form(
-    url: &str,
-    fields: &[(&str, &str)],
-) -> Result<String, CanvasOAuthError> {
-    let agent = oauth_agent();
-    let response = agent
-        .post(url)
-        .set("Accept", "application/json")
-        .send_form(fields);
-    match response {
-        Ok(response) => read_bounded_body(response),
-        Err(ureq::Error::Status(status, response)) => {
-            let failure = match status {
-                401 => CanvasOAuthFailure::Unauthorized,
-                403 => CanvasOAuthFailure::Forbidden,
-                429 => CanvasOAuthFailure::RateLimited,
-                value if value >= 500 => CanvasOAuthFailure::ServerFailure,
-                _ => CanvasOAuthFailure::ExchangeFailed,
-            };
-            let _ = read_bounded_body(response);
-            Err(CanvasOAuthError::new(failure))
+    let mut state: Option<String> = None;
+    let mut code: Option<String> = None;
+    let mut error: Option<String> = None;
+    for (key, value) in parsed.query_pairs() {
+        match key.as_ref() {
+            "state" => {
+                if state.is_some() || value.is_empty() || value.len() > MAX_STATE_BYTES {
+                    return Err(CanvasOAuthError::new(
+                        CanvasOAuthFailure::MalformedResponse,
+                    ));
+                }
+                state = Some(value.into_owned());
+            }
+            "code" => {
+                if code.is_some() || value.is_empty() || value.len() > MAX_CODE_BYTES {
+                    return Err(CanvasOAuthError::new(
+                        CanvasOAuthFailure::MalformedResponse,
+                    ));
+                }
+                code = Some(value.into_owned());
+            }
+            "error" => {
+                if error.is_some() || value.is_empty() || value.len() > 256 {
+                    return Err(CanvasOAuthError::new(
+                        CanvasOAuthFailure::MalformedResponse,
+                    ));
+                }
+                error = Some(value.into_owned());
+            }
+            "access_token" | "client_secret" | "refresh_token" | "token" => {
+                return Err(CanvasOAuthError::new(
+                    CanvasOAuthFailure::MalformedResponse,
+                ));
+            }
+            _ => {}
         }
-        Err(ureq::Error::Transport(_)) => Err(CanvasOAuthError::new(
-            CanvasOAuthFailure::TransportFailure,
+    }
+    let state = state.ok_or_else(|| {
+        CanvasOAuthError::new(CanvasOAuthFailure::StateMissing)
+    })?;
+    match (code, error) {
+        (Some(code), None) => Ok(OAuthCallback {
+            state,
+            outcome: OAuthOutcome::Code(code),
+        }),
+        (None, Some(error)) if error == "access_denied" => Ok(OAuthCallback {
+            state,
+            outcome: OAuthOutcome::Denied,
+        }),
+        _ => Err(CanvasOAuthError::new(
+            CanvasOAuthFailure::MalformedResponse,
         )),
     }
 }
 
-fn oauth_agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(CONNECT_TIMEOUT)
-        .timeout_read(READ_TIMEOUT)
-        .timeout_write(READ_TIMEOUT)
-        .redirects(0)
-        .build()
+fn url_matches_origin(parsed: &tauri::Url, origin: &CanvasOrigin) -> bool {
+    let Ok(origin_url) = tauri::Url::parse(origin.as_str()) else {
+        return false;
+    };
+    let host_matches = parsed
+        .host_str()
+        .map(|host| host.to_ascii_lowercase())
+        == origin_url
+            .host_str()
+            .map(|host| host.to_ascii_lowercase());
+    let port_matches = parsed.port_or_known_default() == origin_url.port_or_known_default();
+    host_matches && port_matches
 }
 
-fn read_bounded_body(response: ureq::Response) -> Result<String, CanvasOAuthError> {
-    let mut reader = response.into_reader();
-    let mut buffer = Vec::new();
-    let mut chunk = [0u8; 8192];
-    loop {
-        let count = reader
-            .read(&mut chunk)
-            .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::TransportFailure))?;
-        if count == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&chunk[..count]);
-        if buffer.len() > MAX_TOKEN_RESPONSE_BYTES {
+struct TokenPayload {
+    access_token: String,
+    refresh_token: Option<String>,
+    expires_in: u64,
+}
+
+fn parse_token_payload(body: &str, require_refresh: bool) -> Result<TokenPayload, CanvasOAuthError> {
+    let payload: serde_json::Value = serde_json::from_str(body)
+        .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::ExchangeFailed))?;
+    if let Some(token_type) = payload.get("token_type").and_then(serde_json::Value::as_str) {
+        if !token_type.eq_ignore_ascii_case("Bearer") {
             return Err(CanvasOAuthError::new(
-                CanvasOAuthFailure::ResponseTooLarge,
+                CanvasOAuthFailure::ExchangeFailed,
             ));
         }
     }
-    String::from_utf8(buffer)
-        .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::ExchangeFailed))
-}
-
-fn parse_token_payload(body: &str) -> Result<TokenPayload, CanvasOAuthError> {
-    let payload: serde_json::Value = serde_json::from_str(body)
-        .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::ExchangeFailed))?;
     let access_token = payload
         .get("access_token")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| CanvasOAuthError::new(CanvasOAuthFailure::ExchangeFailed))?
         .to_string();
-    if access_token.trim().is_empty() || access_token.len() > 4096 {
+    if access_token.trim().is_empty() || access_token.len() > MAX_TOKEN_BYTES {
         return Err(CanvasOAuthError::new(
             CanvasOAuthFailure::ExchangeFailed,
         ));
     }
-    let refresh_token = payload
-        .get("refresh_token")
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.is_empty() && value.len() <= 4096)
-        .map(str::to_string);
     let expires_in = payload
         .get("expires_in")
         .and_then(serde_json::Value::as_u64)
-        .filter(|value| *value > 0);
+        .filter(|value| *value > 0)
+        .ok_or_else(|| CanvasOAuthError::new(CanvasOAuthFailure::ExchangeFailed))?;
+    let refresh_token = payload
+        .get("refresh_token")
+        .and_then(serde_json::Value::as_str)
+        .map(|value| value.to_string())
+        .filter(|value| !value.is_empty() && value.len() <= MAX_TOKEN_BYTES);
+    if require_refresh && refresh_token.is_none() {
+        return Err(CanvasOAuthError::new(
+            CanvasOAuthFailure::ExchangeFailed,
+        ));
+    }
     Ok(TokenPayload {
         access_token,
         refresh_token,
@@ -1133,86 +1415,34 @@ fn parse_token_payload(body: &str) -> Result<TokenPayload, CanvasOAuthError> {
     })
 }
 
-fn validate_identity(
-    origin: &CanvasOrigin,
-    access_token: &CanvasAccessToken,
-) -> Result<String, CanvasOAuthError> {
-    let url = format!("{}{}", origin.as_str(), OAUTH_IDENTITY_PATH);
-    let agent = oauth_agent();
-    let response = agent
-        .get(&url)
-        .set("Accept", "application/json")
-        .set(
-            "Authorization",
-            &format!(
-                "Bearer {}",
-                access_token.expose_for_authorized_canvas_request()
-            ),
-        )
-        .call();
-    match response {
-        Ok(response) => {
-            let body = read_identity_body(response)?;
-            let payload: serde_json::Value = serde_json::from_str(&body)
-                .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::IdentityFailed))?;
-            let display_name = payload
-                .get("name")
-                .or_else(|| payload.get("short_name"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            if payload.get("id").is_none() {
-                return Err(CanvasOAuthError::new(
-                    CanvasOAuthFailure::IdentityFailed,
-                ));
-            }
-            Ok(display_name)
-        }
-        Err(ureq::Error::Status(status, response)) => {
-            let _ = read_bounded_body(response);
-            let failure = match status {
-                401 => CanvasOAuthFailure::Unauthorized,
-                403 => CanvasOAuthFailure::Forbidden,
-                429 => CanvasOAuthFailure::RateLimited,
-                value if value >= 500 => CanvasOAuthFailure::ServerFailure,
-                _ => CanvasOAuthFailure::IdentityFailed,
-            };
-            Err(CanvasOAuthError::new(failure))
-        }
-        Err(ureq::Error::Transport(_)) => Err(CanvasOAuthError::new(
-            CanvasOAuthFailure::TransportFailure,
-        )),
+fn classify_status(status: u16) -> Option<CanvasOAuthFailure> {
+    if (200..300).contains(&status) {
+        return None;
+    }
+    match status {
+        401 => Some(CanvasOAuthFailure::Unauthorized),
+        403 => Some(CanvasOAuthFailure::Forbidden),
+        429 => Some(CanvasOAuthFailure::RateLimited),
+        value if value >= 500 => Some(CanvasOAuthFailure::ServerFailure),
+        _ => Some(CanvasOAuthFailure::ExchangeFailed),
     }
 }
 
-fn read_identity_body(response: ureq::Response) -> Result<String, CanvasOAuthError> {
-    let mut reader = response.into_reader();
-    let mut buffer = Vec::new();
-    let mut chunk = [0u8; 8192];
-    loop {
-        let count = reader
-            .read(&mut chunk)
-            .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::TransportFailure))?;
-        if count == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&chunk[..count]);
-        if buffer.len() > MAX_IDENTITY_RESPONSE_BYTES {
-            return Err(CanvasOAuthError::new(
-                CanvasOAuthFailure::ResponseTooLarge,
-            ));
-        }
+fn failure_for_identity(failure: CanvasOAuthFailure) -> CanvasOAuthFailure {
+    match failure {
+        CanvasOAuthFailure::Unauthorized
+        | CanvasOAuthFailure::Forbidden
+        | CanvasOAuthFailure::RateLimited
+        | CanvasOAuthFailure::ServerFailure
+        | CanvasOAuthFailure::TransportFailure => failure,
+        _ => CanvasOAuthFailure::IdentityFailed,
     }
-    String::from_utf8(buffer)
-        .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::IdentityFailed))
 }
 
 fn is_definitive_refresh_failure(failure: CanvasOAuthFailure) -> bool {
     matches!(
         failure,
-        CanvasOAuthFailure::Unauthorized
-            | CanvasOAuthFailure::Forbidden
-            | CanvasOAuthFailure::ExchangeFailed
+        CanvasOAuthFailure::Unauthorized | CanvasOAuthFailure::Forbidden
     )
 }
 
@@ -1229,13 +1459,67 @@ fn map_store_error(error: CredentialStoreError) -> CanvasOAuthError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credential_store::{
-        namespace_for_profile, MemoryCredentialStore,
-    };
+    use crate::credential_store::{namespace_for_profile, MemoryCredentialStore};
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    fn manager(profile: RuntimeProfile) -> (
-        CanvasCredentialManager<MemoryCredentialStore>,
+    const CLIENT_ID: &str = "synthetic-client-id";
+    const CLIENT_SECRET: &str = "synthetic-client-secret";
+    const ACCESS: &str = "synthetic-access-token";
+    const REFRESH: &str = "synthetic-refresh-token";
+    const ORIGIN: &str = "https://canvas.example.edu";
+
+    #[derive(Default)]
+    struct FakeHttp {
+        requests: Mutex<Vec<CanvasOAuthRequest>>,
+        responses: Mutex<Vec<CanvasOAuthHttpResponse>>,
+    }
+
+    impl FakeHttp {
+        fn queue(&self, status: u16, body: &str) {
+            self.responses.lock().expect("test lock").push(
+                CanvasOAuthHttpResponse {
+                    status,
+                    body: body.to_string(),
+                },
+            );
+        }
+
+        fn requests(&self) -> Vec<CanvasOAuthRequest> {
+            self.requests.lock().expect("test lock").clone()
+        }
+
+        fn token_body(access: &str, refresh: Option<&str>, expires_in: u64) -> String {
+            let refresh_json = refresh
+                .map(|value| format!(",\"refresh_token\":\"{value}\""))
+                .unwrap_or_default();
+            format!(
+                "{{\"access_token\":\"{access}\",\"token_type\":\"Bearer\",\"expires_in\":{expires_in}{refresh_json}}}"
+            )
+        }
+    }
+
+    impl CanvasOAuthHttp for FakeHttp {
+        fn send(
+            &self,
+            request: CanvasOAuthRequest,
+        ) -> Result<CanvasOAuthHttpResponse, CanvasOAuthError> {
+            self.requests
+                .lock()
+                .expect("test lock")
+                .push(request);
+            let mut responses = self.responses.lock().expect("test lock");
+            if responses.is_empty() {
+                return Err(CanvasOAuthError::new(CanvasOAuthFailure::TransportFailure));
+            }
+            Ok(responses.remove(0))
+        }
+    }
+
+    fn manager(
+        profile: RuntimeProfile,
+        http: Arc<dyn CanvasOAuthHttp + Send + Sync>,
+    ) -> (
+        Arc<CanvasCredentialManager<MemoryCredentialStore>>,
         Arc<AtomicU64>,
     ) {
         let clock = Arc::new(AtomicU64::new(1_700_000_000));
@@ -1245,80 +1529,83 @@ mod tests {
         };
         let store = MemoryCredentialStore::new(namespace_for_profile(profile));
         (
-            CanvasCredentialManager::new(profile, store, now),
+            Arc::new(CanvasCredentialManager::new(profile, store, http, now)),
             clock,
         )
     }
 
-    fn provision(manager: &CanvasCredentialManager<MemoryCredentialStore>) {
+    fn provisioned(manager: &CanvasCredentialManager<MemoryCredentialStore>) {
         manager
-            .provision_client_config(
-                "https://canvas.example.edu",
-                "synthetic-client-id",
-                "synthetic-client-secret",
-                "urn:ietf:wg:oauth:2.0:oob",
-            )
+            .provision_client_config(ORIGIN, CLIENT_ID, CLIENT_SECRET, OAUTH_OOB_REDIRECT)
             .expect("provision synthetic client");
     }
 
-    #[test]
-    fn oauth_client_config_round_trips_and_redacts_secret() {
-        let config = CanvasOAuthClientConfig::new(
-            CanvasOrigin::parse("https://canvas.example.edu").expect("origin"),
-            "synthetic-client-id".to_string(),
-            "synthetic-client-secret".to_string(),
-            CanvasRedirect::parse("urn:ietf:wg:oauth:2.0:oob").expect("redirect"),
+    fn extract_state(auth_url: &str) -> String {
+        let parsed = tauri::Url::parse(auth_url).expect("auth url");
+        parsed
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .expect("state")
+            .1
+            .into_owned()
+    }
+
+    fn response_url(state: &str, code: &str) -> String {
+        format!(
+            "{}{}?state={}&code={}",
+            ORIGIN,
+            OAUTH_RESPONSE_PATH,
+            urlencode(state),
+            urlencode(code)
         )
-        .expect("config");
-        let serialized = config.serialize();
-        assert!(serialized.starts_with(OAUTH_CLIENT_PREFIX));
-        assert!(!format!("{config:?}").contains("synthetic-client-secret"));
-        let parsed = CanvasOAuthClientConfig::parse(&serialized).expect("parse");
-        assert_eq!(parsed.origin().as_str(), "https://canvas.example.edu");
     }
 
     #[test]
-    fn oauth_record_round_trips_and_redacts_tokens() {
-        let record = CanvasOAuthRecord::new(
-            CanvasOrigin::parse("https://canvas.example.edu").expect("origin"),
-            CanvasAccessToken::new("synthetic-access").expect("access"),
-            Some(CanvasAccessToken::new("synthetic-refresh").expect("refresh")),
-            Some(1_700_000_300),
-            "Synthetic Student".to_string(),
-        );
-        let serialized = record.serialize();
-        assert!(serialized.starts_with(OAUTH_RECORD_PREFIX));
-        assert!(!format!("{record:?}").contains("synthetic-access"));
-        assert!(!format!("{record:?}").contains("synthetic-refresh"));
-        let parsed = CanvasOAuthRecord::parse(&serialized).expect("parse");
-        assert_eq!(parsed.origin().as_str(), "https://canvas.example.edu");
-        assert_eq!(parsed.display_name(), "Synthetic Student");
-    }
-
-    #[test]
-    fn state_missing_mismatch_and_consumed_once() {
-        let (manager, _clock) = manager(RuntimeProfile::Development);
-        provision(&manager);
-        assert_eq!(
-            manager
-                .complete_oauth("synthetic-code")
-                .unwrap_err()
-                .failure(),
-            CanvasOAuthFailure::StateMissing
-        );
+    fn auth_url_contains_exact_read_scopes() {
+        let http = Arc::new(FakeHttp::default());
+        let (manager, _clock) = manager(RuntimeProfile::Development, http);
+        provisioned(&manager);
         let start = manager.begin_oauth().expect("begin");
-        assert!(start.needs_code_input);
-        assert!(start.auth_url.contains("state="));
+        let parsed = tauri::Url::parse(&start.auth_url).expect("auth url");
+        assert_eq!(parsed.scheme(), "https");
+        assert_eq!(parsed.host_str(), Some("canvas.example.edu"));
+        assert_eq!(parsed.path(), OAUTH_AUTH_PATH);
+        let scopes: Vec<String> = parsed
+            .query_pairs()
+            .filter(|(key, _)| key == "scope")
+            .map(|(_, value)| value.into_owned())
+            .collect();
+        assert_eq!(scopes.len(), 1);
+        let mut scope_items: Vec<&str> = scopes[0].split(' ').collect();
+        scope_items.sort_unstable();
+        let mut expected: Vec<&str> = CANVAS_READ_SCOPES.to_vec();
+        expected.sort_unstable();
+        assert_eq!(scope_items, expected);
+        assert!(start.auth_url.contains("redirect_uri=urn%3Aietf%3Awg%3Aoauth%3A2.0%3Aoob"));
+        assert!(start.auth_url.contains("response_type=code"));
+    }
+
+    #[test]
+    fn state_mismatch_and_missing_do_not_exchange() {
+        let http = Arc::new(FakeHttp::default());
+        let (manager, _clock) = manager(RuntimeProfile::Development, http.clone());
+        provisioned(&manager);
+        let start = manager.begin_oauth().expect("begin");
+        let state = extract_state(&start.auth_url);
+        let wrong = response_url("wrong-state", "synthetic-code");
         assert_eq!(
-            manager
-                .complete_oauth_with_state("synthetic-code", "wrong-state")
-                .unwrap_err()
-                .failure(),
+            manager.complete_oauth(&wrong).unwrap_err().failure(),
             CanvasOAuthFailure::StateMismatch
         );
+        assert!(http.requests().is_empty());
+        http.queue(200, &FakeHttp::token_body(ACCESS, Some(REFRESH), 3600));
+        http.queue(200, "{\"id\":42,\"name\":\"Synthetic Student\"}");
+        let correct = response_url(&state, "synthetic-code");
+        manager.complete_oauth(&correct).expect("complete");
+        assert_eq!(http.requests().len(), 2); // token exchange + identity
         assert_eq!(
             manager
-                .complete_oauth_with_state("synthetic-code", "wrong-state")
+                .complete_oauth(&correct)
                 .unwrap_err()
                 .failure(),
             CanvasOAuthFailure::StateMissing
@@ -1326,61 +1613,95 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_and_not_connected_states_are_derived() {
-        let (manager, _clock) = manager(RuntimeProfile::Production);
-        assert_eq!(
-            manager.status().state,
-            CanvasConnectionState::Unavailable
+    fn access_denied_has_no_exchange_or_write() {
+        let http = Arc::new(FakeHttp::default());
+        let (manager, _clock) = manager(RuntimeProfile::Development, http.clone());
+        provisioned(&manager);
+        let start = manager.begin_oauth().expect("begin");
+        let state = extract_state(&start.auth_url);
+        let denied = format!(
+            "{}{}?state={}&error=access_denied",
+            ORIGIN,
+            OAUTH_RESPONSE_PATH,
+            urlencode(&state)
         );
-        provision(&manager);
         assert_eq!(
-            manager.status().state,
-            CanvasConnectionState::NotConnected
+            manager.complete_oauth(&denied).unwrap_err().failure(),
+            CanvasOAuthFailure::AccessDenied
         );
+        assert!(http.requests().is_empty());
+        assert_eq!(manager.status().state, CanvasConnectionState::NotConnected);
     }
 
     #[test]
-    fn development_pat_record_is_reported_as_connected_pat() {
-        let (manager, _clock) = manager(RuntimeProfile::Development);
-        crate::canvas_connection::configure_canvas_development_connection_in_store(
-            RuntimeProfile::Development,
-            &manager.store,
-            "https://canvas.example.edu",
-            "synthetic-pat",
-        )
-        .expect("configure dev PAT");
-        let status = manager.status();
+    fn exchange_and_identity_requests_are_exact() {
+        let http = Arc::new(FakeHttp::default());
+        http.queue(200, &FakeHttp::token_body(ACCESS, Some(REFRESH), 3600));
+        http.queue(200, "{\"id\":42,\"name\":\"Synthetic Student\"}");
+        let (manager, _clock) = manager(RuntimeProfile::Development, http.clone());
+        provisioned(&manager);
+        let start = manager.begin_oauth().expect("begin");
+        let state = extract_state(&start.auth_url);
+        let status = manager
+            .complete_oauth(&response_url(&state, "synthetic-code"))
+            .expect("complete");
         assert_eq!(status.state, CanvasConnectionState::Connected);
-        assert_eq!(status.auth_mode, Some("pat"));
-        assert_eq!(manager.resolve_canvas_default().is_ok(), true);
-    }
-
-    #[test]
-    fn production_never_accepts_development_pat() {
-        let (manager, _clock) = manager(RuntimeProfile::Production);
-        let error = crate::canvas_connection::configure_canvas_development_connection_in_store(
-            RuntimeProfile::Production,
-            &manager.store,
-            "https://canvas.example.edu",
-            "synthetic-pat",
-        )
-        .unwrap_err();
-        assert!(!error.to_string().contains("synthetic-pat"));
+        assert_eq!(status.display_name.as_deref(), Some("Synthetic Student"));
+        let requests = http.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method, "POST");
+        assert_eq!(requests[0].url, format!("{ORIGIN}{OAUTH_TOKEN_PATH}"));
+        let fields: Vec<(&str, &str)> = requests[0]
+            .form
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        assert!(fields.contains(&("grant_type", "authorization_code")));
+        assert!(fields.contains(&("client_id", CLIENT_ID)));
+        assert!(fields.contains(&("client_secret", CLIENT_SECRET)));
+        assert!(fields.contains(&("redirect_uri", OAUTH_OOB_REDIRECT)));
+        assert!(fields.contains(&("code", "synthetic-code")));
+        assert_eq!(requests[1].method, "GET");
+        assert_eq!(requests[1].url, format!("{ORIGIN}{OAUTH_IDENTITY_PATH}"));
         assert_eq!(
-            manager.status().state,
-            CanvasConnectionState::Unavailable
+            requests[1].headers,
+            vec![("Authorization".to_string(), format!("Bearer {ACCESS}"))]
         );
     }
 
     #[test]
-    fn oauth_record_projection_stays_out_of_default_slot() {
-        let (manager, _clock) = manager(RuntimeProfile::Development);
-        provision(&manager);
+    fn identity_failure_persists_nothing() {
+        let http = Arc::new(FakeHttp::default());
+        http.queue(200, &FakeHttp::token_body(ACCESS, Some(REFRESH), 3600));
+        http.queue(401, "{}");
+        let (manager, _clock) = manager(RuntimeProfile::Development, http.clone());
+        provisioned(&manager);
+        let start = manager.begin_oauth().expect("begin");
+        let state = extract_state(&start.auth_url);
+        assert_eq!(
+            manager
+                .complete_oauth(&response_url(&state, "synthetic-code"))
+                .unwrap_err()
+                .failure(),
+            CanvasOAuthFailure::Unauthorized
+        );
+        assert!(manager.load_record(CredentialSlot::CanvasOAuth).is_err());
+    }
+
+    #[test]
+    fn refresh_request_includes_redirect_uri() {
+        let http = Arc::new(FakeHttp::default());
+        http.queue(
+            200,
+            &FakeHttp::token_body("synthetic-new-access", None, 3600),
+        );
+        let (manager, clock) = manager(RuntimeProfile::Development, http.clone());
+        provisioned(&manager);
         let record = CanvasOAuthRecord::new(
-            CanvasOrigin::parse("https://canvas.example.edu").expect("origin"),
-            CanvasAccessToken::new("synthetic-access").expect("access"),
-            Some(CanvasAccessToken::new("synthetic-refresh").expect("refresh")),
-            Some(1_700_000_300),
+            CanvasOrigin::parse(ORIGIN).expect("origin"),
+            CanvasAccessToken::new(ACCESS).expect("access"),
+            CanvasAccessToken::new(REFRESH).expect("refresh"),
+            1_700_000_000,
             "Synthetic Student".to_string(),
         );
         manager
@@ -1389,34 +1710,194 @@ mod tests {
                 CredentialSlot::CanvasOAuth,
                 &SecretValue::new(record.serialize()),
             )
-            .expect("store oauth");
-        let default = manager
-            .store
-            .get_for_trusted_native_use(CredentialSlot::CanvasDefault);
-        assert!(default.is_err());
+            .expect("store");
+        clock.store(1_700_000_100, Ordering::SeqCst);
+        let projected = manager.resolve_canvas_default().expect("resolve");
+        let parsed = crate::canvas_connection::CanvasConnectionRecord::parse(
+            projected.expose_for_trusted_native_use(),
+        )
+        .expect("projection");
+        assert_eq!(parsed.origin().as_str(), ORIGIN);
+        let requests = http.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "POST");
+        let fields: Vec<(&str, &str)> = requests[0]
+            .form
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        assert!(fields.contains(&("grant_type", "refresh_token")));
+        assert!(fields.contains(&("redirect_uri", OAUTH_OOB_REDIRECT)));
+        assert!(fields.contains(&("refresh_token", REFRESH)));
     }
 
     #[test]
-    fn disconnect_preserves_oauth_client_config() {
-        let (manager, _clock) = manager(RuntimeProfile::Development);
-        provision(&manager);
+    fn reconnect_record_round_trips_and_survives_restart() {
+        let http = Arc::new(FakeHttp::default());
+        let (manager, _clock) = manager(RuntimeProfile::Development, http.clone());
+        provisioned(&manager);
+        let reconnect = CanvasOAuthRecord::reconnect_required(
+            CanvasOrigin::parse(ORIGIN).expect("origin"),
+            "Synthetic Student".to_string(),
+        );
+        let serialized = reconnect.serialize();
+        let parsed = CanvasOAuthRecord::parse(&serialized).expect("parse");
+        assert!(parsed.needs_reconnect);
+        assert!(parsed.access_token().is_none());
+        assert!(parsed.refresh_token.is_none());
+        assert!(parsed.expires_at.is_none());
+
+        manager
+            .store
+            .store_replace(
+                CredentialSlot::CanvasOAuth,
+                &SecretValue::new(serialized),
+            )
+            .expect("store reconnect");
+        let second = CanvasCredentialManager::new(
+            RuntimeProfile::Development,
+            manager.store.clone(),
+            http,
+            manager.now.clone(),
+        );
+        assert_eq!(
+            second.status().state,
+            CanvasConnectionState::ReconnectRequired
+        );
+        assert_eq!(
+            second
+                .resolve_canvas_default()
+                .unwrap_err()
+                .failure(),
+            CanvasOAuthFailure::ReconnectRequired
+        );
+    }
+
+    #[test]
+    fn production_never_falls_back_to_legacy_canvas_default() {
+        let http = Arc::new(FakeHttp::default());
+        let (manager, _clock) = manager(RuntimeProfile::Production, http);
+        manager
+            .store
+            .store_replace(
+                CredentialSlot::CanvasDefault,
+                &SecretValue::new(
+                    crate::canvas_connection::CanvasConnectionRecord::new(
+                        CanvasOrigin::parse(ORIGIN).expect("origin"),
+                        CanvasAccessToken::new(ACCESS).expect("access"),
+                    )
+                    .serialize(),
+                ),
+            )
+            .expect("store stale pat");
+        assert_eq!(
+            manager
+                .resolve_canvas_default()
+                .unwrap_err()
+                .failure(),
+            CanvasOAuthFailure::Missing
+        );
+    }
+
+    #[test]
+    fn development_falls_back_to_pat_only() {
+        let http = Arc::new(FakeHttp::default());
+        let (manager, _clock) = manager(RuntimeProfile::Development, http);
+        crate::canvas_connection::configure_canvas_development_connection_in_store(
+            RuntimeProfile::Development,
+            &manager.store,
+            ORIGIN,
+            ACCESS,
+        )
+        .expect("configure dev PAT");
+        let projected = manager.resolve_canvas_default().expect("resolve");
+        let parsed = crate::canvas_connection::CanvasConnectionRecord::parse(
+            projected.expose_for_trusted_native_use(),
+        )
+        .expect("projection");
+        assert_eq!(
+            parsed.origin().as_str(),
+            ORIGIN
+        );
+    }
+
+    #[test]
+    fn concurrent_refresh_issues_exactly_one_request() {
+        let http = Arc::new(FakeHttp::default());
+        http.queue(
+            200,
+            &FakeHttp::token_body("synthetic-new-access", None, 3600),
+        );
+        let (manager, clock) = manager(RuntimeProfile::Development, http.clone());
+        provisioned(&manager);
         let record = CanvasOAuthRecord::new(
-            CanvasOrigin::parse("https://canvas.example.edu").expect("origin"),
-            CanvasAccessToken::new("synthetic-access").expect("access"),
-            Some(CanvasAccessToken::new("synthetic-refresh").expect("refresh")),
-            Some(1_700_000_300),
+            CanvasOrigin::parse(ORIGIN).expect("origin"),
+            CanvasAccessToken::new(ACCESS).expect("access"),
+            CanvasAccessToken::new(REFRESH).expect("refresh"),
+            1_700_000_000,
             "Synthetic Student".to_string(),
         );
         manager
-            .persist_connected(
-                &record,
-                record.access_token().expect("access"),
+            .store
+            .store_replace(
+                CredentialSlot::CanvasOAuth,
+                &SecretValue::new(record.serialize()),
             )
-            .expect("persist");
-        manager.disconnect(false).expect("disconnect");
-        assert_eq!(
-            manager.status().state,
-            CanvasConnectionState::NotConnected
+            .expect("store");
+        clock.store(1_700_000_100, Ordering::SeqCst);
+
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let manager = manager.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                manager
+                    .resolve_canvas_default()
+                    .expect("resolve")
+                    .expose_for_trusted_native_use()
+                    .to_string()
+            }));
+        }
+        let results: Vec<String> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("join"))
+            .collect();
+        assert_eq!(results[0], results[1]);
+        assert_eq!(http.requests().len(), 1);
+    }
+
+    #[test]
+    fn revoke_uses_delete_with_bearer_only() {
+        let http = Arc::new(FakeHttp::default());
+        http.queue(200, "");
+        let (manager, _clock) = manager(RuntimeProfile::Development, http.clone());
+        provisioned(&manager);
+        let record = CanvasOAuthRecord::new(
+            CanvasOrigin::parse(ORIGIN).expect("origin"),
+            CanvasAccessToken::new(ACCESS).expect("access"),
+            CanvasAccessToken::new(REFRESH).expect("refresh"),
+            1_700_000_000,
+            "Synthetic Student".to_string(),
         );
+        manager
+            .store
+            .store_replace(
+                CredentialSlot::CanvasOAuth,
+                &SecretValue::new(record.serialize()),
+            )
+            .expect("store");
+        manager.disconnect(true).expect("disconnect");
+        let requests = http.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "DELETE");
+        assert_eq!(requests[0].url, format!("{ORIGIN}{OAUTH_TOKEN_PATH}"));
+        assert_eq!(
+            requests[0].headers,
+            vec![("Authorization".to_string(), format!("Bearer {ACCESS}"))]
+        );
+        assert!(requests[0].form.is_empty());
+        assert!(manager.load_record(CredentialSlot::CanvasOAuth).is_err());
     }
 }

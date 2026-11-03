@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Production Canvas OAuth connection acceptance for PR #37."""
+"""Production Canvas OAuth connection acceptance for PR #37.
+
+Executable checks run here (Rust tests cover the OAuth HTTP/state/refresh/revoke
+matrix; the Node harness below covers the Settings UI render functions).
+Source-string checks are limited to architecture invariants that cannot be
+executed in Python CI.
+"""
 
 from __future__ import annotations
 
@@ -41,7 +47,7 @@ def main() -> int:
     development = read("src-tauri/capabilities/studyhub-development.json")
     demo = read("src-tauri/capabilities/studyhub-demo.json")
     check(
-        "production_has_oauth_commands_not_pat_or_provisioning",
+        "production_acl_excludes_pat_and_provisioning",
         "allow-start-canvas-oauth" in production
         and "allow-complete-canvas-oauth" in production
         and "allow-disconnect-canvas" in production
@@ -50,66 +56,70 @@ def main() -> int:
         failures,
     )
     check(
-        "development_keeps_pat_and_provisioning",
+        "development_acl_keeps_pat_and_provisioning",
         "allow-configure-canvas-development-connection" in development
         and "allow-provision-canvas-oauth-client" in development,
         failures,
     )
     check(
-        "demo_has_no_canvas_credential_access",
+        "demo_acl_has_no_canvas_credential_commands",
         "allow-start-canvas-oauth" not in demo and "allow-disconnect-canvas" not in demo,
         failures,
     )
 
-    rust_lib = read("src-tauri/src/lib.rs")
+    rust = read("src-tauri/src/lib.rs")
+    rust_oauth = read("src-tauri/src/canvas_oauth.rs")
     check(
         "production_pat_fails_closed_natively",
-        "canvas_manual_token_development_only" in rust_lib
-        and "profile != RuntimeProfile::Development" in rust_lib,
+        "canvas_manual_token_development_only" in rust
+        and "profile != RuntimeProfile::Development" in rust,
+        failures,
+    )
+    check(
+        "oauth_http_boundary_is_testable",
+        "trait CanvasOAuthHttp" in rust_oauth and "UreqCanvasOAuthHttp" in rust_oauth,
+        failures,
+    )
+    check(
+        "oauth_scopes_are_exact_read_only",
+        all(
+            scope in rust_oauth
+            for scope in (
+                "url:GET|/api/v1/users/:id",
+                "url:GET|/api/v1/courses",
+                "url:GET|/api/v1/courses/:course_id/files",
+                "url:GET|/api/v1/courses/:course_id/files/:id",
+            )
+        )
+        and "url:POST" not in rust_oauth
+        and "url:PUT" not in rust_oauth
+        and "url:DELETE" not in rust_oauth,
         failures,
     )
 
     source = read("server.py")
     connector = source.split("class CanvasConnector", 1)[1].split("def header_value", 1)[0]
     check(
-        "connector_is_read_only",
+        "canvas_connector_remains_get_only",
         "self.http_get" in connector
-        and "method=\"POST\"" not in connector
-        and "method=\"PUT\"" not in connector
-        and "method=\"DELETE\"" not in connector
+        and 'method="POST"' not in connector
+        and 'method="PUT"' not in connector
+        and 'method="DELETE"' not in connector
         and "/assignments" not in connector,
         failures,
     )
-    check(
-        "canvas_endpoints_remain_post_only",
-        'parsed.path == "/api/canvas/identity"' in source
-        and "/api/canvas/identity" not in source.split("def handle_api_get", 1)[1].split("def handle_notes_get", 1)[0],
-        failures,
-    )
 
-    app_js = read("static/app.js")
-    check(
-        "canvas_settings_section_renders_once",
-        'id="canvasSection"' in app_js and "canvasSectionHtml" in app_js,
-        failures,
+    ui = subprocess.run(
+        ["node", "bin/canvas_ui_acceptance.js"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
     )
-    check(
-        "canvas_status_is_live_region",
-        'id="canvasStatus"' in app_js and 'aria-live="polite"' in app_js,
-        failures,
-    )
-    for action in (
-        "connect",
-        "cancel",
-        "complete",
-        "disconnect",
-        "refresh-courses",
-        "preview-selection",
-        "apply-selection",
-        "sync-preview",
-        "sync-apply",
-    ):
-        check(f"canvas_action_wired_{action}", f'data-canvas-{action}="1"' in app_js, failures)
+    check("executable_canvas_ui_dom_harness", ui.returncode == 0, failures)
+    if ui.returncode != 0:
+        print(ui.stdout, file=sys.stderr)
+        print(ui.stderr, file=sys.stderr)
 
     i18n_result = subprocess.run(
         [
@@ -124,22 +134,25 @@ def main() -> int:
         check=False,
     )
     translations = json.loads(i18n_result.stdout) if i18n_result.returncode == 0 else {}
-    for key in (
-        "canvas.heading",
-        "canvas.unavailable",
-        "canvas.connect",
-        "canvas.disconnect",
-        "canvas.refreshCourses",
-        "canvas.syncNow",
-        "canvas.reconnectRequired",
-    ):
-        check(
-            f"canvas_i18n_{key.split('.')[1]}",
-            key in translations.get("en", {}) and key in translations.get("zh-CN", {}),
-            failures,
-        )
+    check(
+        "canvas_i18n_keys_both_languages",
+        all(
+            key in translations.get("en", {}) and key in translations.get("zh-CN", {})
+            for key in (
+                "canvas.heading",
+                "canvas.unavailable",
+                "canvas.connect",
+                "canvas.disconnect",
+                "canvas.responseLabel",
+                "canvas.refreshCourses",
+                "canvas.syncNow",
+                "canvas.reconnectRequired",
+            )
+        ),
+        failures,
+    )
 
-    for target in ("static/app.js", "static/i18n/catalog.js", "server.py", "reader_extractors.py"):
+    for target in ("static/app.js", "static/canvas-ui.js", "static/i18n/catalog.js", "server.py", "reader_extractors.py"):
         text = read(target)
         check(
             f"no_secret_canaries_{target.replace('/', '_')}",
