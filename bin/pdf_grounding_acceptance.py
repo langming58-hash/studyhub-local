@@ -117,7 +117,14 @@ def main() -> int:
             / "Synthetic Tutorial.pdf"
         )
         source.parent.mkdir(parents=True)
-        source.write_bytes(synthetic_pdf(["Synthetic Alpha Concept", "Q2. Synthetic Beta Question"]))
+        source.write_bytes(
+            synthetic_pdf(
+                [
+                    "Synthetic Alpha Concept: local-first course material grounding",
+                    "Q2. Synthetic Beta Question: explore derivatives with limits",
+                ]
+            )
+        )
         before = hashlib.sha256(source.read_bytes()).hexdigest()
 
         original_configured_tool = server.configured_tool

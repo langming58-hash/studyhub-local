@@ -322,18 +322,26 @@ def extract_document(
         text = pdftotext(source).strip()
         if len(text) >= MIN_USEFUL_TEXT_CHARS:
             return ExtractedDocument(text[:MAX_EXTRACTED_CHARS], "pdftotext", "system")
-        pages = extract_pdf_pages(source, allowed_roots)
-        if pages.text.strip():
-            return pages
-        result = extract_with_markitdown(source, allowed_roots)
-        if len(result.text.strip()) >= MIN_USEFUL_TEXT_CHARS:
-            return result
+        page_candidate = extract_pdf_pages(source, allowed_roots)
+        if len(page_candidate.text.strip()) >= MIN_USEFUL_TEXT_CHARS:
+            return page_candidate
+        markitdown_candidate = extract_with_markitdown(source, allowed_roots)
+        if len(markitdown_candidate.text.strip()) >= MIN_USEFUL_TEXT_CHARS:
+            return markitdown_candidate
         if ocr_executable:
             ocr = extract_with_mac_ocr(source, allowed_roots, ocr_executable)
             if ocr.text.strip():
                 return ocr
-        if result.text.strip():
-            return result
+        # OCR unavailable or produced no text: keep the best local candidate.
+        # Prefer meaningfully more readable text, but retain the page-aware
+        # candidate when it is at least as informative so page identity is not
+        # flattened away by a lower-quality flat fallback.
+        page_text = page_candidate.text.strip()
+        markitdown_text = markitdown_candidate.text.strip()
+        if markitdown_text and (not page_text or len(markitdown_text) > len(page_text)):
+            return markitdown_candidate
+        if page_text:
+            return page_candidate
         return ExtractedDocument(text[:MAX_EXTRACTED_CHARS], "pdftotext", "system")
     if ext in {".docx", ".pptx", ".xlsx"}:
         result = extract_with_markitdown(source, allowed_roots)
