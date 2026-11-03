@@ -29,6 +29,8 @@ PACKAGED_BACKEND = APP_RESOURCES / "backend" / "studyhub-backend"
 PACKAGED_MARKITDOWN = APP_RESOURCES / "reader-tools" / "studyhub-markitdown"
 PACKAGED_MAC_OCR = APP_RESOURCES / "reader-tools" / "mac-ocr"
 URL_RE = re.compile(r"^StudyHub Local running at (http://localhost:(\d+))$")
+OCR_FIXTURE_TEXT = "STUDYHUB OCR 12345"
+OCR_FIXTURE_TOKEN = "12345"
 
 
 def write_synthetic_docx(path: Path) -> None:
@@ -68,6 +70,25 @@ def write_synthetic_pdf(path: Path, text: str) -> None:
         body.extend(f"{offset:010d} 00000 n \n".encode())
     body.extend(f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
     path.write_bytes(bytes(body))
+
+
+def write_synthetic_ocr_fixture(path: Path) -> None:
+    """Write a high-contrast, deterministic image for the packaged mac-ocr smoke."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    font = ImageFont.load_default(size=48)
+    probe = Image.new("L", (8, 8), 255)
+    left, top, right, bottom = ImageDraw.Draw(probe).textbbox(
+        (0, 0), OCR_FIXTURE_TEXT, font=font, spacing=24
+    )
+    padding = 48
+    width = (right - left) + 2 * padding
+    height = (bottom - top) + 2 * padding
+    logical = Image.new("L", (width, height), 255)
+    draw = ImageDraw.Draw(logical)
+    draw.text((padding - left, padding - top), OCR_FIXTURE_TEXT, font=font, fill=0, spacing=24)
+    scaled = logical.resize((width * 4, height * 4), Image.NEAREST)
+    scaled.save(path)
 
 
 def output_lines(stream: object, results: queue.Queue[str]) -> None:
@@ -351,12 +372,13 @@ def packaged_checks(results: dict[str, bool]) -> None:
             smoke_pdf_hash == hashlib.sha256(smoke_pdf.read_bytes()).hexdigest()
         )
 
-        synthetic_image = ROOT / "docs" / "assets" / "screenshots" / "first-run-en.png"
-        image_hash = hashlib.sha256(synthetic_image.read_bytes()).hexdigest()
+        ocr_fixture = temp_root / "synthetic-ocr.png"
+        write_synthetic_ocr_fixture(ocr_fixture)
+        ocr_fixture_hash = hashlib.sha256(ocr_fixture.read_bytes()).hexdigest()
         if sys.platform == "darwin":
             try:
                 ocr = subprocess.run(
-                    [str(PACKAGED_MAC_OCR), str(synthetic_image), "--format", "jsonl", "--pdf-dpi", "180"],
+                    [str(PACKAGED_MAC_OCR), str(ocr_fixture), "--format", "jsonl", "--pdf-dpi", "180"],
                     text=True,
                     capture_output=True,
                     timeout=90,
@@ -364,22 +386,45 @@ def packaged_checks(results: dict[str, bool]) -> None:
                     cwd=temp_root,
                     env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(temp_root)},
                 )
-                ocr_items = [json.loads(line) for line in ocr.stdout.splitlines() if line.strip()]
+                ocr_returncode = ocr.returncode
+                ocr_stdout = ocr.stdout or ""
+                ocr_stderr = ocr.stderr or ""
+                ocr_items = [json.loads(line) for line in ocr_stdout.splitlines() if line.strip()]
             except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
-                ocr = None
+                ocr_returncode = None
+                ocr_stdout = ""
+                ocr_stderr = ""
                 ocr_items = []
-            results["packaged_mac_ocr_real_smoke"] = bool(
-                ocr
-                and ocr.returncode == 0
-                and any(
-                    isinstance(item, dict) and "StudyHub" in str(item.get("text") or "")
-                    for item in ocr_items
-                )
+            recognized_parts: list[str] = []
+            for item in ocr_items:
+                if not isinstance(item, dict):
+                    continue
+                recognized_parts.append(str(item.get("text") or ""))
+                for observation in item.get("observations") or []:
+                    if isinstance(observation, dict):
+                        recognized_parts.append(str(observation.get("text") or ""))
+            recognized_text = "\n".join(part for part in recognized_parts if part)
+            passed = bool(
+                ocr_returncode == 0
+                and ocr_items
+                and any(isinstance(item, dict) and item.get("page") == 1 for item in ocr_items)
+                and recognized_text
+                and OCR_FIXTURE_TOKEN in recognized_text
             )
+            if not passed:
+                safe_stderr = ocr_stderr.replace(str(temp_root), "<tmp>")
+                print(
+                    "mac-ocr packaged smoke diagnostics: "
+                    f"returncode={ocr_returncode} "
+                    f"recognized_text={recognized_text[:200]!r} "
+                    f"stderr={safe_stderr[:200]!r}",
+                    file=sys.stderr,
+                )
+            results["packaged_mac_ocr_real_smoke"] = passed
         else:
             results["packaged_mac_ocr_real_smoke"] = True
         results["packaged_mac_ocr_smoke_source_unchanged"] = (
-            image_hash == hashlib.sha256(synthetic_image.read_bytes()).hexdigest()
+            ocr_fixture_hash == hashlib.sha256(ocr_fixture.read_bytes()).hexdigest()
         )
 
         clean_runtime = temp_root / "clean-runtime"
