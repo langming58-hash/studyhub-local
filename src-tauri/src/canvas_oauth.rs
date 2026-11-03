@@ -1230,7 +1230,7 @@ fn map_store_error(error: CredentialStoreError) -> CanvasOAuthError {
 mod tests {
     use super::*;
     use crate::credential_store::{
-        namespace_for_profile, CredentialStore as _, MemoryCredentialStore,
+        namespace_for_profile, MemoryCredentialStore,
     };
     use std::sync::atomic::{AtomicU64, Ordering};
 
