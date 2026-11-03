@@ -215,10 +215,20 @@ impl fmt::Debug for CanvasOAuthRequest {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) struct CanvasOAuthHttpResponse {
     pub(crate) status: u16,
     pub(crate) body: String,
+}
+
+impl fmt::Debug for CanvasOAuthHttpResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CanvasOAuthHttpResponse")
+            .field("status", &self.status)
+            .field("body_len", &self.body.len())
+            .finish()
+    }
 }
 
 pub(crate) trait CanvasOAuthHttp: Send + Sync {
@@ -607,7 +617,7 @@ impl CanvasOAuthRecord {
                     CanvasOAuthFailure::MalformedRecord,
                 ));
             }
-        } else if access.is_none() || expires_at.is_none() {
+        } else if access.is_none() || refresh.is_none() || expires_at.is_none() {
             return Err(CanvasOAuthError::new(
                 CanvasOAuthFailure::MalformedRecord,
             ));
@@ -2390,5 +2400,77 @@ mod tests {
                 .expose_for_authorized_canvas_request(),
             REFRESH
         );
+    }
+
+    #[test]
+    fn oauth_http_response_debug_never_prints_body() {
+        let response = CanvasOAuthHttpResponse {
+            status: 200,
+            body: "{\"access_token\":\"SYN_CANVAS_RESPONSE_ACCESS_TOKEN\",\"refresh_token\":\"SYN_CANVAS_RESPONSE_REFRESH_TOKEN\",\"user\":\"SYN_CANVAS_RESPONSE_PRIVATE_USER\"}".to_string(),
+        };
+        let rendered = format!("{response:?}");
+        for canary in [
+            "SYN_CANVAS_RESPONSE_ACCESS_TOKEN",
+            "SYN_CANVAS_RESPONSE_REFRESH_TOKEN",
+            "SYN_CANVAS_RESPONSE_PRIVATE_USER",
+        ] {
+            assert!(!rendered.contains(canary), "leaked {canary} in {rendered}");
+        }
+        assert!(rendered.contains("status"));
+        assert!(rendered.contains("body_len"));
+    }
+
+    #[test]
+    fn normal_oauth_record_roundtrips_with_all_required_fields() {
+        let record = CanvasOAuthRecord::new(
+            CanvasOrigin::parse(ORIGIN).expect("origin"),
+            CLIENT_ID.to_string(),
+            OAUTH_OOB_REDIRECT.to_string(),
+            CanvasAccessToken::new(ACCESS).expect("access"),
+            CanvasAccessToken::new(REFRESH).expect("refresh"),
+            1_700_000_300,
+            "Synthetic Student".to_string(),
+        );
+        let parsed = CanvasOAuthRecord::parse(&record.serialize()).expect("parse");
+        assert!(!parsed.needs_reconnect);
+        assert!(parsed.is_renewable());
+        assert!(parsed.access_token().is_some());
+        assert!(parsed.refresh_token().is_some());
+    }
+
+    #[test]
+    fn normal_record_missing_refresh_token_fails_closed() {
+        let malformed = format!(
+            "{OAUTH_RECORD_PREFIX}\nauth_mode=oauth\norigin_hex={}\nclient_id_hex={}\nredirect_uri_hex={}\naccess_token_hex={}\nrefresh_token_hex=\nexpires_at=1700000300\ndisplay_name_hex={}\nneeds_reconnect=0",
+            encode_hex(ORIGIN.as_bytes()),
+            encode_hex(CLIENT_ID.as_bytes()),
+            encode_hex(OAUTH_OOB_REDIRECT.as_bytes()),
+            encode_hex(ACCESS.as_bytes()),
+            encode_hex("Synthetic Student".as_bytes()),
+        );
+        assert_eq!(
+            CanvasOAuthRecord::parse(&malformed).unwrap_err().failure(),
+            CanvasOAuthFailure::MalformedRecord
+        );
+
+        let http = Arc::new(FakeHttp::default());
+        let (manager, _clock) = manager(RuntimeProfile::Development, http.clone());
+        provisioned(&manager);
+        manager
+            .store
+            .store_replace(
+                CredentialSlot::CanvasOAuth,
+                &SecretValue::new(malformed),
+            )
+            .expect("store malformed record");
+        assert_eq!(manager.status().state, CanvasConnectionState::Error);
+        assert_eq!(
+            manager
+                .resolve_canvas_default()
+                .unwrap_err()
+                .failure(),
+            CanvasOAuthFailure::MalformedRecord
+        );
+        assert!(http.requests().is_empty());
     }
 }
