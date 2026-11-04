@@ -148,7 +148,10 @@ pub(crate) fn load_delivery_ledger(path: &PathBuf) -> HashSet<String> {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return HashSet::new();
     };
-    raw.lines().map(str::to_string).collect()
+    raw.lines()
+        .map(str::to_string)
+        .filter(|line| !line.is_empty())
+        .collect()
 }
 
 pub(crate) fn append_delivery_ledger(path: &PathBuf, keys: &[String]) -> Result<(), String> {
@@ -170,6 +173,21 @@ pub(crate) fn append_delivery_ledger(path: &PathBuf, keys: &[String]) -> Result<
         let _ = fs::remove_file(&temporary);
         "notification_ledger_write_failed".to_string()
     })
+}
+
+pub(crate) fn dispatch_deadline_notifications(
+    sink: &dyn NotificationSink,
+    ledger_path: &PathBuf,
+    notifications: &[DeadlineNotification],
+) -> Result<usize, String> {
+    let mut sent_keys: Vec<String> = Vec::new();
+    for notification in notifications {
+        if sink.send(&notification.title, &notification.body).is_ok() {
+            sent_keys.extend(notification.delivery_keys.iter().cloned());
+        }
+    }
+    append_delivery_ledger(ledger_path, &sent_keys)?;
+    Ok(sent_keys.len())
 }
 
 pub(crate) fn load_notification_preference(path: &PathBuf) -> bool {
@@ -331,6 +349,41 @@ mod tests {
         std::fs::write(&blocking_file, "x").expect("file");
         let path = blocking_file.join("ledger");
         assert!(append_delivery_ledger(&path, &["k".to_string()]).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn failed_dispatch_commits_no_keys_and_retry_persists() {
+        let root = std::env::temp_dir().join(format!("studyhub-notif-dispatch-{}", std::process::id()));
+        let path = root.join("ledger");
+        let _ = std::fs::remove_dir_all(&root);
+        let policy = DeadlineNotificationPolicy::new(true, HashSet::new());
+        let events: Vec<DeadlineNotificationEvent> = (0..8)
+            .map(|index| event(&format!("a{index}"), "r1", false))
+            .collect();
+        let to_send = policy.evaluate(&events);
+        assert_eq!(to_send.len(), 1);
+
+        let failed = dispatch_deadline_notifications(&FailingNotificationSink, &path, &to_send)
+            .expect("ledger write succeeds even with failed dispatch");
+        assert_eq!(failed, 0);
+        assert_eq!(load_delivery_ledger(&path).len(), 0);
+        assert_eq!(
+            DeadlineNotificationPolicy::new(true, load_delivery_ledger(&path))
+                .evaluate(&events)
+                .len(),
+            1
+        );
+
+        let recording = RecordingNotificationSink::new();
+        let sent = dispatch_deadline_notifications(&recording, &path, &to_send).expect("ledger");
+        assert_eq!(sent, 8);
+        assert_eq!(load_delivery_ledger(&path).len(), 8);
+        assert!(
+            DeadlineNotificationPolicy::new(true, load_delivery_ledger(&path))
+                .evaluate(&events)
+                .is_empty()
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

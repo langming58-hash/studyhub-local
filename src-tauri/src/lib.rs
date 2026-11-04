@@ -36,9 +36,9 @@ use crate::credential_handoff::{
 };
 use crate::credential_store::credential_store_for_profile;
 use crate::notifications::{
-    append_delivery_ledger, load_delivery_ledger, DeadlineNotificationEvent,
-    DeadlineNotificationPolicy, NotificationSink, OsNotificationSink,
-    load_notification_preference, save_notification_preference,
+    dispatch_deadline_notifications, load_delivery_ledger, load_notification_preference,
+    save_notification_preference, DeadlineNotificationEvent, DeadlineNotificationPolicy,
+    OsNotificationSink,
 };
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1067,15 +1067,9 @@ fn evaluate_deadline_notifications(
     let policy = DeadlineNotificationPolicy::new(enabled, load_delivery_ledger(&ledger_path));
     let to_send = policy.evaluate(&events);
     let sink = OsNotificationSink::new(app);
-    let mut sent_keys: Vec<String> = Vec::new();
-    for notification in &to_send {
-        if sink.send(&notification.title, &notification.body).is_ok() {
-            sent_keys.extend(notification.delivery_keys.iter().cloned());
-        }
-    }
-    append_delivery_ledger(&ledger_path, &sent_keys)
+    let sent = dispatch_deadline_notifications(&sink, &ledger_path, &to_send)
         .map_err(|_| "notification_ledger_write_failed".to_string())?;
-    Ok(serde_json::json!({ "sent": sent_keys.len() }).to_string())
+    Ok(serde_json::json!({ "sent": sent }).to_string())
 }
 
 #[tauri::command]

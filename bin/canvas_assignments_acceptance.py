@@ -264,6 +264,20 @@ def main() -> int:
         after_refresh = conn.execute("SELECT last_refreshed_at FROM canvas_assignment_refresh_state WHERE authority_id=?", (authority,)).fetchone()
         check("partial_pagination_refresh_timestamp_unchanged", (before_refresh is None and after_refresh is None) or (before_refresh and after_refresh and before_refresh["last_refreshed_at"] == after_refresh["last_refreshed_at"]), failures)
 
+        # Seed real cached assignments in BOTH selected courses before the
+        # multi-course partial-fetch failure so preservation is observable.
+        off_a = conn.execute("SELECT id FROM course_offerings WHERE stable_id='off-a'").fetchone()["id"]
+        off_b = conn.execute("SELECT id FROM course_offerings WHERE stable_id='off-b'").fetchone()["id"]
+        for offering_id, key, title in ((off_a, "cached-a", "Cached A"), (off_b, "cached-b", "Cached B")):
+            conn.execute(
+                "INSERT INTO academic_events(stable_id, authority_id, course_offering_id, remote_event_key, kind, title, due_at_utc, submission_state, remote_fingerprint, discovery_state, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, 'ASSIGNMENT_DUE', ?, '2026-11-05T03:00:00Z', 'unsubmitted', 'fp', 'ACTIVE', ?, ?)",
+                (f"seed-{key}", authority, offering_id, key, title, now_iso, now_iso),
+            )
+        conn.commit()
+        before_events = [dict(row) for row in conn.execute("SELECT * FROM academic_events ORDER BY stable_id").fetchall()]
+        before_journal = conn.execute("SELECT COUNT(*) AS n FROM academic_change_events").fetchone()["n"]
+        before_refresh_state = conn.execute("SELECT last_refreshed_at FROM canvas_assignment_refresh_state WHERE authority_id=?", (authority,)).fetchone()
+
         class PartialConnector:
             record = record()
             def course_assignments(self, remote_course_id):
@@ -277,8 +291,12 @@ def main() -> int:
         except server.CanvasConnectorError:
             check("multi_course_partial_fetch_raises", True, failures)
         conn.commit()
-        check("multi_course_partial_no_reconciliation", conn.execute("SELECT COUNT(*) AS n FROM academic_events").fetchone()["n"] == before_rows, failures)
-        check("multi_course_partial_no_journal", conn.execute("SELECT COUNT(*) AS n FROM academic_change_events WHERE event_kind IN ('ASSIGNMENT_ADDED','ASSIGNMENT_DEADLINE_CHANGED')").fetchone()["n"] == 0, failures)
+        after_events = [dict(row) for row in conn.execute("SELECT * FROM academic_events ORDER BY stable_id").fetchall()]
+        after_journal = conn.execute("SELECT COUNT(*) AS n FROM academic_change_events").fetchone()["n"]
+        after_refresh_state = conn.execute("SELECT last_refreshed_at FROM canvas_assignment_refresh_state WHERE authority_id=?", (authority,)).fetchone()
+        check("multi_course_cached_snapshots_unchanged", before_events == after_events, failures)
+        check("multi_course_partial_no_journal", before_journal == after_journal, failures)
+        check("multi_course_partial_refresh_timestamp_unchanged", (before_refresh_state is None and after_refresh_state is None) or (before_refresh_state and after_refresh_state and before_refresh_state["last_refreshed_at"] == after_refresh_state["last_refreshed_at"]), failures)
         conn.close()
 
     # D: same-second deadline revisions produce distinct deterministic journal identity.
