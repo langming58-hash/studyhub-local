@@ -95,6 +95,7 @@ const PUBLIC_LINKS = Object.freeze({
 });
 let restoringRoute = false;
 let appLoaded = false;
+let currentReaderPage = 1;
 
 function desktopInvoke(command, args = {}) {
   const invoke = window.__TAURI__?.core?.invoke;
@@ -2448,7 +2449,10 @@ async function openFileDrawer(fileId, page = 0, options = {}) {
     fileId: file.id,
     page: page || 1,
     mount: $("#previewFrame"),
-    onPageChange: (nextPage) => recordRoute({ view: "file", fileId: file.id, page: nextPage }, true),
+    onPageChange: (nextPage) => {
+      currentReaderPage = nextPage;
+      recordRoute({ view: "file", fileId: file.id, page: nextPage }, true);
+    },
   });
   $("#askResponse").textContent = "";
   $("#askPrompt").value = "";
@@ -2488,9 +2492,14 @@ async function loadFileNotes(fileId) {
 }
 
 function noteCard(note) {
+  const anchor = note.anchor_page
+    ? (note.anchor_state === "ok"
+      ? `<button class="chip chip-button" type="button" data-note-page="${Number(note.anchor_page)}">${escapeHtml(t("file.notePage", { page: note.anchor_page }))}</button>`
+      : `<span class="chip" title="${escapeHtml(t("file.pageAnchorUnavailable"))}">${escapeHtml(t("file.notePage", { page: note.anchor_page }))} · ${escapeHtml(t("file.pageAnchorStale"))}</span>`)
+    : "";
   return `
     <article class="note-card">
-      <div class="chips"><span class="chip">${escapeHtml(t("file.userNote"))}</span><span class="chip">${escapeHtml(note.updated_at || "")}</span></div>
+      <div class="chips"><span class="chip">${escapeHtml(t("file.userNote"))}</span>${anchor}<span class="chip">${escapeHtml(note.updated_at || "")}</span></div>
       <p>${escapeHtml(note.body)}</p>
     </article>
   `;
@@ -2503,6 +2512,7 @@ async function saveNote() {
     toast(t("file.writeNote"));
     return;
   }
+  const isPdf = String(state.selectedFile.extension || state.selectedFile.mime_type || "").toLowerCase() === "pdf";
   await api("/api/notes", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2512,6 +2522,7 @@ async function saveNote() {
       courseId: state.selectedFile.course_id,
       week: state.selectedFile.week_label,
       body,
+      ...(isPdf ? { anchorPage: currentReaderPage } : {}),
     }),
   });
   $("#noteBody").value = "";
@@ -3495,6 +3506,13 @@ document.addEventListener("click", async (event) => {
   }
   if (target.dataset.todayOpen) {
     await desktopInvoke("open_canvas_url", { url: target.dataset.todayOpen });
+    return;
+  }
+  if (target.dataset.notePage) {
+    const page = Number(target.dataset.notePage);
+    if (page >= 1 && window.StudyHubReader?.goToPage) {
+      window.StudyHubReader.goToPage(page);
+    }
     return;
   }
   if (target.dataset.view) return route(target.dataset.view);

@@ -383,7 +383,7 @@ BACKUP_REQUIRED_SCHEMA: dict[str, set[str]] = {
     "materials": {"stable_id", "legacy_file_id", "current_version_id"},
     "material_versions": {"id", "source_id"},
     "sources": {"id", "authority"},
-    "notes": {"target_type", "target_id", "body", "created_at", "updated_at"},
+    "notes": {"target_type", "target_id", "body", "created_at", "updated_at", "anchor_version", "anchor_page", "anchor_material_stable_id", "anchor_version_stable_id"},
     "stars": {"target_type", "target_id", "created_at"},
     "attempts": {"file_id", "answer_text", "result", "created_at"},
     "wrong_questions": {
@@ -2967,6 +2967,26 @@ def phase3_academic_events_migration(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def phase4_source_anchored_notes_migration(conn: sqlite3.Connection) -> None:
+    has_notes = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='notes'"
+    ).fetchone()
+    if has_notes is None:
+        # `notes` is created by init_db(); when that runs later it already
+        # includes the anchor columns, so there is nothing to add here.
+        return
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(notes)").fetchall()}
+    additions = (
+        ("anchor_version", "INTEGER NOT NULL DEFAULT 1"),
+        ("anchor_page", "INTEGER"),
+        ("anchor_material_stable_id", "TEXT NOT NULL DEFAULT ''"),
+        ("anchor_version_stable_id", "TEXT NOT NULL DEFAULT ''"),
+    )
+    for name, ddl in additions:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE notes ADD COLUMN {name} {ddl}")
+
+
 SCHEMA_MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "phase1_domain_foundation", phase1_domain_foundation_migration),
     (2, "phase2_canvas_course_selection", phase2_canvas_course_selection_migration),
@@ -2976,6 +2996,7 @@ SCHEMA_MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], 
     (6, "phase2_restore_operation_changeset", phase2_restore_operation_changeset_migration),
     (7, "phase3_study_engine", phase3_study_engine_migration),
     (8, "phase3_academic_events", phase3_academic_events_migration),
+    (9, "phase4_source_anchored_notes", phase4_source_anchored_notes_migration),
 )
 
 
@@ -4938,6 +4959,10 @@ def project_user_owned_backup(
                 "body": body,
                 "created_at": str(row["created_at"] or ""),
                 "updated_at": str(row["updated_at"] or ""),
+                "anchor_version": int(row_value(row, "anchor_version", 1) or 1),
+                "anchor_page": row_value(row, "anchor_page", None),
+                "anchor_material_stable_id": str(row_value(row, "anchor_material_stable_id", "") or ""),
+                "anchor_version_stable_id": str(row_value(row, "anchor_version_stable_id", "") or ""),
             }
         )
         note_row_ids.append(int(row["id"]))
@@ -5171,7 +5196,7 @@ BACKUP_RECORD_FIELDS: dict[str, set[str]] = {
     "data/local_sources.json": {
         "stable_id", "material_ref", "location", "display_name", "sha256", "byte_size", "missing",
     },
-    "data/notes.json": {"stable_id", "target_type", "target_ref", "body", "created_at", "updated_at"},
+    "data/notes.json": {"stable_id", "target_type", "target_ref", "body", "created_at", "updated_at", "anchor_version", "anchor_page", "anchor_material_stable_id", "anchor_version_stable_id"},
     "data/stars.json": {"stable_id", "target_type", "target_ref", "created_at"},
     "data/whats_new_state.json": {"stable_id", "event_stable_id", "seen_at", "updated_at"},
 }
@@ -5398,12 +5423,24 @@ def validate_backup_record_schema(member: str, record: Any, format_version: int)
         raise ValueError("Backup record must be an object")
     if member in {"data/ai_history.json", "data/connector_user_state.json"}:
         raise ValueError("Backup v1 excluded dataset must remain empty")
-    expected = BACKUP_RECORD_FIELDS.get(member)
-    if member == "data/study_records.json":
-        fields = BACKUP_STUDY_RECORD_FIELDS if format_version >= 2 else BACKUP_STUDY_RECORD_FIELDS_V1
-        expected = fields.get(str(record.get("record_type") or ""))
-    if expected is None or set(record) != expected:
-        raise ValueError("Backup record schema is invalid")
+    if member == "data/notes.json":
+        required = {"stable_id", "target_type", "target_ref", "body", "created_at", "updated_at"}
+        optional = {
+            "anchor_version",
+            "anchor_page",
+            "anchor_material_stable_id",
+            "anchor_version_stable_id",
+        }
+        keys = set(record)
+        if not required.issubset(keys) or not keys.issubset(required | optional):
+            raise ValueError("Backup record schema is invalid")
+    else:
+        expected = BACKUP_RECORD_FIELDS.get(member)
+        if member == "data/study_records.json":
+            fields = BACKUP_STUDY_RECORD_FIELDS if format_version >= 2 else BACKUP_STUDY_RECORD_FIELDS_V1
+            expected = fields.get(str(record.get("record_type") or ""))
+        if expected is None or set(record) != expected:
+            raise ValueError("Backup record schema is invalid")
     if member == "data/local_sources.json":
         location = record.get("location")
         if not isinstance(location, dict):
@@ -8979,8 +9016,19 @@ def apply_restore_plan(
         file_row = conn.execute("SELECT course_id, week_label FROM files WHERE id=?", (file_id,)).fetchone()
         require_restore_dependency(file_row is not None)
         conn.execute(
-            "INSERT INTO notes(target_type, target_id, course_id, week_label, body, created_at, updated_at) VALUES ('file', ?, ?, ?, ?, ?, ?)",
-            (file_id, file_row["course_id"], file_row["week_label"], record["body"], record["created_at"], record["updated_at"]),
+            "INSERT INTO notes(target_type, target_id, course_id, week_label, body, created_at, updated_at, anchor_version, anchor_page, anchor_material_stable_id, anchor_version_stable_id) VALUES ('file', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                file_id,
+                file_row["course_id"],
+                file_row["week_label"],
+                record["body"],
+                record["created_at"],
+                record["updated_at"],
+                int(record.get("anchor_version") or 1),
+                record.get("anchor_page"),
+                str(record.get("anchor_material_stable_id") or ""),
+                str(record.get("anchor_version_stable_id") or ""),
+            ),
         )
         created += 1
         wrote("midway_notes" if failure_point == "midway_notes" and index >= max(1, len(note_creates) // 2) else "after_note")
@@ -8991,8 +9039,16 @@ def apply_restore_plan(
             continue
         target_id = backup_target("notes", stable_id, "note")
         conn.execute(
-            "UPDATE notes SET body=?, updated_at=? WHERE id=?",
-            (record["body"], record["updated_at"], target_id),
+            "UPDATE notes SET body=?, updated_at=?, anchor_version=?, anchor_page=?, anchor_material_stable_id=?, anchor_version_stable_id=? WHERE id=?",
+            (
+                record["body"],
+                record["updated_at"],
+                int(record.get("anchor_version") or 1),
+                record.get("anchor_page"),
+                str(record.get("anchor_material_stable_id") or ""),
+                str(record.get("anchor_version_stable_id") or ""),
+                target_id,
+            ),
         )
         require_restore_dependency(conn.execute("SELECT changes() AS c").fetchone()["c"] == 1)
         restored_from_backup += 1
@@ -9796,7 +9852,11 @@ def init_db(conn: sqlite3.Connection) -> None:
           week_label TEXT,
           body TEXT NOT NULL,
           created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL
+          updated_at TEXT NOT NULL,
+          anchor_version INTEGER NOT NULL DEFAULT 1,
+          anchor_page INTEGER,
+          anchor_material_stable_id TEXT NOT NULL DEFAULT '',
+          anchor_version_stable_id TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS stars (
           id INTEGER PRIMARY KEY,
@@ -11997,6 +12057,21 @@ def get_file(conn: sqlite3.Connection, file_id: int) -> sqlite3.Row:
     return row
 
 
+def note_anchor_for_file(conn: sqlite3.Connection, file_id: int) -> tuple[str, str]:
+    row = conn.execute(
+        """
+        SELECT m.stable_id AS material_stable_id, mv.stable_id AS version_stable_id
+        FROM materials m
+        LEFT JOIN material_versions mv ON mv.id=m.current_version_id
+        WHERE m.legacy_file_id=? AND m.active=1
+        """,
+        (file_id,),
+    ).fetchone()
+    if row is None:
+        return "", ""
+    return str(row["material_stable_id"] or ""), str(row["version_stable_id"] or "")
+
+
 class MultipartUpload:
     def __init__(self, content_type: str, body: bytes):
         m = re.search(r"boundary=(.+)", content_type)
@@ -14194,7 +14269,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         get_file(conn, target_id)
         rows = conn.execute(
             """
-            SELECT id, target_type, target_id, course_id, week_label, body, created_at, updated_at
+            SELECT id, target_type, target_id, course_id, week_label, body, created_at, updated_at,
+              anchor_version, anchor_page, anchor_material_stable_id, anchor_version_stable_id
             FROM notes
             WHERE target_type='file' AND target_id=?
             ORDER BY updated_at DESC, id DESC
@@ -14202,7 +14278,20 @@ class StudyHubHandler(BaseHTTPRequestHandler):
             """,
             (target_id,),
         ).fetchall()
-        return rows_to_dicts(rows)
+        current_material, current_version = note_anchor_for_file(conn, target_id)
+        notes = rows_to_dicts(rows)
+        for note in notes:
+            anchor_material = str(note.get("anchor_material_stable_id") or "")
+            anchor_version = str(note.get("anchor_version_stable_id") or "")
+            if not anchor_material or not note.get("anchor_page"):
+                note["anchor_state"] = "unset"
+            elif anchor_material != current_material:
+                note["anchor_state"] = "missing"
+            elif current_version and anchor_version != current_version:
+                note["anchor_state"] = "stale"
+            else:
+                note["anchor_state"] = "ok"
+        return notes
 
     def handle_conversations_get(self, conn: sqlite3.Connection, qs: dict[str, list[str]]) -> list[dict[str, Any]]:
         params: list[Any] = []
@@ -14645,8 +14734,16 @@ class StudyHubHandler(BaseHTTPRequestHandler):
             note_body = str(body.get("body", "")).strip()
             if not note_body:
                 raise ValueError("Note body is required")
+            anchor_page = body.get("anchorPage")
+            if anchor_page is not None:
+                anchor_page = int(anchor_page)
+                if anchor_page < 1 or anchor_page > 10000:
+                    raise ValueError("Page number is out of range")
+            else:
+                anchor_page = None
+            material_stable_id, version_stable_id = note_anchor_for_file(conn, target_id)
             conn.execute(
-                "INSERT INTO notes(target_type, target_id, course_id, week_label, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO notes(target_type, target_id, course_id, week_label, body, created_at, updated_at, anchor_version, anchor_page, anchor_material_stable_id, anchor_version_stable_id) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
                 (
                     target_type,
                     target_id,
@@ -14655,6 +14752,9 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                     note_body[:10_000],
                     now_iso(),
                     now_iso(),
+                    anchor_page,
+                    material_stable_id,
+                    version_stable_id,
                 ),
             )
             conn.commit()
