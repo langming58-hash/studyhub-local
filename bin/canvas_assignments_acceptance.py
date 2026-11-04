@@ -229,6 +229,75 @@ def main() -> int:
         conn.close()
         conn2.close()
 
+    # A/B: partial pagination and multi-course partial fetch must be all-or-nothing.
+    with tempfile.TemporaryDirectory(prefix="studyhub-partial-") as raw3:
+        conn = sqlite3.connect(Path(raw3) / "p.sqlite")
+        conn.row_factory = sqlite3.Row
+        server.run_schema_migrations(conn)
+        conn.commit()
+        server.init_db(conn)
+        authority = server.canvas_authority_id("https://canvas.example.edu")
+        now_iso = server.now_iso()
+        for sid, rid, code in (("off-a", "1", "TESTA"), ("off-b", "2", "TESTB")):
+            conn.execute(
+                "INSERT INTO course_offerings(provider, authority_id, stable_id, remote_course_id, remote_name, remote_course_code, workflow_state, first_seen_at, last_seen_at, created_at, updated_at) VALUES ('canvas', ?, ?, ?, ?, ?, 'available', ?, ?, ?, ?)",
+                (authority, sid, rid, f"Course {code}", code, now_iso, now_iso, now_iso, now_iso),
+            )
+            off = conn.execute("SELECT id FROM course_offerings WHERE stable_id=?", (sid,)).fetchone()["id"]
+            conn.execute("INSERT INTO course_offering_selections(offering_id, selected, updated_at) VALUES (?, 1, ?)", (off, now_iso))
+        conn.commit()
+
+        class RaisingConnector:
+            record = record()
+            def course_assignments(self, remote_course_id):
+                raise server.CanvasConnectorError("canvas_unavailable")
+
+        before_rows = conn.execute("SELECT COUNT(*) AS n FROM academic_events").fetchone()["n"]
+        before_refresh = conn.execute("SELECT last_refreshed_at FROM canvas_assignment_refresh_state WHERE authority_id=?", (authority,)).fetchone()
+        try:
+            refresh_canvas_assignments(conn, RaisingConnector(), authority)
+            check("partial_pagination_failure_raises", False, failures)
+        except server.CanvasConnectorError:
+            check("partial_pagination_failure_raises", True, failures)
+        conn.commit()
+        check("partial_pagination_no_reconciliation", conn.execute("SELECT COUNT(*) AS n FROM academic_events").fetchone()["n"] == before_rows, failures)
+        after_refresh = conn.execute("SELECT last_refreshed_at FROM canvas_assignment_refresh_state WHERE authority_id=?", (authority,)).fetchone()
+        check("partial_pagination_refresh_timestamp_unchanged", (before_refresh is None and after_refresh is None) or (before_refresh and after_refresh and before_refresh["last_refreshed_at"] == after_refresh["last_refreshed_at"]), failures)
+
+        class PartialConnector:
+            record = record()
+            def course_assignments(self, remote_course_id):
+                if remote_course_id == "1":
+                    return [CanvasAssignmentFact("a1", "1", "Alpha", "2026-11-04T03:00:00Z", None, None, "https://canvas.example.edu/a1", True, ("online_upload",), "unsubmitted", None, "2026-11-04T00:00:00Z")]
+                raise server.CanvasConnectorError("canvas_unavailable")
+
+        try:
+            refresh_canvas_assignments(conn, PartialConnector(), authority)
+            check("multi_course_partial_fetch_raises", False, failures)
+        except server.CanvasConnectorError:
+            check("multi_course_partial_fetch_raises", True, failures)
+        conn.commit()
+        check("multi_course_partial_no_reconciliation", conn.execute("SELECT COUNT(*) AS n FROM academic_events").fetchone()["n"] == before_rows, failures)
+        check("multi_course_partial_no_journal", conn.execute("SELECT COUNT(*) AS n FROM academic_change_events WHERE event_kind IN ('ASSIGNMENT_ADDED','ASSIGNMENT_DEADLINE_CHANGED')").fetchone()["n"] == 0, failures)
+        conn.close()
+
+    # D: same-second deadline revisions produce distinct deterministic journal identity.
+    check(
+        "journal_identity_is_fingerprint_not_clock",
+        server.assignment_change_event_stable_id("ASSIGNMENT_DEADLINE_CHANGED", "auth", "off", "a1", "fp-1")
+        != server.assignment_change_event_stable_id("ASSIGNMENT_DEADLINE_CHANGED", "auth", "off", "a1", "fp-2")
+        and server.assignment_change_event_stable_id("ASSIGNMENT_DEADLINE_CHANGED", "auth", "off", "a1", "fp-1")
+        == server.assignment_change_event_stable_id("ASSIGNMENT_DEADLINE_CHANGED", "auth", "off", "a1", "fp-1"),
+        failures,
+    )
+
+    # E: New York local midnight and UTC/local-date difference.
+    ny_midnight = datetime(2026, 11, 4, 0, 0, 0, tzinfo=new_york)
+    ny_just_after = datetime(2026, 11, 4, 0, 5, 0, tzinfo=new_york)
+    check("timezone_new_york_midnight_due_today", server.bucket_deadline(ny_just_after, ny_midnight) == "due_today", failures)
+    ny_late = datetime(2026, 11, 4, 23, 0, 0, tzinfo=new_york)
+    check("timezone_new_york_utc_date_differs", ny_late.astimezone(timezone.utc).date() != ny_late.date(), failures)
+
     return 0 if not failures else 1
 
 

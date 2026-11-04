@@ -2560,4 +2560,106 @@ mod tests {
         assert_eq!(parsed.scope_set_version(), CANVAS_SCOPE_SET_V1);
         assert_eq!(record.scope_set_version(), CANVAS_SCOPE_SET_V2);
     }
+
+    fn v1_serialized() -> String {
+        let record = CanvasOAuthRecord::new(
+            CanvasOrigin::parse(ORIGIN).expect("origin"),
+            CLIENT_ID.to_string(),
+            OAUTH_OOB_REDIRECT.to_string(),
+            CanvasAccessToken::new(ACCESS).expect("access"),
+            CanvasAccessToken::new(REFRESH).expect("refresh"),
+            1_700_000_300,
+            "Synthetic Student".to_string(),
+        );
+        record
+            .serialize()
+            .lines()
+            .filter(|line| !line.starts_with("scope_set_version="))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn failed_token_exchange_preserves_existing_v1_record() {
+        let http = Arc::new(FakeHttp::default());
+        http.queue(400, "{\"error\":\"invalid_grant\"}");
+        let (manager, _clock) = manager(RuntimeProfile::Development, http.clone());
+        provisioned(&manager);
+        manager
+            .store
+            .store_replace(CredentialSlot::CanvasOAuth, &SecretValue::new(v1_serialized()))
+            .expect("seed v1");
+        let start = manager.begin_oauth().expect("begin");
+        let state = extract_state(&start.auth_url);
+        assert!(manager
+            .complete_oauth(&response_url(&state, "synthetic-code"))
+            .is_err());
+        let stored = manager.load_record(CredentialSlot::CanvasOAuth).expect("record");
+        assert_eq!(stored.scope_set_version(), CANVAS_SCOPE_SET_V1);
+        assert_eq!(
+            stored.access_token().expect("access").expose_for_authorized_canvas_request(),
+            ACCESS
+        );
+    }
+
+    #[test]
+    fn failed_identity_validation_preserves_existing_v1_record() {
+        let http = Arc::new(FakeHttp::default());
+        http.queue(200, &FakeHttp::token_body(ACCESS, Some(REFRESH), 3600));
+        http.queue(401, "{}");
+        let (manager, _clock) = manager(RuntimeProfile::Development, http.clone());
+        provisioned(&manager);
+        manager
+            .store
+            .store_replace(CredentialSlot::CanvasOAuth, &SecretValue::new(v1_serialized()))
+            .expect("seed v1");
+        let start = manager.begin_oauth().expect("begin");
+        let state = extract_state(&start.auth_url);
+        assert!(manager
+            .complete_oauth(&response_url(&state, "synthetic-code"))
+            .is_err());
+        let stored = manager.load_record(CredentialSlot::CanvasOAuth).expect("record");
+        assert_eq!(stored.scope_set_version(), CANVAS_SCOPE_SET_V1);
+    }
+
+    #[test]
+    fn successful_v2_reauth_replaces_record() {
+        let http = Arc::new(FakeHttp::default());
+        http.queue(200, &FakeHttp::token_body("synthetic-v2-access", Some("synthetic-v2-refresh"), 3600));
+        http.queue(200, "{\"id\":42,\"name\":\"Synthetic Student\"}");
+        let (manager, _clock) = manager(RuntimeProfile::Development, http.clone());
+        provisioned(&manager);
+        manager
+            .store
+            .store_replace(CredentialSlot::CanvasOAuth, &SecretValue::new(v1_serialized()))
+            .expect("seed v1");
+        let start = manager.begin_oauth().expect("begin");
+        let state = extract_state(&start.auth_url);
+        let status = manager
+            .complete_oauth(&response_url(&state, "synthetic-code"))
+            .expect("reauth");
+        assert_eq!(status.state, CanvasConnectionState::Connected);
+        let stored = manager.load_record(CredentialSlot::CanvasOAuth).expect("record");
+        assert_eq!(stored.scope_set_version(), CANVAS_SCOPE_SET_V2);
+        assert_eq!(
+            stored.access_token().expect("access").expose_for_authorized_canvas_request(),
+            "synthetic-v2-access"
+        );
+    }
+
+    #[test]
+    fn v1_refresh_retains_v1_scope_version() {
+        let http = Arc::new(FakeHttp::default());
+        http.queue(200, &FakeHttp::token_body("synthetic-new-access", None, 3600));
+        let (manager, clock) = manager(RuntimeProfile::Development, http.clone());
+        provisioned(&manager);
+        manager
+            .store
+            .store_replace(CredentialSlot::CanvasOAuth, &SecretValue::new(v1_serialized()))
+            .expect("seed v1");
+        clock.store(1_700_000_400, Ordering::SeqCst);
+        manager.resolve_canvas_default().expect("refresh");
+        let stored = manager.load_record(CredentialSlot::CanvasOAuth).expect("record");
+        assert_eq!(stored.scope_set_version(), CANVAS_SCOPE_SET_V1);
+    }
 }
