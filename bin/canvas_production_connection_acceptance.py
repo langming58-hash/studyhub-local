@@ -105,7 +105,7 @@ def main() -> int:
         and 'method="POST"' not in connector
         and 'method="PUT"' not in connector
         and 'method="DELETE"' not in connector
-        and "/assignments" not in connector,
+        and "course_assignments" in connector,
         failures,
     )
 

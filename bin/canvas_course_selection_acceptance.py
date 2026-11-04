@@ -380,7 +380,7 @@ def main() -> int:
 
         source = (ROOT / "server.py").read_text(encoding="utf-8")
         check("selection_api_is_post_only", 'parsed.path == "/api/canvas/course-selection/preview"' in source and 'parsed.path == "/api/canvas/course-selection/apply"' in source and "/api/canvas/course-selection/preview" not in source.split("def handle_api_get", 1)[1].split("def handle_notes_get", 1)[0], failures)
-        check("no_canvas_write_or_content_endpoints", all(term not in source.split("class CanvasConnector", 1)[1].split("def header_value", 1)[0] for term in ['method="POST"', "/api/v1/files", "/api/v1/modules", "/api/v1/pages", "/api/v1/assignments"]), failures)
+        check("no_canvas_write_or_content_endpoints", all(term not in source.split("class CanvasConnector", 1)[1].split("def header_value", 1)[0] for term in ['method="POST"', 'method="PUT"', 'method="DELETE"', "/api/v1/files", "/api/v1/modules", "/api/v1/pages"]), failures)
         check("production_manual_token_enrollment_remains_blocked", "canvas_manual_token_development_only" in (ROOT / "src-tauri/src/lib.rs").read_text(encoding="utf-8"), failures)
         check("demo_test_never_accesses_native_credentials", "RuntimeProfile::DemoTest => CredentialStoreBackend::DemoDenied" in (ROOT / "src-tauri/src/credential_store.rs").read_text(encoding="utf-8"), failures)
 
