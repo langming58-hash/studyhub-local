@@ -4,6 +4,12 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
+  // Open-in-Canvas security boundary: the renderer only renders `html_url` that
+  // the backend already normalized to a same-origin HTTPS URL. Any unsafe URL
+  // is stored as NULL by `normalize_canvas_assignment_html_url`, and the native
+  // `open_canvas_url` command re-validates exact origin (scheme/host/port,
+  // no userinfo/fragment, bounded length) before opening the system browser.
+
   const DEADLINE_SECTIONS = [
     ["overdue", "today.overdue"],
     ["due_today", "today.dueToday"],

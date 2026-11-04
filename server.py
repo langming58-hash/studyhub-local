@@ -1164,7 +1164,10 @@ def normalize_canvas_file_object(item: Any, remote_course_id: str) -> CanvasRemo
 def normalize_canvas_assignment_html_url(value: Any, origin: str) -> str | None:
     if value is None:
         return None
-    raw = normalize_canvas_text(value, maximum=CANVAS_MAX_DOWNLOAD_URL_LENGTH)
+    try:
+        raw = normalize_canvas_text(value, maximum=CANVAS_MAX_DOWNLOAD_URL_LENGTH)
+    except CanvasConnectorError:
+        return None
     parsed = urllib.parse.urlparse(raw)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
         return None

@@ -151,7 +151,7 @@ pub(crate) fn load_delivery_ledger(path: &PathBuf) -> HashSet<String> {
     raw.lines().map(str::to_string).collect()
 }
 
-pub(crate) fn append_delivery_ledger(path: &PathBuf, keys: &[String]) {
+pub(crate) fn append_delivery_ledger(path: &PathBuf, keys: &[String]) -> Result<(), String> {
     let existing = load_delivery_ledger(path);
     let mut merged: Vec<String> = existing.into_iter().collect();
     for key in keys {
@@ -161,9 +161,15 @@ pub(crate) fn append_delivery_ledger(path: &PathBuf, keys: &[String]) {
     }
     merged.sort();
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        fs::create_dir_all(parent).map_err(|_| "notification_ledger_write_failed".to_string())?;
     }
-    let _ = std::fs::write(path, merged.join("\n") + "\n");
+    let temporary = path.with_extension("tmp");
+    fs::write(&temporary, merged.join("\n") + "\n")
+        .map_err(|_| "notification_ledger_write_failed".to_string())?;
+    fs::rename(&temporary, path).map_err(|_| {
+        let _ = fs::remove_file(&temporary);
+        "notification_ledger_write_failed".to_string()
+    })
 }
 
 pub(crate) fn load_notification_preference(path: &PathBuf) -> bool {
@@ -293,5 +299,38 @@ mod tests {
         let keys: Vec<&str> = result.iter().map(|item| item.ledger_key.as_str()).collect();
         assert!(keys.contains(&"a|r1|DUE_TODAY"));
         assert!(keys.contains(&"a|r1|OVERDUE"));
+    }
+
+    #[test]
+    fn persisted_ledger_suppresses_burst_and_failed_dispatch_stays_eligible() {
+        let root = std::env::temp_dir().join(format!("studyhub-notif-ledger-{}", std::process::id()));
+        let path = root.join("ledger");
+        let _ = std::fs::remove_dir_all(&root);
+        let policy = DeadlineNotificationPolicy::new(true, HashSet::new());
+        let events: Vec<DeadlineNotificationEvent> = (0..8)
+            .map(|index| event(&format!("a{index}"), "r1", false))
+            .collect();
+        let summary = policy.evaluate(&events);
+        assert_eq!(summary.len(), 1);
+        append_delivery_ledger(&path, &summary[0].delivery_keys).expect("persist");
+        let reloaded = load_delivery_ledger(&path);
+        assert_eq!(reloaded.len(), 8);
+        assert!(DeadlineNotificationPolicy::new(true, reloaded).evaluate(&events).is_empty());
+        // Failed dispatch (no keys committed) remains eligible.
+        let failed = DeadlineNotificationPolicy::new(true, HashSet::new()).evaluate(&events);
+        assert_eq!(failed.len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ledger_write_failure_is_surfaced() {
+        let root = std::env::temp_dir().join(format!("studyhub-notif-ledger-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let blocking_file = root.join("not-a-dir");
+        std::fs::write(&blocking_file, "x").expect("file");
+        let path = blocking_file.join("ledger");
+        assert!(append_delivery_ledger(&path, &["k".to_string()]).is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

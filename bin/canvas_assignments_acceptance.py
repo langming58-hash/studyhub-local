@@ -298,6 +298,104 @@ def main() -> int:
     ny_late = datetime(2026, 11, 4, 23, 0, 0, tzinfo=new_york)
     check("timezone_new_york_utc_date_differs", ny_late.astimezone(timezone.utc).date() != ny_late.date(), failures)
 
+    # 1. Real partial-pagination failure with a real CanvasConnector + FakeHTTP.
+    with tempfile.TemporaryDirectory(prefix="studyhub-realpartial-") as raw4:
+        conn = sqlite3.connect(Path(raw4) / "p.sqlite")
+        conn.row_factory = sqlite3.Row
+        server.run_schema_migrations(conn)
+        conn.commit()
+        server.init_db(conn)
+        authority = server.canvas_authority_id("https://canvas.example.edu")
+        now_iso = server.now_iso()
+        conn.execute(
+            "INSERT INTO course_offerings(provider, authority_id, stable_id, remote_course_id, remote_name, remote_course_code, workflow_state, first_seen_at, last_seen_at, created_at, updated_at) VALUES ('canvas', ?, 'off-c', '1', 'Course C', 'TESTC', 'available', ?, ?, ?, ?)",
+            (authority, now_iso, now_iso, now_iso, now_iso),
+        )
+        off = conn.execute("SELECT id FROM course_offerings WHERE stable_id='off-c'").fetchone()["id"]
+        conn.execute("INSERT INTO course_offering_selections(offering_id, selected, updated_at) VALUES (?, 1, ?)", (off, now_iso))
+        conn.execute(
+            "INSERT INTO academic_events(stable_id, authority_id, course_offering_id, remote_event_key, kind, title, due_at_utc, submission_state, remote_fingerprint, discovery_state, first_seen_at, last_seen_at) VALUES ('seed', ?, ?, 'cached', 'ASSIGNMENT_DUE', 'Cached', '2026-11-05T03:00:00Z', 'unsubmitted', 'fp', 'ACTIVE', ?, ?)",
+            (authority, off, now_iso, now_iso),
+        )
+        conn.commit()
+        before_snapshot = [dict(row) for row in conn.execute("SELECT * FROM academic_events ORDER BY stable_id").fetchall()]
+
+        class PagedHTTP:
+            def __init__(self):
+                self.responses = [
+                    server.CanvasHTTPResponse(200, {"Link": "<https://canvas.example.edu/api/v1/courses/1/assignments?page=2>; rel=\"next\""}, json.dumps([assignment_payload("p1", "Page One", "2026-11-04T03:00:00Z")]).encode()),
+                    server.CanvasHTTPResponse(500, {}, b"{}"),
+                ]
+                self.requests = []
+            def __call__(self, url, headers, timeout=10):
+                self.requests.append(url)
+                return self.responses.pop(0)
+
+        paged_http = PagedHTTP()
+        paged_connector = CanvasConnector(record(), http_get=paged_http)
+        try:
+            refresh_canvas_assignments(conn, paged_connector, authority)
+            check("real_partial_pagination_raises", False, failures)
+        except CanvasConnectorError as exc:
+            check("real_partial_pagination_raises", exc.code == "canvas_unavailable", failures)
+        conn.commit()
+        after_snapshot = [dict(row) for row in conn.execute("SELECT * FROM academic_events ORDER BY stable_id").fetchall()]
+        check("real_partial_pagination_no_db_change", before_snapshot == after_snapshot, failures)
+        check("real_partial_pagination_two_requests", len(paged_http.requests) == 2, failures)
+        refresh_row = conn.execute("SELECT last_refreshed_at FROM canvas_assignment_refresh_state WHERE authority_id=?", (authority,)).fetchone()
+        check("real_partial_pagination_timestamp_unchanged", refresh_row is None, failures)
+        conn.close()
+
+    # 2. SQLite-backed same-second deadline journal.
+    with tempfile.TemporaryDirectory(prefix="studyhub-samesec-") as raw5:
+        conn = sqlite3.connect(Path(raw5) / "s.sqlite")
+        conn.row_factory = sqlite3.Row
+        server.run_schema_migrations(conn)
+        conn.commit()
+        server.init_db(conn)
+        authority = server.canvas_authority_id("https://canvas.example.edu")
+        fixed = "2026-11-04T00:00:00Z"
+        conn.execute(
+            "INSERT INTO course_offerings(provider, authority_id, stable_id, remote_course_id, remote_name, remote_course_code, workflow_state, first_seen_at, last_seen_at, created_at, updated_at) VALUES ('canvas', ?, 'off-d', '1', 'Course D', 'TESTD', 'available', ?, ?, ?, ?)",
+            (authority, fixed, fixed, fixed, fixed),
+        )
+        off = conn.execute("SELECT id FROM course_offerings WHERE stable_id='off-d'").fetchone()["id"]
+        conn.execute("INSERT INTO course_offering_selections(offering_id, selected, updated_at) VALUES (?, 1, ?)", (off, fixed))
+        conn.commit()
+        original_now_iso = server.now_iso
+        server.now_iso = lambda: fixed
+        try:
+            class RevisionConnector:
+                record = record()
+                def __init__(self, due):
+                    self.due = due
+                def course_assignments(self, remote_course_id):
+                    return [CanvasAssignmentFact("a1", "1", "Alpha", self.due, None, None, "https://canvas.example.edu/a1", True, ("online_upload",), "unsubmitted", None, "2026-11-04T00:00:00Z")]
+            refresh_canvas_assignments(conn, RevisionConnector("2026-11-04T03:00:00Z"), authority)
+            conn.commit()
+            refresh_canvas_assignments(conn, RevisionConnector("2026-11-04T05:00:00Z"), authority)
+            conn.commit()
+            refresh_canvas_assignments(conn, RevisionConnector("2026-11-04T05:00:00Z"), authority)
+            conn.commit()
+            refresh_canvas_assignments(conn, RevisionConnector("2026-11-04T04:00:00Z"), authority)
+            conn.commit()
+        finally:
+            server.now_iso = original_now_iso
+        events = conn.execute("SELECT * FROM academic_events WHERE remote_event_key='a1'").fetchall()
+        journals = conn.execute("SELECT * FROM academic_change_events WHERE event_kind='ASSIGNMENT_DEADLINE_CHANGED' ORDER BY stable_id").fetchall()
+        check("same_second_one_event_identity", len(events) == 1, failures)
+        check("same_second_two_journal_records", len(journals) == 2, failures)
+        check("same_second_distinct_journal_ids", len({row["stable_id"] for row in journals}) == 2, failures)
+        conn.close()
+
+    # 3. Open-in-Canvas unsafe URL contract is enforced server-side.
+    origin = "https://canvas.example.edu"
+    check("url_safe_same_origin_retained", server.normalize_canvas_assignment_html_url("https://canvas.example.edu/courses/1/assignments/2", origin) == "https://canvas.example.edu/courses/1/assignments/2", failures)
+    check("url_cross_origin_rejected", server.normalize_canvas_assignment_html_url("https://evil.example/x", origin) is None, failures)
+    check("url_userinfo_rejected", server.normalize_canvas_assignment_html_url("https://u:{}@canvas.example.edu/x".format("p"), origin) is None, failures)
+    check("url_fragment_rejected", server.normalize_canvas_assignment_html_url("https://canvas.example.edu/x#frag", origin) is None, failures)
+    check("url_overlong_rejected", server.normalize_canvas_assignment_html_url("https://canvas.example.edu/" + "x" * 9000, origin) is None, failures)
+
     return 0 if not failures else 1
 
 

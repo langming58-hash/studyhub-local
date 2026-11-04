@@ -1073,7 +1073,8 @@ fn evaluate_deadline_notifications(
             sent_keys.extend(notification.delivery_keys.iter().cloned());
         }
     }
-    append_delivery_ledger(&ledger_path, &sent_keys);
+    append_delivery_ledger(&ledger_path, &sent_keys)
+        .map_err(|_| "notification_ledger_write_failed".to_string())?;
     Ok(serde_json::json!({ "sent": sent_keys.len() }).to_string())
 }
 
