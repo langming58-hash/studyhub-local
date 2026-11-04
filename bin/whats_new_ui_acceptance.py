@@ -73,7 +73,7 @@ def main() -> int:
         "view_all_routes_to_recoverable_hash": 'data-view="whats-new"' in js
         and 'if (parts[0] === "whats-new")' in js
         and 'viewName === "whats-new"' in js,
-        "primary_nav_remains_exactly_six": nav_items == ["home", "courses", "search", "study", "ai", "settings"],
+        "primary_nav_remains_exactly_seven": nav_items == ["home", "courses", "today", "search", "study", "ai", "settings"],
         "whats_new_keeps_home_nav_active": 'viewName === "whats-new" ? "home" : viewName' in js,
         "render_and_prefetch_never_mark_seen": "/api/whats-new/seen" not in home
         and "/api/whats-new/seen" not in dedicated,

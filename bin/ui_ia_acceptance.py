@@ -32,7 +32,7 @@ def main() -> int:
     settings = segment(js, "async function renderSettings()", "function empty")
 
     checks = {
-        "primary_nav_has_six_destinations": nav_items == ["home", "courses", "search", "study", "ai", "settings"],
+        "primary_nav_has_seven_destinations": nav_items == ["home", "courses", "today", "search", "study", "ai", "settings"],
         "whats_new_is_home_subworkspace": 'if (parts[0] === "whats-new")' in js
         and 'viewName === "whats-new" ? "home" : viewName' in js
         and "whats-new" not in nav_items,
