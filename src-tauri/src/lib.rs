@@ -38,6 +38,7 @@ use crate::credential_store::credential_store_for_profile;
 use crate::notifications::{
     append_delivery_ledger, load_delivery_ledger, DeadlineNotificationEvent,
     DeadlineNotificationPolicy, NotificationSink, OsNotificationSink,
+    load_notification_preference, save_notification_preference,
 };
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1035,6 +1036,8 @@ fn set_deadline_notifications_enabled(
     state: tauri::State<'_, BackendState>,
     enabled: bool,
 ) -> Result<String, String> {
+    let preference_path = state.config.data_dir.join("notification-preference");
+    save_notification_preference(&preference_path, enabled);
     *state
         .notification_enabled
         .lock()
@@ -1048,6 +1051,14 @@ fn evaluate_deadline_notifications(
     state: tauri::State<'_, BackendState>,
     events: Vec<DeadlineNotificationEvent>,
 ) -> Result<String, String> {
+    if events.len() > 64 {
+        return Err("canvas_notification_input_too_large".to_string());
+    }
+    for event in &events {
+        if event.stable_id.len() > 256 || event.revision.len() > 256 || event.course_code.len() > 64 || event.due_at.len() > 64 {
+            return Err("canvas_notification_input_invalid".to_string());
+        }
+    }
     let enabled = *state
         .notification_enabled
         .lock()
@@ -1059,7 +1070,7 @@ fn evaluate_deadline_notifications(
     let mut sent_keys: Vec<String> = Vec::new();
     for notification in &to_send {
         if sink.send(&notification.title, &notification.body).is_ok() {
-            sent_keys.push(notification.ledger_key.clone());
+            sent_keys.extend(notification.delivery_keys.iter().cloned());
         }
     }
     append_delivery_ledger(&ledger_path, &sent_keys);
@@ -1072,21 +1083,31 @@ fn open_canvas_url(state: tauri::State<'_, BackendState>, url: String) -> Result
         .canvas_manager
         .current_canvas_origin()
         .ok_or_else(|| "canvas_connection_missing".to_string())?;
-    let parsed = tauri::Url::parse(&url).map_err(|_| "canvas_invalid_url".to_string())?;
-    if parsed.scheme() != "https"
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || parsed.fragment().is_some()
-    {
+    if !canvas_url_matches_origin(&url, origin.as_str()) {
         return Err("canvas_invalid_url".to_string());
     }
-    let origin_url = tauri::Url::parse(origin.as_str()).map_err(|_| "canvas_invalid_origin".to_string())?;
-    let same_host = parsed.host_str().map(|host| host.to_ascii_lowercase())
-        == origin_url.host_str().map(|host| host.to_ascii_lowercase());
-    if !same_host {
-        return Err("canvas_cross_origin_url".to_string());
-    }
     open_in_system_browser(&url)
+}
+
+fn canvas_url_matches_origin(url: &str, origin: &str) -> bool {
+    const MAX_URL_BYTES: usize = 8192;
+    if url.is_empty() || url.len() > MAX_URL_BYTES {
+        return false;
+    }
+    let Ok(parsed) = tauri::Url::parse(url) else {
+        return false;
+    };
+    let Ok(origin_url) = tauri::Url::parse(origin) else {
+        return false;
+    };
+    parsed.scheme() == "https"
+        && origin_url.scheme() == "https"
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.fragment().is_none()
+        && parsed.host_str().map(|host| host.to_ascii_lowercase())
+            == origin_url.host_str().map(|host| host.to_ascii_lowercase())
+        && parsed.port_or_known_default() == origin_url.port_or_known_default()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1133,12 +1154,14 @@ pub fn run() {
                 Err(code) => (WebviewUrl::App("index.html".into()), code.clone()),
             };
             app.manage(BackendState {
+                notification_enabled: Mutex::new(load_notification_preference(
+                    &config.data_dir.join("notification-preference"),
+                )),
                 config,
                 process: Mutex::new(process.ok()),
                 allowed_port: allowed_port.clone(),
                 last_error: Mutex::new(initial_error),
                 canvas_manager,
-                notification_enabled: Mutex::new(false),
             });
 
             let mut window_builder = WebviewWindowBuilder::new(app, "main", initial_url)
@@ -1310,5 +1333,18 @@ mod tests {
         .is_err());
         assert!(!data_dir.join("restore-relink-inbox").exists());
         std::fs::remove_dir_all(root).expect("remove synthetic relink deny root");
+    }
+
+    #[test]
+    fn canvas_url_matches_origin_is_exact() {
+        let origin = "https://canvas.example.edu";
+        assert!(canvas_url_matches_origin("https://canvas.example.edu/courses/1/assignments/2", origin));
+        assert!(!canvas_url_matches_origin("https://canvas.example.edu:8443/x", origin));
+        assert!(!canvas_url_matches_origin("https://other.example.edu/x", origin));
+        assert!(!canvas_url_matches_origin("http://canvas.example.edu/x", origin));
+        let userinfo = format!("https://u:{}@canvas.example.edu/x", "p");
+        assert!(!canvas_url_matches_origin(&userinfo, origin));
+        assert!(!canvas_url_matches_origin("https://canvas.example.edu/x#frag", origin));
+        assert!(!canvas_url_matches_origin(&format!("https://canvas.example.edu/{}", "x".repeat(9000)), origin));
     }
 }

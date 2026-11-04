@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashSet;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -15,6 +16,7 @@ pub(crate) struct DeadlineNotificationEvent {
     pub(crate) course_code: String,
     pub(crate) due_at: String,
     pub(crate) submitted: bool,
+    pub(crate) threshold: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -22,6 +24,7 @@ pub(crate) struct DeadlineNotification {
     pub(crate) title: String,
     pub(crate) body: String,
     pub(crate) ledger_key: String,
+    pub(crate) delivery_keys: Vec<String>,
 }
 
 pub(crate) trait NotificationSink: Send + Sync {
@@ -108,11 +111,10 @@ impl DeadlineNotificationPolicy {
             if event.submitted || event.due_at.is_empty() || event.stable_id.is_empty() {
                 continue;
             }
-            let key = format!(
-                "{}|{}|DEADLINE",
-                event.stable_id,
-                event.revision
-            );
+            if event.threshold != "DUE_TODAY" && event.threshold != "OVERDUE" {
+                continue;
+            }
+            let key = format!("{}|{}|{}", event.stable_id, event.revision, event.threshold);
             if self.delivered.contains(&key) {
                 continue;
             }
@@ -123,6 +125,7 @@ impl DeadlineNotificationPolicy {
             due.push(DeadlineNotification {
                 title: "StudyHub".to_string(),
                 body,
+                delivery_keys: vec![key.clone()],
                 ledger_key: key,
             });
         }
@@ -134,7 +137,8 @@ impl DeadlineNotificationPolicy {
         let summary = DeadlineNotification {
             title: "StudyHub".to_string(),
             body: format!("You have {remaining} assignments due or overdue."),
-            ledger_key: format!("summary|{remaining}"),
+            ledger_key: format!("summary|{}", due.len()),
+            delivery_keys: due.iter().map(|item| item.ledger_key.clone()).collect(),
         };
         vec![summary]
     }
@@ -162,6 +166,21 @@ pub(crate) fn append_delivery_ledger(path: &PathBuf, keys: &[String]) {
     let _ = std::fs::write(path, merged.join("\n") + "\n");
 }
 
+pub(crate) fn load_notification_preference(path: &PathBuf) -> bool {
+    let Ok(raw) = fs::read_to_string(path) else {
+        return false;
+    };
+    matches!(raw.trim(), "1")
+}
+
+pub(crate) fn save_notification_preference(path: &PathBuf, enabled: bool) {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let content = if enabled { "1\n" } else { "0\n" };
+    let _ = fs::write(path, content);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +192,7 @@ mod tests {
             course_code: "TEST1001".to_string(),
             due_at: "17:00".to_string(),
             submitted,
+            threshold: "OVERDUE".to_string(),
         }
     }
 
@@ -191,17 +211,17 @@ mod tests {
             event("b", "r1", true),
         ]);
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].ledger_key, "a|r1|DEADLINE");
+        assert_eq!(result[0].ledger_key, "a|r1|OVERDUE");
     }
 
     #[test]
     fn deadline_change_makes_new_revision_eligible() {
         let mut delivered = HashSet::new();
-        delivered.insert("a|r1|DEADLINE".to_string());
+        delivered.insert("a|r1|OVERDUE".to_string());
         let policy = DeadlineNotificationPolicy::new(true, delivered);
         let result = policy.evaluate(&[event("a", "r2", false)]);
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].ledger_key, "a|r2|DEADLINE");
+        assert_eq!(result[0].ledger_key, "a|r2|OVERDUE");
     }
 
     #[test]

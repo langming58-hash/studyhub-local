@@ -2151,10 +2151,11 @@ async function evaluateDeadlineNotifications() {
   if (!canvasItems.length) return;
   const events = canvasItems.map((item) => ({
     stable_id: String(item.stable_id),
-    revision: String(item.remote_updated_at || item.due_at || ""),
+    revision: String(item.revision || item.remote_fingerprint || ""),
     course_code: String(item.course_code || ""),
     due_at: String(item.due_at),
     submitted: false,
+    threshold: item.bucket === "overdue" ? "OVERDUE" : "DUE_TODAY",
   }));
   await desktopInvoke("evaluate_deadline_notifications", { events });
 }
@@ -3476,13 +3477,13 @@ document.addEventListener("click", async (event) => {
   if (target.dataset.todayReconnect) {
     state.canvas.busy = true;
     state.canvas.error = "";
-    await renderToday();
     try {
       await desktopInvoke("start_canvas_oauth");
       state.canvas.status = "connecting";
+      await route("settings");
+      return;
     } catch (error) {
       state.canvas.error = error.message || String(error);
-    } finally {
       state.canvas.busy = false;
     }
     await renderToday();

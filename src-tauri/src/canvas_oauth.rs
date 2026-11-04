@@ -2538,4 +2538,26 @@ mod tests {
         );
         assert!(http.requests().is_empty());
     }
+
+    #[test]
+    fn legacy_v1_record_parses_as_scope_set_v1() {
+        let record = CanvasOAuthRecord::new(
+            CanvasOrigin::parse(ORIGIN).expect("origin"),
+            CLIENT_ID.to_string(),
+            OAUTH_OOB_REDIRECT.to_string(),
+            CanvasAccessToken::new(ACCESS).expect("access"),
+            CanvasAccessToken::new(REFRESH).expect("refresh"),
+            1_700_000_300,
+            "Synthetic Student".to_string(),
+        );
+        let serialized = record.serialize();
+        let legacy = serialized
+            .lines()
+            .filter(|line| !line.starts_with("scope_set_version="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let parsed = CanvasOAuthRecord::parse(&legacy).expect("legacy parse");
+        assert_eq!(parsed.scope_set_version(), CANVAS_SCOPE_SET_V1);
+        assert_eq!(record.scope_set_version(), CANVAS_SCOPE_SET_V2);
+    }
 }

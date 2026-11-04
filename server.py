@@ -1110,6 +1110,21 @@ def normalize_canvas_timestamp(value: Any) -> str | None:
     return text or None
 
 
+def normalize_canvas_event_timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = normalize_canvas_text(value, maximum=CANVAS_MAX_TIMESTAMP_LENGTH)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise CanvasConnectorError("malformed_canvas_response") from exc
+    if parsed.tzinfo is None:
+        raise CanvasConnectorError("malformed_canvas_response")
+    return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
 def normalize_canvas_boolean(item: dict[str, Any], key: str) -> bool:
     value = item.get(key, False)
     if not isinstance(value, bool):
@@ -1176,7 +1191,7 @@ def normalize_canvas_assignment_object(
         submission_workflow_state = normalize_canvas_text(
             submission.get("workflow_state", ""), maximum=64
         )
-        submitted_at = normalize_canvas_timestamp(submission.get("submitted_at"))
+        submitted_at = normalize_canvas_event_timestamp(submission.get("submitted_at"))
     submission_types = item.get("submission_types")
     if submission_types is None:
         submission_types_tuple: tuple[str, ...] = ()
@@ -1188,15 +1203,15 @@ def normalize_canvas_assignment_object(
         remote_assignment_stable_id=remote_id,
         remote_course_stable_id=normalize_canvas_opaque_id(remote_course_id, "remote course id"),
         name=name,
-        due_at=normalize_canvas_timestamp(item.get("due_at")),
-        unlock_at=normalize_canvas_timestamp(item.get("unlock_at")),
-        lock_at=normalize_canvas_timestamp(item.get("lock_at")),
+        due_at=normalize_canvas_event_timestamp(item.get("due_at")),
+        unlock_at=normalize_canvas_event_timestamp(item.get("unlock_at")),
+        lock_at=normalize_canvas_event_timestamp(item.get("lock_at")),
         html_url=normalize_canvas_assignment_html_url(item.get("html_url"), origin),
         published=normalize_canvas_boolean(item, "published"),
         submission_types=submission_types_tuple,
         submission_workflow_state=submission_workflow_state,
         submitted_at=submitted_at,
-        remote_updated_at=normalize_canvas_timestamp(item.get("updated_at")),
+        remote_updated_at=normalize_canvas_event_timestamp(item.get("updated_at")),
     )
 
 
@@ -2927,6 +2942,7 @@ def phase3_academic_events_migration(conn: sqlite3.Connection) -> None:
           submission_state TEXT NOT NULL DEFAULT '',
           submitted_at_utc TEXT,
           remote_updated_at TEXT,
+          html_url TEXT,
           remote_fingerprint TEXT NOT NULL,
           discovery_state TEXT NOT NULL DEFAULT 'ACTIVE'
             CHECK(discovery_state IN ('ACTIVE', 'MISSING_FROM_REMOTE_DISCOVERY')),
@@ -3524,13 +3540,20 @@ def canvas_assignment_event_stable_id(
 
 
 def canvas_assignment_fingerprint(fact: CanvasAssignmentFact) -> str:
-    payload = "\0".join(
-        (
-            fact.remote_updated_at or "",
-            fact.due_at or "",
-            fact.submission_workflow_state,
-            fact.submitted_at or "",
-        )
+    payload = json.dumps(
+        {
+            "title": fact.name,
+            "due_at": fact.due_at,
+            "unlock_at": fact.unlock_at,
+            "lock_at": fact.lock_at,
+            "html_url": fact.html_url,
+            "published": fact.published,
+            "submission_workflow_state": fact.submission_workflow_state,
+            "submitted_at": fact.submitted_at,
+            "remote_updated_at": fact.remote_updated_at,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -3560,12 +3583,13 @@ def record_assignment_change_event(
     remote_assignment_id: str,
     assignment_title: str,
     changed_fields: list[str],
+    resulting_revision_id: str,
     applied_at: str,
 ) -> None:
     offering_stable_id = str(offering["stable_id"])
     authority_id = str(offering["authority_id"])
     stable_id = assignment_change_event_stable_id(
-        event_kind, authority_id, offering_stable_id, remote_assignment_id, applied_at
+        event_kind, authority_id, offering_stable_id, remote_assignment_id, resulting_revision_id
     )
     course_label = clean_metadata_text(
         offering["remote_course_code"] or offering["remote_name"],
@@ -3648,8 +3672,8 @@ def refresh_canvas_assignments(
                       stable_id, authority_id, course_offering_id, remote_event_key,
                       kind, title, due_at_utc, unlock_at_utc, lock_at_utc,
                       submission_state, submitted_at_utc, remote_updated_at,
-                      remote_fingerprint, discovery_state, first_seen_at, last_seen_at
-                    ) VALUES (?, ?, ?, ?, 'ASSIGNMENT_DUE', ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
+                      html_url, remote_fingerprint, discovery_state, first_seen_at, last_seen_at
+                    ) VALUES (?, ?, ?, ?, 'ASSIGNMENT_DUE', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
                     """,
                     (
                         stable_id,
@@ -3663,6 +3687,7 @@ def refresh_canvas_assignments(
                         fact.submission_workflow_state,
                         fact.submitted_at,
                         fact.remote_updated_at,
+                        fact.html_url,
                         fingerprint,
                         now,
                         now,
@@ -3675,6 +3700,7 @@ def refresh_canvas_assignments(
                     remote_assignment_id=remote_key,
                     assignment_title=fact.name,
                     changed_fields=[],
+                    resulting_revision_id=fingerprint,
                     applied_at=now,
                 )
                 summary["added"] += 1
@@ -3692,7 +3718,7 @@ def refresh_canvas_assignments(
                     """
                     UPDATE academic_events SET title=?, due_at_utc=?, unlock_at_utc=?,
                       lock_at_utc=?, submission_state=?, submitted_at_utc=?,
-                      remote_updated_at=?, remote_fingerprint=?, discovery_state='ACTIVE',
+                      remote_updated_at=?, html_url=?, remote_fingerprint=?, discovery_state='ACTIVE',
                       last_seen_at=?
                     WHERE id=?
                     """,
@@ -3704,6 +3730,7 @@ def refresh_canvas_assignments(
                         fact.submission_workflow_state,
                         fact.submitted_at,
                         fact.remote_updated_at,
+                        fact.html_url,
                         fingerprint,
                         now,
                         int(existing["id"]),
@@ -3717,10 +3744,11 @@ def refresh_canvas_assignments(
                         remote_assignment_id=remote_key,
                         assignment_title=fact.name,
                         changed_fields=["due_at"],
+                        resulting_revision_id=fingerprint,
                         applied_at=now,
                     )
                     summary["deadline_changed"] += 1
-                elif submission_changed:
+                if submission_changed:
                     summary["submission_state_changed"] += 1
             else:
                 summary["unchanged"] += 1
@@ -3768,8 +3796,9 @@ def public_assignment_event(row: sqlite3.Row) -> dict[str, Any]:
         "submission_state": row["submission_state"],
         "submitted_at": row["submitted_at_utc"],
         "discovery_state": row["discovery_state"],
-        "html_url": None,
+        "html_url": row["html_url"],
         "remote_updated_at": row["remote_updated_at"],
+        "revision": row["remote_fingerprint"],
     }
 
 
@@ -3792,11 +3821,12 @@ def today_view(
     conn: sqlite3.Connection,
     *,
     at: datetime | None = None,
+    tz: Any = None,
 ) -> dict[str, Any]:
     now = at or datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
-    now_local = now.astimezone()
+    now_local = now.astimezone(tz) if tz is not None else now.astimezone()
 
     assignments: list[dict[str, Any]] = []
     rows = conn.execute(
@@ -3804,6 +3834,7 @@ def today_view(
         SELECT ae.*, co.remote_course_code, co.remote_name
         FROM academic_events ae
         JOIN course_offerings co ON co.id=ae.course_offering_id
+        JOIN course_offering_selections sel ON sel.offering_id=co.id AND sel.selected=1
         WHERE ae.discovery_state='ACTIVE' AND ae.due_at_utc IS NOT NULL
         ORDER BY ae.due_at_utc, ae.stable_id
         """
@@ -3812,7 +3843,7 @@ def today_view(
         due = parse_iso_timestamp(row["due_at_utc"])
         if due is None:
             continue
-        if str(row["submission_state"]).lower() in {"submitted", "graded"}:
+        if str(row["submission_state"]).lower() in {"submitted", "graded", "pending_review"}:
             continue
         bucket = bucket_deadline(due, now_local)
         if bucket == "later":
@@ -3821,7 +3852,6 @@ def today_view(
         item["bucket"] = bucket
         item["course_code"] = row["remote_course_code"]
         item["course_name"] = row["remote_name"]
-        item["html_url"] = None
         assignments.append(item)
 
     overview = study_overview(conn, at=now)
