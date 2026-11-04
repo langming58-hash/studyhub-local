@@ -32,7 +32,7 @@ import urllib.request
 import webbrowser
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -549,6 +549,12 @@ class CredentialClient:
             credential = self._parse_response(self._read_frame(self._sock))
         return action(credential)
 
+    def with_canvas_scope_set(self, action: Callable[[str], Any]) -> Any:
+        with self._lock:
+            self._write_frame(self._sock, f"{CREDENTIAL_PROTOCOL} use canvas_scope_set session={self._session}")
+            scope_set = self._parse_response(self._read_frame(self._sock))
+        return action(scope_set)
+
 
 _CREDENTIAL_CLIENT: CredentialClient | None = None
 
@@ -560,6 +566,12 @@ CANVAS_MAX_PAGES = 10
 CANVAS_MAX_ITEMS = 500
 CANVAS_TIMEOUT_SECONDS = 10
 CANVAS_ALLOWED_GET_PATHS = {"/api/v1/users/self", "/api/v1/courses"}
+CANVAS_ASSIGNMENT_PATH_PATTERN = re.compile(r"/api/v1/courses/[^/]+/assignments")
+CANVAS_MAX_ASSIGNMENT_PAGES_PER_COURSE = 10
+CANVAS_MAX_ASSIGNMENTS_PER_COURSE = 1000
+CANVAS_ASSIGNMENT_PAGE_SIZE = 100
+CANVAS_SCOPE_SET_V1 = "1"
+CANVAS_SCOPE_SET_V2 = "2"
 CANVAS_MAX_REMOTE_ID_LENGTH = 160
 CANVAS_MAX_FILE_NAME_LENGTH = 512
 CANVAS_MAX_CONTENT_TYPE_LENGTH = 255
@@ -576,6 +588,8 @@ ACADEMIC_CHANGE_EVENT_KINDS = {
     "CANVAS_FILE_ADDED",
     "CANVAS_FILE_CONTENT_UPDATED",
     "CANVAS_FILE_METADATA_UPDATED",
+    "ASSIGNMENT_ADDED",
+    "ASSIGNMENT_DEADLINE_CHANGED",
 }
 WHATS_NEW_DEFAULT_LIMIT = 50
 WHATS_NEW_MAX_LIMIT = 100
@@ -619,6 +633,22 @@ class CanvasCourse:
     end_at: str | None
     term_id: str | None
     term_name: str | None
+
+
+@dataclass(frozen=True)
+class CanvasAssignmentFact:
+    remote_assignment_stable_id: str
+    remote_course_stable_id: str
+    name: str
+    due_at: str | None
+    unlock_at: str | None
+    lock_at: str | None
+    html_url: str | None
+    published: bool
+    submission_types: tuple[str, ...]
+    submission_workflow_state: str
+    submitted_at: str | None
+    remote_updated_at: str | None
 
 
 @dataclass(frozen=True)
@@ -832,16 +862,48 @@ class CanvasConnector:
         validate_canvas_download_url(download_url)
         return CanvasFileAcquisitionMetadata(remote_file, download_url)
 
+    def course_assignments(self, remote_course_id: str) -> list[CanvasAssignmentFact]:
+        course_id = normalize_canvas_opaque_id(remote_course_id, "remote course id")
+        encoded_course_id = urllib.parse.quote(course_id, safe="")
+        path = f"/api/v1/courses/{encoded_course_id}/assignments"
+        payloads = self._get_paginated_json(
+            path,
+            params={
+                "include[]": "submission",
+                "per_page": str(CANVAS_ASSIGNMENT_PAGE_SIZE),
+            },
+            max_pages=CANVAS_MAX_ASSIGNMENT_PAGES_PER_COURSE,
+            max_items=CANVAS_MAX_ASSIGNMENTS_PER_COURSE,
+        )
+        assignments: list[CanvasAssignmentFact] = []
+        seen: set[str] = set()
+        for item in payloads:
+            assignment = normalize_canvas_assignment_object(item, course_id, self.record.origin)
+            if assignment.remote_assignment_stable_id in seen:
+                raise CanvasConnectorError("duplicate_canvas_assignment_id")
+            seen.add(assignment.remote_assignment_stable_id)
+            assignments.append(assignment)
+        return assignments
+
     def _get_json(self, path: str, params: dict[str, str] | None = None) -> Any:
         url = self._build_url(path, params or {})
         response = self._request_url(url)
         return self._decode_json(response)
 
-    def _get_paginated_json(self, path: str, params: dict[str, str] | None = None) -> list[Any]:
+    def _get_paginated_json(
+        self,
+        path: str,
+        params: dict[str, str] | None = None,
+        *,
+        max_pages: int | None = None,
+        max_items: int | None = None,
+    ) -> list[Any]:
+        page_limit = max_pages if max_pages is not None else self.max_pages
+        item_limit = max_items if max_items is not None else self.max_items
         url = self._build_url(path, params or {})
         seen: set[str] = set()
         items: list[Any] = []
-        for _page in range(self.max_pages):
+        for _page in range(page_limit):
             if url in seen:
                 raise CanvasConnectorError("pagination_loop")
             seen.add(url)
@@ -850,7 +912,7 @@ class CanvasConnector:
             if not isinstance(payload, list):
                 raise CanvasConnectorError("malformed_canvas_response")
             items.extend(payload)
-            if len(items) > self.max_items:
+            if len(items) > item_limit:
                 raise CanvasConnectorError("pagination_limit_exceeded")
             next_url = next_canvas_link(response.headers, "next")
             if not next_url:
@@ -865,6 +927,7 @@ class CanvasConnector:
             path not in CANVAS_ALLOWED_GET_PATHS
             and not re.fullmatch(r"/api/v1/courses/[^/]+/files", path)
             and not re.fullmatch(r"/api/v1/courses/[^/]+/files/[^/]+", path)
+            and not re.fullmatch(r"/api/v1/courses/[^/]+/assignments", path)
         ):
             raise CanvasConnectorError("unsupported_canvas_endpoint")
         query = urllib.parse.urlencode(params)
@@ -1047,6 +1110,21 @@ def normalize_canvas_timestamp(value: Any) -> str | None:
     return text or None
 
 
+def normalize_canvas_event_timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = normalize_canvas_text(value, maximum=CANVAS_MAX_TIMESTAMP_LENGTH)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise CanvasConnectorError("malformed_canvas_response") from exc
+    if parsed.tzinfo is None:
+        raise CanvasConnectorError("malformed_canvas_response")
+    return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
 def normalize_canvas_boolean(item: dict[str, Any], key: str) -> bool:
     value = item.get(key, False)
     if not isinstance(value, bool):
@@ -1081,6 +1159,79 @@ def normalize_canvas_file_object(item: Any, remote_course_id: str) -> CanvasRemo
         hidden=normalize_canvas_boolean(item, "hidden"),
         hidden_for_user=normalize_canvas_boolean(item, "hidden_for_user"),
     )
+
+
+def normalize_canvas_assignment_html_url(value: Any, origin: str) -> str | None:
+    if value is None:
+        return None
+    try:
+        raw = normalize_canvas_text(value, maximum=CANVAS_MAX_DOWNLOAD_URL_LENGTH)
+    except CanvasConnectorError:
+        return None
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        return None
+    if parsed.fragment:
+        return None
+    if not same_origin(origin, raw):
+        return None
+    return raw
+
+
+def normalize_canvas_assignment_object(
+    item: Any, remote_course_id: str, origin: str
+) -> CanvasAssignmentFact:
+    if not isinstance(item, dict):
+        raise CanvasConnectorError("malformed_canvas_response")
+    remote_id = normalize_canvas_opaque_id(item.get("id"), "remote assignment id")
+    name = normalize_canvas_text(item.get("name", ""), maximum=CANVAS_MAX_FILE_NAME_LENGTH, required=True)
+    submission = item.get("submission")
+    submission_workflow_state = ""
+    submitted_at = None
+    if submission is not None:
+        if not isinstance(submission, dict):
+            raise CanvasConnectorError("malformed_canvas_response")
+        submission_workflow_state = normalize_canvas_text(
+            submission.get("workflow_state", ""), maximum=64
+        )
+        submitted_at = normalize_canvas_event_timestamp(submission.get("submitted_at"))
+    submission_types = item.get("submission_types")
+    if submission_types is None:
+        submission_types_tuple: tuple[str, ...] = ()
+    elif isinstance(submission_types, list) and all(isinstance(value, str) for value in submission_types):
+        submission_types_tuple = tuple(submission_types)
+    else:
+        raise CanvasConnectorError("malformed_canvas_response")
+    return CanvasAssignmentFact(
+        remote_assignment_stable_id=remote_id,
+        remote_course_stable_id=normalize_canvas_opaque_id(remote_course_id, "remote course id"),
+        name=name,
+        due_at=normalize_canvas_event_timestamp(item.get("due_at")),
+        unlock_at=normalize_canvas_event_timestamp(item.get("unlock_at")),
+        lock_at=normalize_canvas_event_timestamp(item.get("lock_at")),
+        html_url=normalize_canvas_assignment_html_url(item.get("html_url"), origin),
+        published=normalize_canvas_boolean(item, "published"),
+        submission_types=submission_types_tuple,
+        submission_workflow_state=submission_workflow_state,
+        submitted_at=submitted_at,
+        remote_updated_at=normalize_canvas_event_timestamp(item.get("updated_at")),
+    )
+
+
+def canvas_scope_set_from_private_transport() -> str:
+    client = initialize_credential_client()
+    if client is None:
+        raise CanvasConnectorError("connection_not_configured")
+    try:
+        value = client.with_canvas_scope_set(lambda scope_set: scope_set)
+    except CredentialClientError as exc:
+        code = str(exc)
+        if code == "credential_missing":
+            raise CanvasConnectorError("credential_missing") from exc
+        raise CanvasConnectorError("credential_operation_failed") from exc
+    if value not in {CANVAS_SCOPE_SET_V1, CANVAS_SCOPE_SET_V2}:
+        raise CanvasConnectorError("malformed_canvas_connection")
+    return value
 
 
 def canvas_connection_record_from_private_transport() -> CanvasConnectionRecord:
@@ -1244,6 +1395,13 @@ def ensure_dirs() -> None:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def parse_iso_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(str(value))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def log_event(event: str, detail: str) -> None:
@@ -2770,6 +2928,45 @@ def phase3_study_engine_migration(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def phase3_academic_events_migration(conn: sqlite3.Connection) -> None:
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS academic_events (
+          id INTEGER PRIMARY KEY,
+          stable_id TEXT NOT NULL UNIQUE,
+          authority_id TEXT NOT NULL,
+          course_offering_id INTEGER NOT NULL REFERENCES course_offerings(id),
+          remote_event_key TEXT NOT NULL,
+          kind TEXT NOT NULL DEFAULT 'ASSIGNMENT_DUE',
+          title TEXT NOT NULL,
+          due_at_utc TEXT,
+          unlock_at_utc TEXT,
+          lock_at_utc TEXT,
+          submission_state TEXT NOT NULL DEFAULT '',
+          submitted_at_utc TEXT,
+          remote_updated_at TEXT,
+          html_url TEXT,
+          remote_fingerprint TEXT NOT NULL,
+          discovery_state TEXT NOT NULL DEFAULT 'ACTIVE'
+            CHECK(discovery_state IN ('ACTIVE', 'MISSING_FROM_REMOTE_DISCOVERY')),
+          first_seen_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          UNIQUE(course_offering_id, remote_event_key)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_academic_events_offering_due ON academic_events(course_offering_id, discovery_state, due_at_utc)",
+        "CREATE INDEX IF NOT EXISTS idx_academic_events_due ON academic_events(discovery_state, due_at_utc)",
+        """
+        CREATE TABLE IF NOT EXISTS canvas_assignment_refresh_state (
+          authority_id TEXT PRIMARY KEY,
+          last_refreshed_at TEXT NOT NULL
+        )
+        """,
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+
 SCHEMA_MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "phase1_domain_foundation", phase1_domain_foundation_migration),
     (2, "phase2_canvas_course_selection", phase2_canvas_course_selection_migration),
@@ -2778,6 +2975,7 @@ SCHEMA_MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], 
     (5, "phase2_academic_change_journal", phase2_academic_change_journal_migration),
     (6, "phase2_restore_operation_changeset", phase2_restore_operation_changeset_migration),
     (7, "phase3_study_engine", phase3_study_engine_migration),
+    (8, "phase3_academic_events", phase3_academic_events_migration),
 )
 
 
@@ -3333,6 +3531,359 @@ def canvas_remote_file_stable_id(authority_id: str, offering_stable_id: str, rem
         "canvas_remote_file",
         f"v1\0canvas\0{authority_id}\0{offering_stable_id}\0{remote_file_id}",
     )
+
+
+def canvas_assignment_event_stable_id(
+    authority_id: str, offering_stable_id: str, remote_assignment_id: str
+) -> str:
+    return deterministic_stable_id(
+        "canvas_academic_event",
+        f"v1\0canvas\0{authority_id}\0{offering_stable_id}\0{remote_assignment_id}",
+    )
+
+
+def canvas_assignment_fingerprint(fact: CanvasAssignmentFact) -> str:
+    payload = json.dumps(
+        {
+            "title": fact.name,
+            "due_at": fact.due_at,
+            "unlock_at": fact.unlock_at,
+            "lock_at": fact.lock_at,
+            "html_url": fact.html_url,
+            "published": fact.published,
+            "submission_workflow_state": fact.submission_workflow_state,
+            "submitted_at": fact.submitted_at,
+            "remote_updated_at": fact.remote_updated_at,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def assignment_change_event_stable_id(
+    event_kind: str,
+    authority_id: str,
+    offering_stable_id: str,
+    remote_assignment_id: str,
+    resulting_revision_id: str,
+) -> str:
+    return academic_change_event_stable_id(
+        event_kind,
+        authority_id,
+        offering_stable_id,
+        remote_assignment_id,
+        None,
+        resulting_revision_id,
+    )
+
+
+def record_assignment_change_event(
+    conn: sqlite3.Connection,
+    *,
+    event_kind: str,
+    offering: sqlite3.Row | dict[str, Any],
+    remote_assignment_id: str,
+    assignment_title: str,
+    changed_fields: list[str],
+    resulting_revision_id: str,
+    applied_at: str,
+) -> None:
+    offering_stable_id = str(offering["stable_id"])
+    authority_id = str(offering["authority_id"])
+    stable_id = assignment_change_event_stable_id(
+        event_kind, authority_id, offering_stable_id, remote_assignment_id, resulting_revision_id
+    )
+    course_label = clean_metadata_text(
+        offering["remote_course_code"] or offering["remote_name"],
+        "Course label",
+        required=False,
+        limit=200,
+    )
+    assignment_label = clean_metadata_text(assignment_title, "Assignment label", required=False, limit=512)
+    changed_json = json.dumps(sorted(set(changed_fields)), separators=(",", ":"))
+    conn.execute(
+        """
+        INSERT INTO academic_change_events(
+          stable_id, event_kind, provider, authority_id, course_offering_id,
+          course_offering_stable_id, material_stable_id, remote_item_stable_id,
+          predecessor_event_stable_id, resulting_material_version_stable_id,
+          resulting_sha256, course_label, material_label, changed_fields_json,
+          applied_at, created_at
+        ) VALUES (?, ?, 'canvas', ?, ?, ?, '', ?, NULL, NULL, NULL, ?, ?, ?, ?, ?)
+        ON CONFLICT(stable_id) DO NOTHING
+        """,
+        (
+            stable_id,
+            event_kind,
+            authority_id,
+            int(offering["id"]),
+            offering_stable_id,
+            remote_assignment_id,
+            course_label,
+            assignment_label,
+            changed_json,
+            applied_at,
+            applied_at,
+        ),
+    )
+
+
+def refresh_canvas_assignments(
+    conn: sqlite3.Connection,
+    connector: CanvasConnector,
+    authority_id: str,
+) -> dict[str, Any]:
+    selections = remembered_canvas_course_selections(conn, authority_id=authority_id)
+    fetched: list[tuple[dict[str, Any], list[CanvasAssignmentFact]]] = []
+    for selection in selections:
+        facts = connector.course_assignments(selection["remote_course_id"])
+        fetched.append((selection, facts))
+
+    now = now_iso()
+    summary = {
+        "added": 0,
+        "deadline_changed": 0,
+        "submission_state_changed": 0,
+        "missing_from_discovery": 0,
+        "unchanged": 0,
+    }
+    seen_keys: set[tuple[int, str]] = set()
+    for selection, facts in fetched:
+        offering = conn.execute(
+            "SELECT * FROM course_offerings WHERE stable_id=?",
+            (str(selection["stable_id"]),),
+        ).fetchone()
+        if offering is None:
+            raise CanvasConnectorError("canvas_course_binding_invalid")
+        offering_stable_id = str(offering["stable_id"])
+        for fact in facts:
+            remote_key = fact.remote_assignment_stable_id
+            stable_id = canvas_assignment_event_stable_id(
+                authority_id, offering_stable_id, remote_key
+            )
+            fingerprint = canvas_assignment_fingerprint(fact)
+            existing = conn.execute(
+                "SELECT * FROM academic_events WHERE course_offering_id=? AND remote_event_key=?",
+                (int(offering["id"]), remote_key),
+            ).fetchone()
+            seen_keys.add((int(offering["id"]), remote_key))
+            if existing is None:
+                conn.execute(
+                    """
+                    INSERT INTO academic_events(
+                      stable_id, authority_id, course_offering_id, remote_event_key,
+                      kind, title, due_at_utc, unlock_at_utc, lock_at_utc,
+                      submission_state, submitted_at_utc, remote_updated_at,
+                      html_url, remote_fingerprint, discovery_state, first_seen_at, last_seen_at
+                    ) VALUES (?, ?, ?, ?, 'ASSIGNMENT_DUE', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
+                    """,
+                    (
+                        stable_id,
+                        authority_id,
+                        int(offering["id"]),
+                        remote_key,
+                        fact.name,
+                        fact.due_at,
+                        fact.unlock_at,
+                        fact.lock_at,
+                        fact.submission_workflow_state,
+                        fact.submitted_at,
+                        fact.remote_updated_at,
+                        fact.html_url,
+                        fingerprint,
+                        now,
+                        now,
+                    ),
+                )
+                record_assignment_change_event(
+                    conn,
+                    event_kind="ASSIGNMENT_ADDED",
+                    offering=offering,
+                    remote_assignment_id=remote_key,
+                    assignment_title=fact.name,
+                    changed_fields=[],
+                    resulting_revision_id=fingerprint,
+                    applied_at=now,
+                )
+                summary["added"] += 1
+                continue
+            if (
+                str(existing["discovery_state"]) == "MISSING_FROM_REMOTE_DISCOVERY"
+                or str(existing["remote_fingerprint"]) != fingerprint
+            ):
+                due_changed = (existing["due_at_utc"] or None) != fact.due_at
+                submission_changed = (
+                    str(existing["submission_state"]) != fact.submission_workflow_state
+                    or (existing["submitted_at_utc"] or None) != fact.submitted_at
+                )
+                conn.execute(
+                    """
+                    UPDATE academic_events SET title=?, due_at_utc=?, unlock_at_utc=?,
+                      lock_at_utc=?, submission_state=?, submitted_at_utc=?,
+                      remote_updated_at=?, html_url=?, remote_fingerprint=?, discovery_state='ACTIVE',
+                      last_seen_at=?
+                    WHERE id=?
+                    """,
+                    (
+                        fact.name,
+                        fact.due_at,
+                        fact.unlock_at,
+                        fact.lock_at,
+                        fact.submission_workflow_state,
+                        fact.submitted_at,
+                        fact.remote_updated_at,
+                        fact.html_url,
+                        fingerprint,
+                        now,
+                        int(existing["id"]),
+                    ),
+                )
+                if due_changed:
+                    record_assignment_change_event(
+                        conn,
+                        event_kind="ASSIGNMENT_DEADLINE_CHANGED",
+                        offering=offering,
+                        remote_assignment_id=remote_key,
+                        assignment_title=fact.name,
+                        changed_fields=["due_at"],
+                        resulting_revision_id=fingerprint,
+                        applied_at=now,
+                    )
+                    summary["deadline_changed"] += 1
+                if submission_changed:
+                    summary["submission_state_changed"] += 1
+            else:
+                summary["unchanged"] += 1
+
+    for selection, _facts in fetched:
+        offering = conn.execute(
+            "SELECT id FROM course_offerings WHERE stable_id=?",
+            (str(selection["stable_id"]),),
+        ).fetchone()
+        offering_id = int(offering["id"])
+        rows = conn.execute(
+            "SELECT id, remote_event_key FROM academic_events WHERE course_offering_id=? AND discovery_state='ACTIVE'",
+            (offering_id,),
+        ).fetchall()
+        for row in rows:
+            if (offering_id, str(row["remote_event_key"])) not in seen_keys:
+                conn.execute(
+                    "UPDATE academic_events SET discovery_state='MISSING_FROM_REMOTE_DISCOVERY', last_seen_at=? WHERE id=?",
+                    (now, int(row["id"])),
+                )
+                summary["missing_from_discovery"] += 1
+    conn.execute(
+        """
+        INSERT INTO canvas_assignment_refresh_state(authority_id, last_refreshed_at)
+        VALUES (?, ?)
+        ON CONFLICT(authority_id) DO UPDATE SET last_refreshed_at=excluded.last_refreshed_at
+        """,
+        (authority_id, now),
+    )
+    return {
+        "ok": True,
+        "summary": summary,
+        "last_refreshed_at": now,
+    }
+
+
+def public_assignment_event(row: sqlite3.Row) -> dict[str, Any]:
+    due = parse_iso_timestamp(row_value(row, "due_at_utc"))
+    return {
+        "stable_id": row["stable_id"],
+        "kind": row["kind"],
+        "title": row["title"],
+        "course_offering_id": int(row["course_offering_id"]),
+        "due_at": due.isoformat(timespec="seconds") if due else None,
+        "submission_state": row["submission_state"],
+        "submitted_at": row["submitted_at_utc"],
+        "discovery_state": row["discovery_state"],
+        "html_url": row["html_url"],
+        "remote_updated_at": row["remote_updated_at"],
+        "revision": row["remote_fingerprint"],
+    }
+
+
+def bucket_deadline(due: datetime, now_local: datetime) -> str:
+    due_local = due.astimezone(now_local.tzinfo)
+    now_date = now_local.date()
+    due_date = due_local.date()
+    if due_local < now_local:
+        return "overdue"
+    if due_date == now_date:
+        return "due_today"
+    if due_date == now_date + timedelta(days=1):
+        return "due_tomorrow"
+    if now_date < due_date <= now_date + timedelta(days=7):
+        return "upcoming"
+    return "later"
+
+
+def today_view(
+    conn: sqlite3.Connection,
+    *,
+    at: datetime | None = None,
+    tz: Any = None,
+) -> dict[str, Any]:
+    now = at or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now_local = now.astimezone(tz) if tz is not None else now.astimezone()
+
+    assignments: list[dict[str, Any]] = []
+    rows = conn.execute(
+        """
+        SELECT ae.*, co.remote_course_code, co.remote_name
+        FROM academic_events ae
+        JOIN course_offerings co ON co.id=ae.course_offering_id
+        JOIN course_offering_selections sel ON sel.offering_id=co.id AND sel.selected=1
+        WHERE ae.discovery_state='ACTIVE' AND ae.due_at_utc IS NOT NULL
+        ORDER BY ae.due_at_utc, ae.stable_id
+        """
+    ).fetchall()
+    for row in rows:
+        due = parse_iso_timestamp(row["due_at_utc"])
+        if due is None:
+            continue
+        if str(row["submission_state"]).lower() in {"submitted", "graded", "pending_review"}:
+            continue
+        bucket = bucket_deadline(due, now_local)
+        if bucket == "later":
+            continue
+        item = public_assignment_event(row)
+        item["bucket"] = bucket
+        item["course_code"] = row["remote_course_code"]
+        item["course_name"] = row["remote_name"]
+        assignments.append(item)
+
+    overview = study_overview(conn, at=now)
+    review = [item for item in overview.get("needs_review", []) if item.get("queue_reason") in {"FSRS_DUE", "NEEDS_REVIEW"}]
+
+    sections: dict[str, list[dict[str, Any]]] = {
+        "overdue": [],
+        "due_today": [],
+        "due_tomorrow": [],
+        "upcoming": [],
+        "review": review,
+    }
+    for item in assignments:
+        sections[item["bucket"]].append(item)
+    last_refreshed = conn.execute(
+        "SELECT last_refreshed_at FROM canvas_assignment_refresh_state ORDER BY last_refreshed_at DESC LIMIT 1"
+    ).fetchone()
+    return {
+        "assignments": assignments,
+        "sections": sections,
+        "summary": {
+            "overdue": len(sections["overdue"]),
+            "due_today": len(sections["due_today"]),
+            "due_tomorrow": len(sections["due_tomorrow"]),
+            "upcoming": len(sections["upcoming"]),
+            "review_due": len(review),
+        },
+        "last_refreshed_at": last_refreshed["last_refreshed_at"] if last_refreshed else None,
+    }
 
 
 def canvas_remote_file_payload(remote_file: CanvasRemoteFile) -> dict[str, Any]:
@@ -12966,6 +13517,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.handle_canvas_sync_preview()
             elif parsed.path == "/api/canvas/sync-apply":
                 self.handle_canvas_sync_apply()
+            elif parsed.path == "/api/canvas/assignments/refresh":
+                self.handle_canvas_assignments_refresh()
             elif parsed.path == "/api/backup/export":
                 self.handle_backup_export()
             elif parsed.path == "/api/backup/restore-preview":
@@ -13032,6 +13585,7 @@ class StudyHubHandler(BaseHTTPRequestHandler):
             "canvas_sync_action_not_applicable": 409,
             "canvas_material_not_acquired": 409,
             "canvas_course_binding_invalid": 409,
+            "canvas_assignments_scope_required": 409,
             "response_too_large": 502,
             "transport_failure": 503,
             "origin_mismatch": 403,
@@ -13149,6 +13703,33 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 )
 
             self.send_json({"ok": True} | with_canvas_connector(apply_sync))
+        except CanvasConnectorError as exc:
+            self.send_canvas_error(exc)
+
+    def handle_canvas_assignments_refresh(self) -> None:
+        body = self.parse_body_json()
+        if body:
+            raise ValueError("Canvas assignment refresh does not accept request parameters")
+        try:
+            scope_set = canvas_scope_set_from_private_transport()
+            if scope_set != CANVAS_SCOPE_SET_V2:
+                raise CanvasConnectorError("canvas_assignments_scope_required")
+
+            def refresh(connector: CanvasConnector) -> dict[str, Any]:
+                conn = connect_db()
+                init_db(conn)
+                try:
+                    authority_id = canvas_authority_id(connector.record.origin)
+                    result = refresh_canvas_assignments(conn, connector, authority_id)
+                    conn.commit()
+                    return result
+                except Exception:
+                    conn.rollback()
+                    raise
+                finally:
+                    conn.close()
+
+            self.send_json({"ok": True} | with_canvas_connector(refresh))
         except CanvasConnectorError as exc:
             self.send_canvas_error(exc)
 
@@ -13595,6 +14176,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 course_id = int(qs.get("course_id", ["0"])[0] or 0)
                 week_label = qs.get("week", [""])[0]
                 self.send_json(study_overview(conn, course_id, week_label))
+            elif path == "/api/today":
+                self.send_json(today_view(conn))
             elif path == "/api/wrong-questions":
                 rows = conn.execute("SELECT * FROM wrong_questions ORDER BY created_at DESC LIMIT 100").fetchall()
                 self.send_json(rows_to_dicts(rows))

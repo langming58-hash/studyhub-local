@@ -247,10 +247,14 @@ auditable, and recoverable.
 
 Production OAuth is implemented as described above. Account management,
 generic self-service Developer Key provisioning, background sync, retry jobs,
-Modules, Pages, Assignments, remote deletion semantics, semantic local Course
-mapping, polished What's New UI, notifications, Today/deadlines,
+Modules, Pages, remote deletion semantics, semantic local Course mapping,
 SourceAnchor/Evidence, conflict-resolution UI, apply undo, and retained-byte
-garbage collection are not implemented. A controlled database failure removes
+garbage collection are not implemented. Assignment metadata is now readable
+via `GET /api/v1/courses/:course_id/assignments` (read-only, `include[]=submission`),
+projected into local `academic_events`, and surfaced in a cached Today queue
+with foreground/open-app deadline notifications. Assignment submission,
+calendar writes, notifications while the app is closed, and a persistent
+background scheduler remain out of scope. A controlled database failure removes
 newly created retained files when safe; a process crash can leave an
 unreferenced retained orphan, which is preferable to deleting historical or
 user-owned bytes.

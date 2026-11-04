@@ -99,6 +99,11 @@ clearly synthetic Demo fixtures.
 | Canvas | Assignments, Today, notifications | MISSING | PR #38 |
 | Canvas | Canvas writes and remote deletion | MISSING | Read-only in this phase |
 | Canvas | Generic self-service Developer Key provisioning | MISSING | Institution/admin provisioned externally |
+| Canvas | Assignment read sync (`academic_events`) | IMPLEMENTED | Selected courses, explicit refresh only |
+| Today | Deadline queue + Study review | IMPLEMENTED | Cached local-first; offline-friendly |
+| Notifications | Foreground/open-app deadline alerts | IMPLEMENTED | Opt-in; no background scheduler |
+| Notifications | Notifications while app closed | MISSING | Requires future background scheduler |
+| Assignments | Submission / quizzes / grading | MISSING | Canvas stays read-only |
 | Visual | Current desktop information architecture | EXISTS | Freeze during P0 |
 | Visual | Apple-like refinement and dark-mode tokens | PARTIAL | P3 |
 | Platform | Mobile companion | DEFER | Frozen experiment |

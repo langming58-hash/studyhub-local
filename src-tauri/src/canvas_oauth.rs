@@ -22,12 +22,22 @@ pub(crate) const OAUTH_IDENTITY_PATH: &str = "/api/v1/users/self";
 pub(crate) const OAUTH_RESPONSE_PATH: &str = "/login/oauth2/auth";
 pub(crate) const OAUTH_OOB_REDIRECT: &str = "urn:ietf:wg:oauth:2.0:oob";
 
-pub(crate) const CANVAS_READ_SCOPES: [&str; 4] = [
+pub(crate) const CANVAS_READ_SCOPES_V1: [&str; 4] = [
     "url:GET|/api/v1/users/:id",
     "url:GET|/api/v1/courses",
     "url:GET|/api/v1/courses/:course_id/files",
     "url:GET|/api/v1/courses/:course_id/files/:id",
 ];
+pub(crate) const CANVAS_ASSIGNMENT_SCOPE: &str = "url:GET|/api/v1/courses/:course_id/assignments";
+pub(crate) const CANVAS_READ_SCOPES_V2: [&str; 5] = [
+    "url:GET|/api/v1/users/:id",
+    "url:GET|/api/v1/courses",
+    "url:GET|/api/v1/courses/:course_id/files",
+    "url:GET|/api/v1/courses/:course_id/files/:id",
+    CANVAS_ASSIGNMENT_SCOPE,
+];
+pub(crate) const CANVAS_SCOPE_SET_V1: u8 = 1;
+pub(crate) const CANVAS_SCOPE_SET_V2: u8 = 2;
 
 const OAUTH_STATE_TTL_SECONDS: u64 = 600;
 const REFRESH_MARGIN_SECONDS: u64 = 60;
@@ -489,6 +499,7 @@ pub(crate) struct CanvasOAuthRecord {
     expires_at: Option<u64>,
     display_name: String,
     needs_reconnect: bool,
+    scope_set_version: u8,
 }
 
 impl CanvasOAuthRecord {
@@ -510,6 +521,7 @@ impl CanvasOAuthRecord {
             expires_at: Some(expires_at),
             display_name,
             needs_reconnect: false,
+            scope_set_version: CANVAS_SCOPE_SET_V2,
         }
     }
 
@@ -518,6 +530,7 @@ impl CanvasOAuthRecord {
         client_id: String,
         redirect_uri: String,
         display_name: String,
+        scope_set_version: u8,
     ) -> Self {
         Self {
             origin,
@@ -528,6 +541,7 @@ impl CanvasOAuthRecord {
             expires_at: None,
             display_name,
             needs_reconnect: true,
+            scope_set_version,
         }
     }
 
@@ -543,7 +557,7 @@ impl CanvasOAuthRecord {
             .map(|token| token.expose_for_authorized_canvas_request().to_string())
             .unwrap_or_default();
         format!(
-            "{OAUTH_RECORD_PREFIX}\nauth_mode=oauth\norigin_hex={}\nclient_id_hex={}\nredirect_uri_hex={}\naccess_token_hex={}\nrefresh_token_hex={}\nexpires_at={}\ndisplay_name_hex={}\nneeds_reconnect={}",
+            "{OAUTH_RECORD_PREFIX}\nauth_mode=oauth\norigin_hex={}\nclient_id_hex={}\nredirect_uri_hex={}\naccess_token_hex={}\nrefresh_token_hex={}\nexpires_at={}\ndisplay_name_hex={}\nneeds_reconnect={}\nscope_set_version={}",
             encode_hex(self.origin.as_str().as_bytes()),
             encode_hex(self.client_id.as_bytes()),
             encode_hex(self.redirect_uri.as_bytes()),
@@ -552,6 +566,7 @@ impl CanvasOAuthRecord {
             self.expires_at.map(|value| value.to_string()).unwrap_or_default(),
             encode_hex(self.display_name.as_bytes()),
             if self.needs_reconnect { "1" } else { "0" },
+            self.scope_set_version,
         )
     }
 
@@ -577,6 +592,23 @@ impl CanvasOAuthRecord {
         let display_hex =
             optional_field(lines.next(), "display_name_hex=", MAX_DISPLAY_NAME_BYTES * 2)?;
         let reconnect_raw = required_field(lines.next(), "needs_reconnect=", 2)?;
+        let scope_raw = lines
+            .next()
+            .map(|line| optional_field(Some(line), "scope_set_version=", 2))
+            .transpose()?
+            .unwrap_or_default();
+        let scope_set_version = if scope_raw.is_empty() {
+            CANVAS_SCOPE_SET_V1
+        } else {
+            scope_raw
+                .parse::<u8>()
+                .map_err(|_| CanvasOAuthError::new(CanvasOAuthFailure::MalformedRecord))?
+        };
+        if scope_set_version != CANVAS_SCOPE_SET_V1 && scope_set_version != CANVAS_SCOPE_SET_V2 {
+            return Err(CanvasOAuthError::new(
+                CanvasOAuthFailure::MalformedRecord,
+            ));
+        }
         if lines.next().is_some() {
             return Err(CanvasOAuthError::new(
                 CanvasOAuthFailure::MalformedRecord,
@@ -631,6 +663,7 @@ impl CanvasOAuthRecord {
             expires_at,
             display_name,
             needs_reconnect,
+            scope_set_version,
         })
     }
 
@@ -644,6 +677,10 @@ impl CanvasOAuthRecord {
 
     pub(crate) fn redirect_uri(&self) -> &str {
         &self.redirect_uri
+    }
+
+    pub(crate) fn scope_set_version(&self) -> u8 {
+        self.scope_set_version
     }
 
     pub(crate) fn display_name(&self) -> &str {
@@ -685,6 +722,7 @@ impl fmt::Debug for CanvasOAuthRecord {
             .field("expires_at", &self.expires_at)
             .field("display_name", &self.display_name)
             .field("needs_reconnect", &self.needs_reconnect)
+            .field("scope_set_version", &self.scope_set_version)
             .finish()
     }
 }
@@ -1110,6 +1148,30 @@ impl<S: CredentialStore> CanvasCredentialManager<S> {
         }
     }
 
+    pub(crate) fn resolve_canvas_scope_set(&self) -> Result<SecretValue, CanvasOAuthError> {
+        match self.load_record(CredentialSlot::CanvasOAuth) {
+            Ok(record) => Ok(SecretValue::new(record.scope_set_version().to_string())),
+            Err(error) if error.failure() == CanvasOAuthFailure::Missing => {
+                if self.profile == RuntimeProfile::Development
+                    && self
+                        .store
+                        .get_for_trusted_native_use(CredentialSlot::CanvasDefault)
+                        .is_ok()
+                {
+                    return Ok(SecretValue::new(CANVAS_SCOPE_SET_V1.to_string()));
+                }
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) fn current_canvas_origin(&self) -> Option<CanvasOrigin> {
+        self.load_record(CredentialSlot::CanvasOAuth)
+            .ok()
+            .map(|record| record.origin().clone())
+    }
+
     fn resolve_development_pat_or_missing(&self) -> Result<SecretValue, CanvasOAuthError> {
         if self.profile == RuntimeProfile::Development {
             match self
@@ -1206,6 +1268,7 @@ impl<S: CredentialStore> CanvasCredentialManager<S> {
                     expires_at: Some(expires_at),
                     display_name: record.display_name().to_string(),
                     needs_reconnect: false,
+                    scope_set_version: record.scope_set_version(),
                 };
                 self.store
                     .store_replace(
@@ -1225,6 +1288,7 @@ impl<S: CredentialStore> CanvasCredentialManager<S> {
             record.client_id().to_string(),
             record.redirect_uri().to_string(),
             record.display_name().to_string(),
+            record.scope_set_version(),
         );
         self.store
             .store_replace(
@@ -1353,7 +1417,7 @@ fn build_authorization_url(
     url.push_str("&redirect_uri=");
     url.push_str(&urlencode(config.redirect.as_str()));
     url.push_str("&scope=");
-    url.push_str(&urlencode(&CANVAS_READ_SCOPES.join(" ")));
+    url.push_str(&urlencode(&CANVAS_READ_SCOPES_V2.join(" ")));
     if url.len() > MAX_RESPONSE_URL_BYTES {
         return Err(CanvasOAuthError::new(
             CanvasOAuthFailure::InvalidClientConfig,
@@ -1701,7 +1765,7 @@ mod tests {
         assert_eq!(scopes.len(), 1);
         let mut scope_items: Vec<&str> = scopes[0].split(' ').collect();
         scope_items.sort_unstable();
-        let mut expected: Vec<&str> = CANVAS_READ_SCOPES.to_vec();
+        let mut expected: Vec<&str> = CANVAS_READ_SCOPES_V2.to_vec();
         expected.sort_unstable();
         assert_eq!(scope_items, expected);
         assert!(start.auth_url.contains("redirect_uri=urn%3Aietf%3Awg%3Aoauth%3A2.0%3Aoob"));
@@ -1866,6 +1930,7 @@ mod tests {
             CLIENT_ID.to_string(),
             OAUTH_OOB_REDIRECT.to_string(),
             "Synthetic Student".to_string(),
+            CANVAS_SCOPE_SET_V2,
         );
         let serialized = reconnect.serialize();
         let parsed = CanvasOAuthRecord::parse(&serialized).expect("parse");
@@ -2472,5 +2537,129 @@ mod tests {
             CanvasOAuthFailure::MalformedRecord
         );
         assert!(http.requests().is_empty());
+    }
+
+    #[test]
+    fn legacy_v1_record_parses_as_scope_set_v1() {
+        let record = CanvasOAuthRecord::new(
+            CanvasOrigin::parse(ORIGIN).expect("origin"),
+            CLIENT_ID.to_string(),
+            OAUTH_OOB_REDIRECT.to_string(),
+            CanvasAccessToken::new(ACCESS).expect("access"),
+            CanvasAccessToken::new(REFRESH).expect("refresh"),
+            1_700_000_300,
+            "Synthetic Student".to_string(),
+        );
+        let serialized = record.serialize();
+        let legacy = serialized
+            .lines()
+            .filter(|line| !line.starts_with("scope_set_version="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let parsed = CanvasOAuthRecord::parse(&legacy).expect("legacy parse");
+        assert_eq!(parsed.scope_set_version(), CANVAS_SCOPE_SET_V1);
+        assert_eq!(record.scope_set_version(), CANVAS_SCOPE_SET_V2);
+    }
+
+    fn v1_serialized() -> String {
+        let record = CanvasOAuthRecord::new(
+            CanvasOrigin::parse(ORIGIN).expect("origin"),
+            CLIENT_ID.to_string(),
+            OAUTH_OOB_REDIRECT.to_string(),
+            CanvasAccessToken::new(ACCESS).expect("access"),
+            CanvasAccessToken::new(REFRESH).expect("refresh"),
+            1_700_000_300,
+            "Synthetic Student".to_string(),
+        );
+        record
+            .serialize()
+            .lines()
+            .filter(|line| !line.starts_with("scope_set_version="))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn failed_token_exchange_preserves_existing_v1_record() {
+        let http = Arc::new(FakeHttp::default());
+        http.queue(400, "{\"error\":\"invalid_grant\"}");
+        let (manager, _clock) = manager(RuntimeProfile::Development, http.clone());
+        provisioned(&manager);
+        manager
+            .store
+            .store_replace(CredentialSlot::CanvasOAuth, &SecretValue::new(v1_serialized()))
+            .expect("seed v1");
+        let start = manager.begin_oauth().expect("begin");
+        let state = extract_state(&start.auth_url);
+        assert!(manager
+            .complete_oauth(&response_url(&state, "synthetic-code"))
+            .is_err());
+        let stored = manager.load_record(CredentialSlot::CanvasOAuth).expect("record");
+        assert_eq!(stored.scope_set_version(), CANVAS_SCOPE_SET_V1);
+        assert_eq!(
+            stored.access_token().expect("access").expose_for_authorized_canvas_request(),
+            ACCESS
+        );
+    }
+
+    #[test]
+    fn failed_identity_validation_preserves_existing_v1_record() {
+        let http = Arc::new(FakeHttp::default());
+        http.queue(200, &FakeHttp::token_body(ACCESS, Some(REFRESH), 3600));
+        http.queue(401, "{}");
+        let (manager, _clock) = manager(RuntimeProfile::Development, http.clone());
+        provisioned(&manager);
+        manager
+            .store
+            .store_replace(CredentialSlot::CanvasOAuth, &SecretValue::new(v1_serialized()))
+            .expect("seed v1");
+        let start = manager.begin_oauth().expect("begin");
+        let state = extract_state(&start.auth_url);
+        assert!(manager
+            .complete_oauth(&response_url(&state, "synthetic-code"))
+            .is_err());
+        let stored = manager.load_record(CredentialSlot::CanvasOAuth).expect("record");
+        assert_eq!(stored.scope_set_version(), CANVAS_SCOPE_SET_V1);
+    }
+
+    #[test]
+    fn successful_v2_reauth_replaces_record() {
+        let http = Arc::new(FakeHttp::default());
+        http.queue(200, &FakeHttp::token_body("synthetic-v2-access", Some("synthetic-v2-refresh"), 3600));
+        http.queue(200, "{\"id\":42,\"name\":\"Synthetic Student\"}");
+        let (manager, _clock) = manager(RuntimeProfile::Development, http.clone());
+        provisioned(&manager);
+        manager
+            .store
+            .store_replace(CredentialSlot::CanvasOAuth, &SecretValue::new(v1_serialized()))
+            .expect("seed v1");
+        let start = manager.begin_oauth().expect("begin");
+        let state = extract_state(&start.auth_url);
+        let status = manager
+            .complete_oauth(&response_url(&state, "synthetic-code"))
+            .expect("reauth");
+        assert_eq!(status.state, CanvasConnectionState::Connected);
+        let stored = manager.load_record(CredentialSlot::CanvasOAuth).expect("record");
+        assert_eq!(stored.scope_set_version(), CANVAS_SCOPE_SET_V2);
+        assert_eq!(
+            stored.access_token().expect("access").expose_for_authorized_canvas_request(),
+            "synthetic-v2-access"
+        );
+    }
+
+    #[test]
+    fn v1_refresh_retains_v1_scope_version() {
+        let http = Arc::new(FakeHttp::default());
+        http.queue(200, &FakeHttp::token_body("synthetic-new-access", None, 3600));
+        let (manager, clock) = manager(RuntimeProfile::Development, http.clone());
+        provisioned(&manager);
+        manager
+            .store
+            .store_replace(CredentialSlot::CanvasOAuth, &SecretValue::new(v1_serialized()))
+            .expect("seed v1");
+        clock.store(1_700_000_400, Ordering::SeqCst);
+        manager.resolve_canvas_default().expect("refresh");
+        let stored = manager.load_record(CredentialSlot::CanvasOAuth).expect("record");
+        assert_eq!(stored.scope_set_version(), CANVAS_SCOPE_SET_V1);
     }
 }

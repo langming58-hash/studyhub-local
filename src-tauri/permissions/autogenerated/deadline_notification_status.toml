@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-deadline-notification-status"
+description = "Enables the deadline_notification_status command without any pre-configured scope."
+commands.allow = ["deadline_notification_status"]
+
+[[permission]]
+identifier = "deny-deadline-notification-status"
+description = "Denies the deadline_notification_status command without any pre-configured scope."
+commands.deny = ["deadline_notification_status"]
