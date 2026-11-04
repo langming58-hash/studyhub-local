@@ -188,7 +188,7 @@ def main() -> int:
             "native_picker_is_in_tauri_capability",
             '"choose_backup_archive"' in (ROOT / "src-tauri/build.rs").read_text(encoding="utf-8")
             and '"allow-choose-backup-archive"'
-            in (ROOT / "src-tauri/capabilities/default.json").read_text(encoding="utf-8"),
+            in (ROOT / "src-tauri/capabilities/studyhub-production.json").read_text(encoding="utf-8"),
             failures,
         )
         frontend_source = (ROOT / "static/app.js").read_text(encoding="utf-8")

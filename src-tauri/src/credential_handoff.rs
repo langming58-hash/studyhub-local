@@ -13,6 +13,9 @@ pub(crate) enum HandoffRequest {
     Malformed,
 }
 
+pub(crate) type CanvasDefaultResolver =
+    Box<dyn Fn() -> Result<SecretValue, HandoffError> + Send + Sync>;
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) struct BackendChildAuthorization {
     child_id: u32,
@@ -49,7 +52,7 @@ pub(crate) struct HandoffError {
 }
 
 impl HandoffError {
-    fn new(failure: HandoffFailure) -> Self {
+    pub(crate) fn new(failure: HandoffFailure) -> Self {
         Self { failure }
     }
 
@@ -89,6 +92,7 @@ pub(crate) struct CredentialHandoffBroker<S: CredentialStore> {
     store: S,
     authorized_child: Option<BackendChildAuthorization>,
     next_generation: u64,
+    canvas_default_resolver: Option<CanvasDefaultResolver>,
 }
 
 impl<S: CredentialStore> CredentialHandoffBroker<S> {
@@ -97,6 +101,19 @@ impl<S: CredentialStore> CredentialHandoffBroker<S> {
             store,
             authorized_child: None,
             next_generation: 1,
+            canvas_default_resolver: None,
+        }
+    }
+
+    pub(crate) fn with_canvas_default_resolver(
+        store: S,
+        resolver: CanvasDefaultResolver,
+    ) -> Self {
+        Self {
+            store,
+            authorized_child: None,
+            next_generation: 1,
+            canvas_default_resolver: Some(resolver),
         }
     }
 
@@ -128,6 +145,12 @@ impl<S: CredentialStore> CredentialHandoffBroker<S> {
     ) -> Result<R, HandoffError> {
         self.verify_authorization(authorization)?;
         let slot = slot_for_request(request)?;
+        if slot == CredentialSlot::CanvasDefault {
+            if let Some(resolver) = &self.canvas_default_resolver {
+                let secret = resolver()?;
+                return Ok(action(&secret));
+            }
+        }
         let secret = self
             .store
             .get_for_trusted_native_use(slot)

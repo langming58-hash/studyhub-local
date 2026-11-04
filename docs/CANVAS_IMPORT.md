@@ -1,7 +1,7 @@
 # Canvas Import
 
 Status: **AUTHENTICATED CONNECTOR / COURSE SELECTION / FILE SYNC PREVIEW AND
-EXPLICIT APPLY IMPLEMENTED; PRODUCTION AUTH ENROLLMENT NOT IMPLEMENTED**.
+EXPLICIT APPLY IMPLEMENTED; PRODUCTION OAUTH CONNECTION IMPLEMENTED**.
 
 StudyHub Local implements a narrow explicit downloader for supported Canvas
 File objects selected from a fresh SyncPlan. It is not a universal downloader
@@ -26,9 +26,17 @@ and scanner work without an LMS connection.
   stored with its normalized HTTPS Canvas origin in the native CredentialStore
   and is never returned to frontend JavaScript, localhost HTTP, MCP,
   diagnostics, SQLite, logs, or browser storage.
-- OAuth, institution Developer Key provisioning, Canvas passwords, account
-  management, production connection UX, and token refresh flows are not
-  implemented.
+- Production Canvas authentication is OAuth-only and requires an
+  institutionally provisioned Developer Key client (`client_id`,
+  `client_secret`, redirect URI). StudyHub never asks an end user for a
+  Developer Key secret, and never renders a production PAT paste box.
+- The native parent owns the OAuth authorization-code exchange and token
+  refresh: OAuth state is cryptographically random, one-time, expiring, and
+  held only in native process memory; the authorization code is exchanged over
+  HTTPS bound to the exact configured Canvas origin; the connection is only
+  persisted after `/api/v1/users/self` identity validation succeeds.
+- Generic self-service institution Developer Key provisioning, Canvas
+  passwords, account management, and background sync are not implemented.
 - The Python backend reuses the private Unix/macOS parent/backend credential
   transport for the single internal `canvas_default` connection record. Canvas
   API requests use the bound origin only; request input cannot override the
@@ -237,12 +245,14 @@ auditable, and recoverable.
 
 ## Remaining Scope
 
-Production OAuth, account management, background sync, retry jobs, Modules,
-Pages, Assignments, remote deletion semantics, semantic local Course mapping,
-polished What's New UI, notifications, Today/deadlines, SourceAnchor/Evidence,
-conflict-resolution UI, apply undo, and retained-byte garbage collection are
-not implemented. A controlled database failure removes newly created retained
-files when safe; a process crash can leave an unreferenced retained orphan,
-which is preferable to deleting historical or user-owned bytes.
+Production OAuth is implemented as described above. Account management,
+generic self-service Developer Key provisioning, background sync, retry jobs,
+Modules, Pages, Assignments, remote deletion semantics, semantic local Course
+mapping, polished What's New UI, notifications, Today/deadlines,
+SourceAnchor/Evidence, conflict-resolution UI, apply undo, and retained-byte
+garbage collection are not implemented. A controlled database failure removes
+newly created retained files when safe; a process crash can leave an
+unreferenced retained orphan, which is preferable to deleting historical or
+user-owned bytes.
 
 Official authority: [Instructure Canvas Files API](https://developerdocs.instructure.com/services/canvas/resources/files).

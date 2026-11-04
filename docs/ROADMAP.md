@@ -55,8 +55,10 @@ enhancement and is not a V1 completion blocker.
 - validate and refine the implemented Reader V1: packaged PDF.js, local
   MarkItDown Office/XLSX extraction, and bounded macOS OCR fallback
 - extend the implemented Canvas connector, selected-course file preview, and
-  explicit provenance-aware acquisition into compliant Production
+  explicit provenance-aware acquisition into compliant Production OAuth
   authentication, account UX, recovery, and target-domain Course mapping
+  (Production OAuth connection, refresh, and Settings discovery/sync UX landed
+  in PR #37)
 - extend the implemented offline What's New Home summary and history view only
   when real use demonstrates a need; acknowledgement remains explicit
 - refine search ranking, filtering, and source navigation
@@ -119,8 +121,8 @@ licensing rules are in the constitution.
 - persistent background-job foundation and recovery semantics
 - migration of current OpenAI environment/settings credentials into native
   CredentialStore, if separately approved
-- Canvas OAuth, account management, target-domain CourseOffering mapping, and
-  richer sync recovery/undo semantics
+- Canvas account management, target-domain CourseOffering mapping, and richer
+  sync recovery/undo semantics (OAuth connection itself landed in PR #37)
 - Windows equivalent for the live private backend credential transport
 - OCR and media-transcription providers and packaging strategy
 - universal/Intel macOS and Windows distribution sequence

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "studyhub-localhost",
-  "description": "Only the StudyHub localhost UI can invoke the desktop folder picker.",
+  "identifier": "studyhub-demo",
+  "description": "Demo/Test StudyHub capability: no Canvas credential or provisioning access.",
   "windows": ["main"],
   "remote": {
     "urls": ["http://localhost:*"]
@@ -22,8 +22,6 @@
     "allow-choose-backup-archive",
     "allow-choose-restore-relink-file",
     "allow-canvas-connection-status",
-    "allow-configure-canvas-development-connection",
-    "allow-remove-canvas-connection",
     "allow-restart-backend",
     "allow-retry-backend",
     "allow-startup-diagnostics"

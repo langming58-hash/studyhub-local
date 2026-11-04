@@ -19,15 +19,19 @@ use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 
 mod canvas_connection;
+mod canvas_oauth;
 mod credential_handoff;
 mod credential_store;
 mod credential_transport;
 
 use crate::canvas_connection::{
-    canvas_connection_status_in_store, configure_canvas_development_connection_in_store,
-    remove_canvas_connection_in_store,
+    configure_canvas_development_connection_in_store,
 };
-use crate::credential_store::{credential_store_for_profile, CredentialAvailability};
+use crate::canvas_oauth::{
+    CanvasConnectionState, CanvasCredentialManager, CanvasOAuthFailure, CanvasOAuthStart,
+};
+use crate::credential_handoff::{CanvasDefaultResolver, HandoffError, HandoffFailure};
+use crate::credential_store::credential_store_for_profile;
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(4);
@@ -118,6 +122,7 @@ struct BackendState {
     process: Mutex<Option<BackendProcess>>,
     allowed_port: Arc<AtomicU16>,
     last_error: Mutex<String>,
+    canvas_manager: Arc<CanvasCredentialManager<crate::credential_store::CredentialStoreBackend>>,
 }
 
 #[cfg(debug_assertions)]
@@ -248,7 +253,10 @@ fn health_check(url: &str) -> bool {
     stream.read_to_string(&mut response).is_ok() && response.starts_with("HTTP/1.0 200")
 }
 
-fn start_backend(config: &BackendConfig) -> Result<BackendProcess, String> {
+fn start_backend(
+    config: &BackendConfig,
+    canvas_manager: &Arc<CanvasCredentialManager<crate::credential_store::CredentialStoreBackend>>,
+) -> Result<BackendProcess, String> {
     std::fs::create_dir_all(&config.runtime_dir).map_err(|_| "runtime_unavailable".to_string())?;
     for directory in [&config.data_dir, &config.cache_dir, &config.log_dir] {
         std::fs::create_dir_all(directory).map_err(|_| "runtime_unavailable".to_string())?;
@@ -317,10 +325,19 @@ fn start_backend(config: &BackendConfig) -> Result<BackendProcess, String> {
     })?;
     #[cfg(unix)]
     if let Some(transport) = credential_transport {
+        let resolver: CanvasDefaultResolver = {
+            let manager = Arc::clone(canvas_manager);
+            Box::new(move || {
+                manager
+                    .resolve_canvas_default()
+                    .map_err(|error| HandoffError::new(oauth_failure_to_handoff(error.failure())))
+            })
+        };
         credential_transport::spawn_backend_credential_transport(
             transport,
             child.id(),
             config.profile,
+            Some(resolver),
         );
     }
     let stdout = child
@@ -415,6 +432,18 @@ fn safe_error_message(code: &str) -> &'static str {
             "The local service did not become ready in time."
         }
         _ => "The local service stopped before StudyHub was ready.",
+    }
+}
+
+fn oauth_failure_to_handoff(failure: CanvasOAuthFailure) -> HandoffFailure {
+    match failure {
+        CanvasOAuthFailure::NotProvisioned => HandoffFailure::MissingCredential,
+        CanvasOAuthFailure::ReconnectRequired => HandoffFailure::MissingCredential,
+        CanvasOAuthFailure::Missing => HandoffFailure::MissingCredential,
+        CanvasOAuthFailure::BackendUnavailable => HandoffFailure::BackendUnavailable,
+        CanvasOAuthFailure::AccessDeniedStore => HandoffFailure::AccessDenied,
+        CanvasOAuthFailure::OperationFailed => HandoffFailure::OperationFailed,
+        _ => HandoffFailure::MissingCredential,
     }
 }
 
@@ -759,7 +788,8 @@ async fn restart_backend(
         if let Some(active) = process.as_mut() {
             stop_child(&mut active.child);
         }
-        match start_backend(&state.config) {
+        let canvas_manager = Arc::clone(&state.canvas_manager);
+        match start_backend(&state.config, &canvas_manager) {
             Ok(next) => {
                 state
                     .allowed_port
@@ -799,7 +829,8 @@ async fn retry_backend(
     if process.is_some() {
         return Ok(());
     }
-    match start_backend(&state.config) {
+    let canvas_manager = Arc::clone(&state.canvas_manager);
+    match start_backend(&state.config, &canvas_manager) {
         Ok(next) => {
             let parsed = next
                 .url
@@ -851,12 +882,7 @@ fn startup_diagnostics(state: tauri::State<'_, BackendState>) -> String {
 
 #[tauri::command]
 fn canvas_connection_status(state: tauri::State<'_, BackendState>) -> Result<String, String> {
-    let store = credential_store_for_profile(state.config.profile);
-    match canvas_connection_status_in_store(&store) {
-        Ok(CredentialAvailability::Configured) => Ok("configured".to_string()),
-        Ok(CredentialAvailability::Missing) => Ok("missing".to_string()),
-        Err(error) => Err(error.to_string()),
-    }
+    Ok(canvas_status_json(&state.canvas_manager.status()))
 }
 
 #[tauri::command]
@@ -880,11 +906,102 @@ fn configure_canvas_development_connection(
 }
 
 #[tauri::command]
-fn remove_canvas_connection(state: tauri::State<'_, BackendState>) -> Result<String, String> {
-    let store = credential_store_for_profile(state.config.profile);
-    remove_canvas_connection_in_store(&store)
-        .map(|()| "removed".to_string())
+fn provision_canvas_oauth_client(
+    state: tauri::State<'_, BackendState>,
+    origin: String,
+    client_id: String,
+    client_secret: String,
+    redirect_uri: String,
+) -> Result<String, String> {
+    if state.config.profile != RuntimeProfile::Development {
+        return Err("canvas_oauth_client_development_only".to_string());
+    }
+    state
+        .canvas_manager
+        .provision_client_config(&origin, &client_id, &client_secret, &redirect_uri)
+        .map(|()| "provisioned".to_string())
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn start_canvas_oauth(state: tauri::State<'_, BackendState>) -> Result<String, String> {
+    let start: CanvasOAuthStart = state
+        .canvas_manager
+        .begin_oauth()
+        .map_err(|error| error.to_string())?;
+    open_in_system_browser(&start.auth_url)?;
+    Ok(serde_json::json!({
+        "status": CanvasConnectionState::Connecting.as_str(),
+        "needsCodeInput": start.needs_code_input,
+    })
+    .to_string())
+}
+
+#[tauri::command]
+fn cancel_canvas_oauth(state: tauri::State<'_, BackendState>) -> Result<String, String> {
+    state.canvas_manager.cancel_oauth();
+    Ok(canvas_status_json(&state.canvas_manager.status()))
+}
+
+#[tauri::command]
+fn complete_canvas_oauth(
+    state: tauri::State<'_, BackendState>,
+    response_url: String,
+) -> Result<String, String> {
+    let status = state
+        .canvas_manager
+        .complete_oauth(&response_url)
+        .map_err(|error| error.to_string())?;
+    Ok(canvas_status_json(&status))
+}
+
+#[tauri::command]
+fn disconnect_canvas(
+    state: tauri::State<'_, BackendState>,
+    revoke: Option<bool>,
+) -> Result<String, String> {
+    let result = state
+        .canvas_manager
+        .disconnect(revoke.unwrap_or(false))
+        .map_err(|error| error.to_string())?;
+    let status = state.canvas_manager.status();
+    Ok(serde_json::json!({
+        "status": status.state.as_str(),
+        "remoteRevoked": result.remote_revoked,
+        "remoteRevokeAttempted": result.remote_revoke_attempted,
+        "remoteRevokeFailed": result.remote_revoke_failed,
+    })
+    .to_string())
+}
+
+fn canvas_status_json(status: &crate::canvas_oauth::CanvasStatus) -> String {
+    serde_json::json!({
+        "status": status.state.as_str(),
+        "authMode": status.auth_mode,
+        "origin": status.origin,
+        "displayName": status.display_name,
+    })
+    .to_string()
+}
+
+fn open_in_system_browser(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("/usr/bin/open")
+            .arg(url)
+            .status()
+            .map_err(|_| "canvas_browser_open_failed".to_string())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("canvas_browser_open_failed".to_string())
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = url;
+        Err("canvas_browser_unavailable".to_string())
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -899,7 +1016,11 @@ pub fn run() {
             choose_restore_relink_file,
             canvas_connection_status,
             configure_canvas_development_connection,
-            remove_canvas_connection,
+            provision_canvas_oauth_client,
+            start_canvas_oauth,
+            cancel_canvas_oauth,
+            complete_canvas_oauth,
+            disconnect_canvas,
             restart_backend,
             retry_backend,
             startup_diagnostics
@@ -909,7 +1030,8 @@ pub fn run() {
             let window_title = config.profile.display_name();
             let webview_data_dir = config.webview_data_dir.clone();
             let allowed_port = Arc::new(AtomicU16::new(0));
-            let process = start_backend(&config);
+            let canvas_manager = Arc::new(CanvasCredentialManager::for_profile(config.profile));
+            let process = start_backend(&config, &canvas_manager);
             let (initial_url, initial_error) = match process.as_ref() {
                 Ok(active) => {
                     allowed_port.store(
@@ -925,6 +1047,7 @@ pub fn run() {
                 process: Mutex::new(process.ok()),
                 allowed_port: allowed_port.clone(),
                 last_error: Mutex::new(initial_error),
+                canvas_manager,
             });
 
             let mut window_builder = WebviewWindowBuilder::new(app, "main", initial_url)

@@ -239,7 +239,9 @@ def stop_backend(process: subprocess.Popen[str]) -> None:
 
 def source_checks() -> dict[str, bool]:
     config = json.loads((ROOT / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
-    capability = json.loads((ROOT / "src-tauri" / "capabilities" / "default.json").read_text(encoding="utf-8"))
+    capability = json.loads(
+        (ROOT / "src-tauri" / "capabilities" / "studyhub-production.json").read_text(encoding="utf-8")
+    )
     rust = (ROOT / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
     frontend = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
     builder = (ROOT / "bin" / "build_desktop.py").read_text(encoding="utf-8")

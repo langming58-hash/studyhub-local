@@ -54,6 +54,22 @@ const state = {
     lastContextKey: "",
     draft: localStorage.getItem("studyhub.askDraft") || "",
   },
+  canvas: {
+    status: "unavailable",
+    authMode: null,
+    origin: null,
+    displayName: null,
+    courses: [],
+    enrollmentState: "active",
+    selectedIds: new Set(),
+    selectionRevision: "",
+    selectionPreview: null,
+    syncPlan: null,
+    syncRevision: "",
+    syncSelectedIds: new Set(),
+    busy: false,
+    error: "",
+  },
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -1961,10 +1977,128 @@ function restoreUndoMarkup() {
   `;
 }
 
+async function loadCanvasStatus() {
+  const result = await desktopInvoke("canvas_connection_status");
+  if (result && typeof result === "object") {
+    state.canvas.status = result.status || "unavailable";
+    state.canvas.authMode = result.authMode || null;
+    state.canvas.origin = result.origin || null;
+    state.canvas.displayName = result.displayName || null;
+  } else {
+    state.canvas.status = "unavailable";
+  }
+}
+
+
+function canvasSectionHtml() {
+  return window.StudyHubCanvasUI.canvasSectionHtml(state.canvas, t, escapeHtml);
+}
+
+async function refreshCanvasCourses() {
+  state.canvas.busy = true;
+  state.canvas.error = "";
+  await renderSettings();
+  try {
+    const payload = await postJson("/api/canvas/courses", { enrollment_state: state.canvas.enrollmentState });
+    state.canvas.courses = payload.courses || [];
+    state.canvas.selectionPreview = null;
+  } catch (error) {
+    state.canvas.error = error.message || String(error);
+  } finally {
+    state.canvas.busy = false;
+  }
+  await renderSettings();
+}
+
+async function previewCanvasSelection() {
+  state.canvas.busy = true;
+  state.canvas.error = "";
+  await renderSettings();
+  try {
+    const payload = await postJson("/api/canvas/course-selection/preview", {
+      enrollment_state: state.canvas.enrollmentState,
+      remote_course_ids: Array.from(state.canvas.selectedIds),
+    });
+    state.canvas.selectionPreview = payload.plan;
+    state.canvas.selectionRevision = payload.plan?.revision || "";
+  } catch (error) {
+    state.canvas.error = error.message || String(error);
+    state.canvas.selectionPreview = null;
+  } finally {
+    state.canvas.busy = false;
+  }
+  await renderSettings();
+}
+
+async function applyCanvasSelection() {
+  if (!state.canvas.selectionPreview) return;
+  state.canvas.busy = true;
+  state.canvas.error = "";
+  await renderSettings();
+  try {
+    await postJson("/api/canvas/course-selection/apply", {
+      enrollment_state: state.canvas.enrollmentState,
+      remote_course_ids: Array.from(state.canvas.selectedIds),
+      selection_revision: state.canvas.selectionRevision,
+    });
+    state.canvas.selectionPreview = null;
+    toast(t("canvas.selectionApplied"));
+  } catch (error) {
+    state.canvas.error = error.message || String(error);
+  } finally {
+    state.canvas.busy = false;
+  }
+  await renderSettings();
+}
+
+async function previewCanvasSync() {
+  state.canvas.busy = true;
+  state.canvas.error = "";
+  await renderSettings();
+  try {
+    const payload = await postJson("/api/canvas/sync-preview", {});
+    state.canvas.syncPlan = payload.plan;
+    state.canvas.syncRevision = payload.plan?.revision || "";
+    state.canvas.syncSelectedIds = new Set(
+      (payload.plan?.actions || [])
+        .filter((action) => ["ADD", "POTENTIAL_CONTENT_CHANGE", "METADATA_CHANGE"].includes(action.action))
+        .map((action) => String(action.remote_file_stable_id)),
+    );
+  } catch (error) {
+    state.canvas.error = error.message || String(error);
+    state.canvas.syncPlan = null;
+  } finally {
+    state.canvas.busy = false;
+  }
+  await renderSettings();
+}
+
+async function applyCanvasSync() {
+  if (!state.canvas.syncPlan || !state.canvas.syncSelectedIds.size) return;
+  state.canvas.busy = true;
+  state.canvas.error = "";
+  await renderSettings();
+  try {
+    await postJson("/api/canvas/sync-apply", {
+      plan_revision: state.canvas.syncRevision,
+      remote_file_stable_ids: Array.from(state.canvas.syncSelectedIds),
+    });
+    state.canvas.syncPlan = null;
+    toast(t("canvas.syncApplied"));
+    await loadBase();
+  } catch (error) {
+    state.canvas.error = error.message || String(error);
+  } finally {
+    state.canvas.busy = false;
+  }
+  await renderSettings();
+}
+
 async function renderSettings() {
   setTitle(t("nav.settings"), t("settings.eyebrow"));
   setPageActions(true);
   state.health = await api("/api/health");
+  await loadCanvasStatus();
   const ai = await api("/api/ai-status");
   const allTerms = await api("/api/terms?include_archived=1");
   const latestUndo = await api("/api/backup/restore-undo-latest");
@@ -2003,6 +2137,7 @@ async function renderSettings() {
   const askReady = ai.openAI === "Configured" && ai.vectorStore === "Configured" ? t("status.ready") : t("status.notReady");
   view.innerHTML = `
     <section class="settings-layout">
+      ${canvasSectionHtml()}
       <section class="section-block quiet-section">
         <div class="section-head">
           <div><p class="eyebrow">${escapeHtml(t("settings.general"))}</p><h2>${escapeHtml(t("settings.language"))}</h2></div>
@@ -3155,6 +3290,91 @@ document.addEventListener("click", async (event) => {
     await route("file", { fileId: Number(target.dataset.whatsNewOpen) });
     return;
   }
+  if (target.dataset.canvasConnect) {
+    state.canvas.busy = true;
+    state.canvas.error = "";
+    await renderSettings();
+    try {
+      const result = await desktopInvoke("start_canvas_oauth");
+      state.canvas.status = "connecting";
+    } catch (error) {
+      state.canvas.error = error.message || String(error);
+    } finally {
+      state.canvas.busy = false;
+    }
+    await renderSettings();
+    return;
+  }
+  if (target.dataset.canvasCancel) {
+    await desktopInvoke("cancel_canvas_oauth");
+    await loadCanvasStatus();
+    await renderSettings();
+    return;
+  }
+  if (target.dataset.canvasComplete) {
+    const responseUrl = $("#canvasOAuthResponse")?.value?.trim();
+    if (!responseUrl) return;
+    state.canvas.busy = true;
+    state.canvas.error = "";
+    await renderSettings();
+    try {
+      await desktopInvoke("complete_canvas_oauth", { responseUrl });
+      await loadCanvasStatus();
+      await refreshCanvasCourses();
+      toast(t("canvas.connectedToast"));
+    } catch (error) {
+      state.canvas.error = error.message || String(error);
+      await loadCanvasStatus();
+    } finally {
+      state.canvas.busy = false;
+    }
+    await renderSettings();
+    return;
+  }
+  if (target.dataset.canvasDisconnect) {
+    if (!confirm(t("canvas.confirmDisconnect"))) return;
+    state.canvas.busy = true;
+    state.canvas.error = "";
+    await renderSettings();
+    try {
+      await desktopInvoke("disconnect_canvas", { revoke: false });
+      state.canvas.courses = [];
+      state.canvas.syncPlan = null;
+      state.canvas.selectionPreview = null;
+      await loadCanvasStatus();
+    } catch (error) {
+      state.canvas.error = error.message || String(error);
+    } finally {
+      state.canvas.busy = false;
+    }
+    await renderSettings();
+    return;
+  }
+  if (target.dataset.canvasRefreshStatus) {
+    await loadCanvasStatus();
+    await renderSettings();
+    return;
+  }
+  if (target.dataset.canvasRefreshCourses) {
+    await refreshCanvasCourses();
+    return;
+  }
+  if (target.dataset.canvasPreviewSelection) {
+    await previewCanvasSelection();
+    return;
+  }
+  if (target.dataset.canvasApplySelection) {
+    await applyCanvasSelection();
+    return;
+  }
+  if (target.dataset.canvasSyncPreview) {
+    await previewCanvasSync();
+    return;
+  }
+  if (target.dataset.canvasSyncApply) {
+    await applyCanvasSync();
+    return;
+  }
   if (target.dataset.view) return route(target.dataset.view);
   if (target.dataset.course && !target.dataset.week) return renderCourse(Number(target.dataset.course));
   if (target.dataset.week) return renderWeek(Number(target.dataset.course), target.dataset.week);
@@ -3165,6 +3385,27 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("change", async (event) => {
+  if (event.target.matches("[data-canvas-enrollment]")) {
+    state.canvas.enrollmentState = event.target.value;
+    state.canvas.selectionPreview = null;
+    await refreshCanvasCourses();
+    return;
+  }
+  if (event.target.matches("[data-canvas-course]")) {
+    const id = String(event.target.dataset.canvasCourse);
+    if (event.target.checked) state.canvas.selectedIds.add(id);
+    else state.canvas.selectedIds.delete(id);
+    state.canvas.selectionPreview = null;
+    renderSettings();
+    return;
+  }
+  if (event.target.matches("[data-canvas-sync-item]")) {
+    const id = String(event.target.dataset.canvasSyncItem);
+    if (event.target.checked) state.canvas.syncSelectedIds.add(id);
+    else state.canvas.syncSelectedIds.delete(id);
+    renderSettings();
+    return;
+  }
   if (event.target.matches("[data-study-needs-review]")) {
     await updateStudyState(event.target.dataset.studyNeedsReview, {
       action: "set_needs_review",
@@ -3186,6 +3427,15 @@ document.addEventListener("change", async (event) => {
     if ($("#batchStar")) $("#batchStar").disabled = disabled;
     if ($("#batchRemove")) $("#batchRemove").disabled = disabled;
     if ($("#inboxAssign")) $("#inboxAssign").disabled = disabled;
+  }
+});
+
+document.addEventListener("input", (event) => {
+  if (event.target.matches("#canvasOAuthResponse")) {
+    const button = document.getElementById("canvasOAuthComplete");
+    if (button && window.StudyHubCanvasUI) {
+      window.StudyHubCanvasUI.updateOauthCompleteState(event.target, button);
+    }
   }
 });
 

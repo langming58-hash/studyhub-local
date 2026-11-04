@@ -4,13 +4,15 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 #[cfg(test)]
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::RuntimeProfile;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(crate) enum CredentialSlot {
     CanvasDefault,
+    CanvasOAuth,
+    CanvasOAuthClient,
     DevelopmentSmokeTest,
 }
 
@@ -18,6 +20,8 @@ impl CredentialSlot {
     fn account_name(self) -> &'static str {
         match self {
             Self::CanvasDefault => "canvas.default",
+            Self::CanvasOAuth => "canvas.oauth",
+            Self::CanvasOAuthClient => "canvas.oauth-client",
             Self::DevelopmentSmokeTest => "development.smoke-test",
         }
     }
@@ -267,11 +271,11 @@ impl CredentialStore for DemoDeniedCredentialStore {
 }
 
 #[cfg(test)]
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct MemoryCredentialStore {
     namespace: &'static str,
-    values: Mutex<HashMap<(&'static str, CredentialSlot), SecretValue>>,
-    failing_slots: Mutex<HashSet<CredentialSlot>>,
+    values: Arc<Mutex<HashMap<(&'static str, CredentialSlot), SecretValue>>>,
+    failing_slots: Arc<Mutex<HashSet<CredentialSlot>>>,
 }
 
 #[cfg(test)]
@@ -279,8 +283,8 @@ impl MemoryCredentialStore {
     pub(crate) fn new(namespace: &'static str) -> Self {
         Self {
             namespace,
-            values: Mutex::new(HashMap::new()),
-            failing_slots: Mutex::new(HashSet::new()),
+            values: Arc::new(Mutex::new(HashMap::new())),
+            failing_slots: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 

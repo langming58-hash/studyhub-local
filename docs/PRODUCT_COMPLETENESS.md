@@ -91,6 +91,14 @@ clearly synthetic Demo fixtures.
 | AI | Optional source-grounded Ask AI | EXISTS | Preserve |
 | AI | Explicit multi-source selection | PARTIAL | P2 |
 | AI | Keychain BYOK | MISSING | DEFER until P0 stabilizes |
+| Canvas | Development manual PAT enrollment | IMPLEMENTED | Development-only; production fails closed |
+| Canvas | Production OAuth institution-authorized connection | IMPLEMENTED | Native Keychain tokens, system-browser flow, identity validation |
+| Canvas | OAuth token refresh | IMPLEMENTED | Native parent only; bounded margin; serialized refresh |
+| Canvas | Course discovery and selection | IMPLEMENTED | Reuses existing Preview/Apply endpoints |
+| Canvas | Manual file sync | IMPLEMENTED | Explicit Sync now only; no background sync |
+| Canvas | Assignments, Today, notifications | MISSING | PR #38 |
+| Canvas | Canvas writes and remote deletion | MISSING | Read-only in this phase |
+| Canvas | Generic self-service Developer Key provisioning | MISSING | Institution/admin provisioned externally |
 | Visual | Current desktop information architecture | EXISTS | Freeze during P0 |
 | Visual | Apple-like refinement and dark-mode tokens | PARTIAL | P3 |
 | Platform | Mobile companion | DEFER | Frozen experiment |

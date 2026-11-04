@@ -345,6 +345,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the cancel_canvas_oauth command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-cancel-canvas-oauth",
+          "markdownDescription": "Enables the cancel_canvas_oauth command without any pre-configured scope."
+        },
+        {
           "description": "Enables the canvas_connection_status command without any pre-configured scope.",
           "type": "string",
           "const": "allow-canvas-connection-status",
@@ -375,10 +381,28 @@
           "markdownDescription": "Enables the choose_study_folder command without any pre-configured scope."
         },
         {
+          "description": "Enables the complete_canvas_oauth command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-complete-canvas-oauth",
+          "markdownDescription": "Enables the complete_canvas_oauth command without any pre-configured scope."
+        },
+        {
           "description": "Enables the configure_canvas_development_connection command without any pre-configured scope.",
           "type": "string",
           "const": "allow-configure-canvas-development-connection",
           "markdownDescription": "Enables the configure_canvas_development_connection command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the disconnect_canvas command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-disconnect-canvas",
+          "markdownDescription": "Enables the disconnect_canvas command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the provision_canvas_oauth_client command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-provision-canvas-oauth-client",
+          "markdownDescription": "Enables the provision_canvas_oauth_client command without any pre-configured scope."
         },
         {
           "description": "Enables the remove_canvas_connection command without any pre-configured scope.",
@@ -399,10 +423,22 @@
           "markdownDescription": "Enables the retry_backend command without any pre-configured scope."
         },
         {
+          "description": "Enables the start_canvas_oauth command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-start-canvas-oauth",
+          "markdownDescription": "Enables the start_canvas_oauth command without any pre-configured scope."
+        },
+        {
           "description": "Enables the startup_diagnostics command without any pre-configured scope.",
           "type": "string",
           "const": "allow-startup-diagnostics",
           "markdownDescription": "Enables the startup_diagnostics command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel_canvas_oauth command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-cancel-canvas-oauth",
+          "markdownDescription": "Denies the cancel_canvas_oauth command without any pre-configured scope."
         },
         {
           "description": "Denies the canvas_connection_status command without any pre-configured scope.",
@@ -435,10 +471,28 @@
           "markdownDescription": "Denies the choose_study_folder command without any pre-configured scope."
         },
         {
+          "description": "Denies the complete_canvas_oauth command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-complete-canvas-oauth",
+          "markdownDescription": "Denies the complete_canvas_oauth command without any pre-configured scope."
+        },
+        {
           "description": "Denies the configure_canvas_development_connection command without any pre-configured scope.",
           "type": "string",
           "const": "deny-configure-canvas-development-connection",
           "markdownDescription": "Denies the configure_canvas_development_connection command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the disconnect_canvas command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-disconnect-canvas",
+          "markdownDescription": "Denies the disconnect_canvas command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the provision_canvas_oauth_client command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-provision-canvas-oauth-client",
+          "markdownDescription": "Denies the provision_canvas_oauth_client command without any pre-configured scope."
         },
         {
           "description": "Denies the remove_canvas_connection command without any pre-configured scope.",
@@ -457,6 +511,12 @@
           "type": "string",
           "const": "deny-retry-backend",
           "markdownDescription": "Denies the retry_backend command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the start_canvas_oauth command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-start-canvas-oauth",
+          "markdownDescription": "Denies the start_canvas_oauth command without any pre-configured scope."
         },
         {
           "description": "Denies the startup_diagnostics command without any pre-configured scope.",
