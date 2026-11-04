@@ -10,6 +10,7 @@ import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -140,6 +141,18 @@ def main() -> int:
         today = today_view(conn, at=now)
         check("today_buckets_due_today", len(today["sections"]["due_today"]) >= 1, failures)
         check("today_no_remote_ids_in_summary", "remote_event_key" not in json.dumps(today["summary"]), failures)
+        conn.execute(
+            "INSERT INTO academic_events(stable_id, authority_id, course_offering_id, remote_event_key, kind, title, due_at_utc, submission_state, remote_fingerprint, discovery_state, first_seen_at, last_seen_at) VALUES (?, ?, ?, 'pending', 'ASSIGNMENT_DUE', 'Pending Review', ?, 'pending_review', 'fp2', 'ACTIVE', ?, ?)",
+            ("stable-pending", authority, offering_id, "2026-11-04T04:00:00Z", server.now_iso(), server.now_iso()),
+        )
+        conn.commit()
+        today_with_pending = today_view(conn, at=now)
+        check("today_pending_review_not_actionable", all(item["stable_id"] != "stable-pending" for item in today_with_pending["assignments"]), failures)
+        conn.execute("UPDATE course_offering_selections SET selected=0 WHERE offering_id=?", (offering_id,))
+        conn.commit()
+        deselected = today_view(conn, at=now)
+        check("today_deselected_course_excluded", all(item["course_offering_id"] != offering_id for item in deselected["assignments"]), failures)
+        check("deselected_event_retained", conn.execute("SELECT COUNT(*) FROM academic_events WHERE course_offering_id=?", (offering_id,)).fetchone()[0] >= 1, failures)
         conn.close()
 
     source = (ROOT / "server.py").read_text(encoding="utf-8")
@@ -155,6 +168,66 @@ def main() -> int:
         "method=\"GET\"" in source.split("class CanvasConnector", 1)[1].split("def header_value", 1)[0],
         failures,
     )
+
+    # Timezone matrix: canonical UTC storage then local bucketing.
+    sydney = ZoneInfo("Australia/Sydney")
+    new_york = ZoneInfo("America/New_York")
+    at_sydney = datetime(2026, 11, 4, 0, 0, 0, tzinfo=sydney)
+    check(
+        "timezone_sydney_buckets_local_date",
+        server.bucket_deadline(datetime(2026, 11, 4, 0, 30, 0, tzinfo=sydney), at_sydney) == "due_today",
+        failures,
+    )
+    check(
+        "timezone_utc_date_differs_from_local",
+        datetime(2026, 11, 4, 0, 30, 0, tzinfo=sydney).astimezone(timezone.utc).date()
+        != datetime(2026, 11, 4, 0, 30, 0, tzinfo=sydney).date(),
+        failures,
+    )
+    check(
+        "timezone_dst_transition_bucket",
+        server.bucket_deadline(datetime(2026, 11, 2, 10, 0, 0, tzinfo=new_york), datetime(2026, 11, 2, 9, 0, 0, tzinfo=new_york)) == "due_today",
+        failures,
+    )
+    # Fingerprint covers semantic fields even when updated_at is unchanged.
+    base_fact = CanvasAssignmentFact("a1", "1", "Alpha", "2026-11-04T03:00:00+00:00", None, None, "https://canvas.example.edu/a1", True, ("online_upload",), "unsubmitted", None, "2026-11-04T00:00:00+00:00")
+    title_changed = CanvasAssignmentFact("a1", "1", "Alpha Renamed", base_fact.due_at, None, None, base_fact.html_url, True, ("online_upload",), "unsubmitted", None, base_fact.remote_updated_at)
+    check(
+        "fingerprint_changes_on_title_with_same_updated_at",
+        server.canvas_assignment_fingerprint(base_fact) != server.canvas_assignment_fingerprint(title_changed),
+        failures,
+    )
+
+    # Migration v7 -> v8 upgrade and rollback safety.
+    with tempfile.TemporaryDirectory(prefix="studyhub-migrate-") as raw2:
+        conn = sqlite3.connect(Path(raw2) / "m.sqlite")
+        conn.row_factory = sqlite3.Row
+        for version, _name, migration in server.SCHEMA_MIGRATIONS:
+            if version >= 8:
+                break
+            server.apply_schema_migration(conn, version, f"m{version}", migration)
+        conn.commit()
+        check("v8_absent_before_upgrade", conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='academic_events'").fetchone()[0] == 0, failures)
+        server.apply_schema_migration(conn, 8, "phase3_academic_events", server.phase3_academic_events_migration)
+        conn.commit()
+        check("v8_creates_academic_events", conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='academic_events'").fetchone()[0] == 1, failures)
+        check("v8_html_url_column", "html_url" in [row[1] for row in conn.execute("PRAGMA table_info(academic_events)")], failures)
+        # Rollback safety: a synthetic failure after DDL must not record v8.
+        conn2 = sqlite3.connect(Path(raw2) / "r.sqlite")
+        conn2.row_factory = sqlite3.Row
+        for version, _name, migration in server.SCHEMA_MIGRATIONS:
+            if version >= 8:
+                break
+            server.apply_schema_migration(conn2, version, f"m{version}", migration)
+        conn2.commit()
+        conn2.execute("SAVEPOINT sp")
+        server.phase3_academic_events_migration(conn2)
+        conn2.execute("ROLLBACK TO SAVEPOINT sp")
+        conn2.execute("RELEASE SAVEPOINT sp")
+        conn2.commit()
+        check("v8_rollback_leaves_no_table", conn2.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='academic_events'").fetchone()[0] == 0, failures)
+        conn.close()
+        conn2.close()
 
     return 0 if not failures else 1
 

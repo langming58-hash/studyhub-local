@@ -1037,7 +1037,7 @@ fn set_deadline_notifications_enabled(
     enabled: bool,
 ) -> Result<String, String> {
     let preference_path = state.config.data_dir.join("notification-preference");
-    save_notification_preference(&preference_path, enabled);
+    save_notification_preference(&preference_path, enabled)?;
     *state
         .notification_enabled
         .lock()

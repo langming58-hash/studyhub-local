@@ -50,6 +50,15 @@ check("today_review_action", populated.includes('data-today-review="7"'));
 check("today_submitted_absent", !populated.includes("submitted"));
 check("today_no_raw_remote_id", !populated.includes("evt-1"));
 
+const withUrl = Object.assign({}, base, {
+  sections: { overdue: [], due_today: [{ bucket: "due_today", title: "Open A", course_code: "TEST1001", due_at: "2026-11-04T05:00:00Z", html_url: "https://canvas.example.edu/courses/1/assignments/9" }], due_tomorrow: [], upcoming: [], review: [] },
+});
+check("today_open_in_canvas_rendered_for_safe_url", ui.todaySectionHtml(withUrl, t, escapeHtml).includes('data-today-open="https://canvas.example.edu/courses/1/assignments/9"'));
+const nullUrl = Object.assign({}, base, {
+  sections: { overdue: [], due_today: [{ bucket: "due_today", title: "No URL", course_code: "TEST1001", due_at: "2026-11-04T05:00:00Z", html_url: null }], due_tomorrow: [], upcoming: [], review: [] },
+});
+check("today_open_in_canvas_absent_for_null_url", !ui.todaySectionHtml(nullUrl, t, escapeHtml).includes("data-today-open"));
+
 const scope = ui.todaySectionHtml(Object.assign({}, base, { state: "scope_upgrade_required" }), t, escapeHtml);
 check("today_scope_upgrade_state", scope.includes("today.scopeUpgradeRequired") && scope.includes('data-today-reconnect="1"'));
 
