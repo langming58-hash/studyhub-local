@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-deadline-notifications-enabled"
+description = "Enables the set_deadline_notifications_enabled command without any pre-configured scope."
+commands.allow = ["set_deadline_notifications_enabled"]
+
+[[permission]]
+identifier = "deny-set-deadline-notifications-enabled"
+description = "Denies the set_deadline_notifications_enabled command without any pre-configured scope."
+commands.deny = ["set_deadline_notifications_enabled"]

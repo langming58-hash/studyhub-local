@@ -26,6 +26,10 @@
     "allow-cancel-canvas-oauth",
     "allow-complete-canvas-oauth",
     "allow-disconnect-canvas",
+    "allow-deadline-notification-status",
+    "allow-set-deadline-notifications-enabled",
+    "allow-evaluate-deadline-notifications",
+    "allow-open-canvas-url",
     "allow-restart-backend",
     "allow-retry-backend",
     "allow-startup-diagnostics"

@@ -13,7 +13,8 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 
 use crate::credential_handoff::{
-    CanvasDefaultResolver, CredentialHandoffBroker, HandoffError, HandoffFailure, HandoffRequest,
+    CanvasDefaultResolver, CanvasScopeSetResolver, CredentialHandoffBroker, HandoffError,
+    HandoffFailure, HandoffRequest,
 };
 use crate::credential_store::{credential_store_for_profile, CredentialStore};
 use crate::RuntimeProfile;
@@ -171,14 +172,18 @@ pub(crate) fn spawn_backend_credential_transport(
     child_id: u32,
     profile: RuntimeProfile,
     canvas_default_resolver: Option<CanvasDefaultResolver>,
+    canvas_scope_set_resolver: Option<CanvasScopeSetResolver>,
 ) {
     thread::spawn(move || {
         let stream = pending.into_parent_stream();
         let store = credential_store_for_profile(profile);
-        let broker = match canvas_default_resolver {
+        let mut broker = match canvas_default_resolver {
             Some(resolver) => CredentialHandoffBroker::with_canvas_default_resolver(store, resolver),
             None => CredentialHandoffBroker::new(store),
         };
+        if let Some(resolver) = canvas_scope_set_resolver {
+            broker = broker.with_canvas_scope_set_resolver(resolver);
+        }
         let _ = serve_backend_credential_transport(stream, broker, child_id);
     });
 }
@@ -262,6 +267,7 @@ fn handle_request<S: CredentialStore>(
     }
     let request = match parts[2] {
         "canvas_default" => HandoffRequest::UseCanvasDefault,
+        "canvas_scope_set" => HandoffRequest::UseCanvasScopeSet,
         _ => return Err(TransportError::new(TransportFailure::UnsupportedOperation)),
     };
     broker

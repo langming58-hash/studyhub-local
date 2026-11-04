@@ -9,11 +9,14 @@ use crate::credential_store::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HandoffRequest {
     UseCanvasDefault,
+    UseCanvasScopeSet,
     UnsupportedSlot,
     Malformed,
 }
 
 pub(crate) type CanvasDefaultResolver =
+    Box<dyn Fn() -> Result<SecretValue, HandoffError> + Send + Sync>;
+pub(crate) type CanvasScopeSetResolver =
     Box<dyn Fn() -> Result<SecretValue, HandoffError> + Send + Sync>;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -93,6 +96,7 @@ pub(crate) struct CredentialHandoffBroker<S: CredentialStore> {
     authorized_child: Option<BackendChildAuthorization>,
     next_generation: u64,
     canvas_default_resolver: Option<CanvasDefaultResolver>,
+    canvas_scope_set_resolver: Option<CanvasScopeSetResolver>,
 }
 
 impl<S: CredentialStore> CredentialHandoffBroker<S> {
@@ -102,6 +106,7 @@ impl<S: CredentialStore> CredentialHandoffBroker<S> {
             authorized_child: None,
             next_generation: 1,
             canvas_default_resolver: None,
+            canvas_scope_set_resolver: None,
         }
     }
 
@@ -114,7 +119,13 @@ impl<S: CredentialStore> CredentialHandoffBroker<S> {
             authorized_child: None,
             next_generation: 1,
             canvas_default_resolver: Some(resolver),
+            canvas_scope_set_resolver: None,
         }
+    }
+
+    pub(crate) fn with_canvas_scope_set_resolver(mut self, resolver: CanvasScopeSetResolver) -> Self {
+        self.canvas_scope_set_resolver = Some(resolver);
+        self
     }
 
     pub(crate) fn authorize_backend_child(&mut self, child_id: u32) -> BackendChildAuthorization {
@@ -144,6 +155,14 @@ impl<S: CredentialStore> CredentialHandoffBroker<S> {
         action: impl FnOnce(&SecretValue) -> R,
     ) -> Result<R, HandoffError> {
         self.verify_authorization(authorization)?;
+        if request == HandoffRequest::UseCanvasScopeSet {
+            let resolver = self
+                .canvas_scope_set_resolver
+                .as_ref()
+                .ok_or_else(|| HandoffError::new(HandoffFailure::SlotNotAllowed))?;
+            let secret = resolver()?;
+            return Ok(action(&secret));
+        }
         let slot = slot_for_request(request)?;
         if slot == CredentialSlot::CanvasDefault {
             if let Some(resolver) = &self.canvas_default_resolver {
@@ -180,6 +199,7 @@ impl<S: CredentialStore> CredentialHandoffBroker<S> {
 fn slot_for_request(request: HandoffRequest) -> Result<CredentialSlot, HandoffError> {
     match request {
         HandoffRequest::UseCanvasDefault => Ok(CredentialSlot::CanvasDefault),
+        HandoffRequest::UseCanvasScopeSet => Err(HandoffError::new(HandoffFailure::SlotNotAllowed)),
         HandoffRequest::UnsupportedSlot => Err(HandoffError::new(HandoffFailure::SlotNotAllowed)),
         HandoffRequest::Malformed => Err(HandoffError::new(HandoffFailure::MalformedRequest)),
     }

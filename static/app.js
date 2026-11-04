@@ -70,6 +70,15 @@ const state = {
     busy: false,
     error: "",
   },
+  today: {
+    state: "loading",
+    sections: { overdue: [], due_today: [], due_tomorrow: [], upcoming: [], review: [] },
+    summary: { overdue: 0, due_today: 0, due_tomorrow: 0, upcoming: 0, review_due: 0 },
+    last_refreshed_at: null,
+    refreshing: false,
+    error: "",
+    notificationsEnabled: false,
+  },
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -133,7 +142,7 @@ function routeFromLocation() {
   if (parts[0] === "file" && parts[1]) return { view: "file", fileId: Number(parts[1]), page: Number(parts[2] || 0) };
   if (parts[0] === "study") return { view: "study", mode: parts[1] || "overview" };
   if (parts[0] === "whats-new") return { view: "whats-new" };
-  if (["home", "courses", "search", "ai", "settings"].includes(parts[0])) return { view: parts[0] };
+  if (["home", "courses", "today", "search", "ai", "settings"].includes(parts[0])) return { view: parts[0] };
   return { view: "home" };
 }
 
@@ -2094,6 +2103,90 @@ async function applyCanvasSync() {
   await renderSettings();
 }
 
+async function loadToday() {
+  state.today.error = "";
+  try {
+    const payload = await api("/api/today");
+    state.today.sections = payload.sections || state.today.sections;
+    state.today.summary = payload.summary || state.today.summary;
+    state.today.last_refreshed_at = payload.last_refreshed_at || null;
+    state.today.state = "content";
+  } catch (error) {
+    const message = error.message || String(error);
+    if (message === "canvas_assignments_scope_required") {
+      state.today.state = "scope_upgrade_required";
+    } else if (message === "connection_not_configured" || message === "credential_missing") {
+      state.today.state = "canvas_disconnected";
+    } else {
+      state.today.error = message;
+      state.today.state = state.today.sections && Object.values(state.today.sections).some((items) => items.length) ? "content" : "canvas_disconnected";
+    }
+  }
+}
+
+async function refreshAssignments() {
+  state.today.refreshing = true;
+  state.today.error = "";
+  view.innerHTML = "";
+  await renderToday();
+  try {
+    const result = await postJson("/api/canvas/assignments/refresh");
+    state.today.last_refreshed_at = result.last_refreshed_at || null;
+    await loadToday();
+    await evaluateDeadlineNotifications();
+  } catch (error) {
+    const message = error.message || String(error);
+    if (message === "canvas_assignments_scope_required") state.today.state = "scope_upgrade_required";
+    else state.today.error = message;
+  } finally {
+    state.today.refreshing = false;
+  }
+  await renderToday();
+}
+
+async function evaluateDeadlineNotifications() {
+  const canvasItems = Object.values(state.today.sections)
+    .flat()
+    .filter((item) => item.stable_id && item.due_at && item.bucket && ["overdue", "due_today"].includes(item.bucket));
+  if (!canvasItems.length) return;
+  const events = canvasItems.map((item) => ({
+    stable_id: String(item.stable_id),
+    revision: String(item.remote_updated_at || item.due_at || ""),
+    course_code: String(item.course_code || ""),
+    due_at: String(item.due_at),
+    submitted: false,
+  }));
+  await desktopInvoke("evaluate_deadline_notifications", { events });
+}
+
+async function loadNotificationStatus() {
+  const result = await desktopInvoke("deadline_notification_status");
+  state.today.notificationsEnabled = Boolean(result?.enabled);
+}
+
+async function renderToday() {
+  setTitle(t("nav.today"), t("today.eyebrow"));
+  setPageActions(true);
+  state.health = await api("/api/health");
+  if (state.today.state === "loading" || state.today.state === "content") {
+    await loadToday();
+  }
+  await loadNotificationStatus();
+  const notificationToggle =
+    '<section class="today-group" aria-labelledby="today-notifications">' +
+    '<h2 id="today-notifications">' + escapeHtml(t("today.notifications")) + "</h2>" +
+    '<label class="settings-field inline"><input type="checkbox" id="todayNotifications"' +
+    (state.today.notificationsEnabled ? " checked" : "") +
+    ' data-today-notifications="1" /> ' + escapeHtml(t("today.enableDeadlineNotifications")) + "</label>" +
+    '<p class="muted">' + escapeHtml(t("today.notificationsHelp")) + "</p>" +
+    "</section>";
+  view.innerHTML =
+    '<section class="settings-layout">' +
+    window.StudyHubTodayUI.todaySectionHtml(state.today, t, escapeHtml) +
+    notificationToggle +
+    "</section>";
+}
+
 async function renderSettings() {
   setTitle(t("nav.settings"), t("settings.eyebrow"));
   setPageActions(true);
@@ -2325,6 +2418,7 @@ async function route(viewName = state.view, options = {}) {
   if (viewName === "home") return renderHome();
   if (viewName === "whats-new") return renderWhatsNew();
   if (viewName === "courses") return renderCourses();
+  if (viewName === "today") return renderToday();
   if (viewName === "search") return renderSearch();
   if (viewName === "ai") return renderAskGpt();
   if (viewName === "study") return renderStudy();
@@ -3375,6 +3469,33 @@ document.addEventListener("click", async (event) => {
     await applyCanvasSync();
     return;
   }
+  if (target.dataset.todayRefresh) {
+    await refreshAssignments();
+    return;
+  }
+  if (target.dataset.todayReconnect) {
+    state.canvas.busy = true;
+    state.canvas.error = "";
+    await renderToday();
+    try {
+      await desktopInvoke("start_canvas_oauth");
+      state.canvas.status = "connecting";
+    } catch (error) {
+      state.canvas.error = error.message || String(error);
+    } finally {
+      state.canvas.busy = false;
+    }
+    await renderToday();
+    return;
+  }
+  if (target.dataset.todayReview) {
+    await route("file", { fileId: Number(target.dataset.todayReview) });
+    return;
+  }
+  if (target.dataset.todayOpen) {
+    await desktopInvoke("open_canvas_url", { url: target.dataset.todayOpen });
+    return;
+  }
   if (target.dataset.view) return route(target.dataset.view);
   if (target.dataset.course && !target.dataset.week) return renderCourse(Number(target.dataset.course));
   if (target.dataset.week) return renderWeek(Number(target.dataset.course), target.dataset.week);
@@ -3385,6 +3506,13 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("change", async (event) => {
+  if (event.target.matches("[data-today-notifications]")) {
+    state.today.notificationsEnabled = event.target.checked;
+    await desktopInvoke("set_deadline_notifications_enabled", { enabled: event.target.checked });
+    if (event.target.checked) await evaluateDeadlineNotifications();
+    renderToday();
+    return;
+  }
   if (event.target.matches("[data-canvas-enrollment]")) {
     state.canvas.enrollmentState = event.target.value;
     state.canvas.selectionPreview = null;

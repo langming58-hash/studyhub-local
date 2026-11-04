@@ -23,6 +23,7 @@ mod canvas_oauth;
 mod credential_handoff;
 mod credential_store;
 mod credential_transport;
+mod notifications;
 
 use crate::canvas_connection::{
     configure_canvas_development_connection_in_store,
@@ -30,8 +31,14 @@ use crate::canvas_connection::{
 use crate::canvas_oauth::{
     CanvasConnectionState, CanvasCredentialManager, CanvasOAuthFailure, CanvasOAuthStart,
 };
-use crate::credential_handoff::{CanvasDefaultResolver, HandoffError, HandoffFailure};
+use crate::credential_handoff::{
+    CanvasDefaultResolver, CanvasScopeSetResolver, HandoffError, HandoffFailure,
+};
 use crate::credential_store::credential_store_for_profile;
+use crate::notifications::{
+    append_delivery_ledger, load_delivery_ledger, DeadlineNotificationEvent,
+    DeadlineNotificationPolicy, NotificationSink, OsNotificationSink,
+};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(4);
@@ -123,6 +130,7 @@ struct BackendState {
     allowed_port: Arc<AtomicU16>,
     last_error: Mutex<String>,
     canvas_manager: Arc<CanvasCredentialManager<crate::credential_store::CredentialStoreBackend>>,
+    notification_enabled: Mutex<bool>,
 }
 
 #[cfg(debug_assertions)]
@@ -333,11 +341,20 @@ fn start_backend(
                     .map_err(|error| HandoffError::new(oauth_failure_to_handoff(error.failure())))
             })
         };
+        let scope_set_resolver: CanvasScopeSetResolver = {
+            let manager = Arc::clone(canvas_manager);
+            Box::new(move || {
+                manager
+                    .resolve_canvas_scope_set()
+                    .map_err(|error| HandoffError::new(oauth_failure_to_handoff(error.failure())))
+            })
+        };
         credential_transport::spawn_backend_credential_transport(
             transport,
             child.id(),
             config.profile,
             Some(resolver),
+            Some(scope_set_resolver),
         );
     }
     let stdout = child
@@ -1004,10 +1021,79 @@ fn open_in_system_browser(url: &str) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn deadline_notification_status(state: tauri::State<'_, BackendState>) -> Result<String, String> {
+    let enabled = *state
+        .notification_enabled
+        .lock()
+        .map_err(|_| "StudyHub notification state is unavailable.".to_string())?;
+    Ok(serde_json::json!({ "enabled": enabled, "permission": "granted" }).to_string())
+}
+
+#[tauri::command]
+fn set_deadline_notifications_enabled(
+    state: tauri::State<'_, BackendState>,
+    enabled: bool,
+) -> Result<String, String> {
+    *state
+        .notification_enabled
+        .lock()
+        .map_err(|_| "StudyHub notification state is unavailable.".to_string())? = enabled;
+    Ok(serde_json::json!({ "enabled": enabled }).to_string())
+}
+
+#[tauri::command]
+fn evaluate_deadline_notifications(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BackendState>,
+    events: Vec<DeadlineNotificationEvent>,
+) -> Result<String, String> {
+    let enabled = *state
+        .notification_enabled
+        .lock()
+        .map_err(|_| "StudyHub notification state is unavailable.".to_string())?;
+    let ledger_path = state.config.data_dir.join("notification-ledger.txt");
+    let policy = DeadlineNotificationPolicy::new(enabled, load_delivery_ledger(&ledger_path));
+    let to_send = policy.evaluate(&events);
+    let sink = OsNotificationSink::new(app);
+    let mut sent_keys: Vec<String> = Vec::new();
+    for notification in &to_send {
+        if sink.send(&notification.title, &notification.body).is_ok() {
+            sent_keys.push(notification.ledger_key.clone());
+        }
+    }
+    append_delivery_ledger(&ledger_path, &sent_keys);
+    Ok(serde_json::json!({ "sent": sent_keys.len() }).to_string())
+}
+
+#[tauri::command]
+fn open_canvas_url(state: tauri::State<'_, BackendState>, url: String) -> Result<(), String> {
+    let origin = state
+        .canvas_manager
+        .current_canvas_origin()
+        .ok_or_else(|| "canvas_connection_missing".to_string())?;
+    let parsed = tauri::Url::parse(&url).map_err(|_| "canvas_invalid_url".to_string())?;
+    if parsed.scheme() != "https"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("canvas_invalid_url".to_string());
+    }
+    let origin_url = tauri::Url::parse(origin.as_str()).map_err(|_| "canvas_invalid_origin".to_string())?;
+    let same_host = parsed.host_str().map(|host| host.to_ascii_lowercase())
+        == origin_url.host_str().map(|host| host.to_ascii_lowercase());
+    if !same_host {
+        return Err("canvas_cross_origin_url".to_string());
+    }
+    open_in_system_browser(&url)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             choose_study_folder,
@@ -1021,6 +1107,10 @@ pub fn run() {
             cancel_canvas_oauth,
             complete_canvas_oauth,
             disconnect_canvas,
+            deadline_notification_status,
+            set_deadline_notifications_enabled,
+            evaluate_deadline_notifications,
+            open_canvas_url,
             restart_backend,
             retry_backend,
             startup_diagnostics
@@ -1048,6 +1138,7 @@ pub fn run() {
                 allowed_port: allowed_port.clone(),
                 last_error: Mutex::new(initial_error),
                 canvas_manager,
+                notification_enabled: Mutex::new(false),
             });
 
             let mut window_builder = WebviewWindowBuilder::new(app, "main", initial_url)
