@@ -18,6 +18,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+if str(ROOT / "bin") not in sys.path:
+    sys.path.insert(0, str(ROOT / "bin"))
+
+from backup_restore_preview_acceptance import (  # noqa: E402
+    mutate_dataset as mutate_backup_dataset,
+    stage as stage_restore,
+)
 
 
 def load_server(tmp: Path, library: Path, database: Path):
@@ -111,6 +118,58 @@ def note_create(server, payload):
     return sent
 
 
+def notes_snapshot(conn: sqlite3.Connection) -> list[dict]:
+    columns = (
+        "id", "target_type", "target_id", "course_id", "week_label", "body",
+        "created_at", "updated_at", "anchor_version", "anchor_page",
+        "anchor_material_stable_id", "anchor_version_stable_id",
+    )
+    rows = conn.execute(
+        f"SELECT {', '.join(columns)} FROM notes ORDER BY id"
+    ).fetchall()
+    return [{column: row[column] for column in columns} for row in rows]
+
+
+def decisions_for_notes_restore(plan: dict) -> list[dict]:
+    result = []
+    for section in plan.get("sections", []):
+        for action in section.get("actions", []):
+            classification = action.get("classification")
+            if classification == "CONFLICT":
+                decision = "RESTORE_BACKUP" if action.get("dataset") == "notes" else "KEEP_LOCAL"
+            elif classification in {"RELINK_REQUIRED", "UNRESOLVED_REFERENCE", "UNSUPPORTED_BY_V1"}:
+                decision = "SKIP"
+            else:
+                continue
+            result.append({"dataset": action["dataset"], "stable_id": action["stable_id"], "decision": decision})
+    return result
+
+
+def rejected_archive(server, archive_path: Path) -> bool:
+    try:
+        server.validate_backup_archive(archive_path)
+    except ValueError:
+        return True
+    return False
+
+
+def prepare_target(suffix: str, pdf_bytes: bytes):
+    target_tmp = Path(tempfile.mkdtemp(prefix=f"studyhub-notes-{suffix}-"))
+    target_library = target_tmp / "StudyLibrary"
+    target_db = target_tmp / "runtime" / "studyhub.sqlite"
+    target_pdf = target_library / "TEST1001 - Course" / "Week 01" / "Lecture" / "notes.pdf"
+    target_pdf.parent.mkdir(parents=True)
+    target_pdf.write_bytes(pdf_bytes)
+    target = load_server(target_tmp, target_library, target_db)
+    target.scan_library(target_library)
+    conn = target.connect_db()
+    target.init_db(conn)
+    target.run_schema_migrations(conn)
+    conn.commit()
+    target.RESTORE_INBOX_DIR.mkdir(parents=True, exist_ok=True)
+    return target, conn, target_tmp
+
+
 def main() -> int:
     failures: list[str] = []
     with tempfile.TemporaryDirectory(prefix="studyhub-notes-") as raw:
@@ -168,52 +227,149 @@ def main() -> int:
         check("backup_includes_anchor_fields", len(anchored) == 2 and all(record.get("anchor_material_stable_id") for record in anchored), failures)
         check("backup_keeps_target_ref_not_path", all("target_ref" in record and "target_id" not in record for record in records), failures)
 
-        # Full restore round-trip into an isolated workspace.
-        restore_tmp = Path(tempfile.mkdtemp(prefix="studyhub-notes-restore-"))
-        restore_library = restore_tmp / "StudyLibrary"
-        restore_db = restore_tmp / "runtime" / "studyhub.sqlite"
-        restored_pdf = restore_library / "TEST1001 - Course" / "Week 01" / "Lecture" / "notes.pdf"
-        restored_pdf.parent.mkdir(parents=True)
-        restored_pdf.write_bytes(pdf.read_bytes())
-        target = load_server(restore_tmp, restore_library, restore_db)
-        target.scan_library(restore_library)
-        tconn_init = target.connect_db()
-        target.init_db(tconn_init)
-        target.run_schema_migrations(tconn_init)
-        tconn_init.commit()
-        tconn_init.close()
-        target.RESTORE_INBOX_DIR.mkdir(parents=True, exist_ok=True)
-        restore_id = "a" * 32
-        staged = target.RESTORE_INBOX_DIR / f"{restore_id}.zip"
-        shutil.copyfile(archive_path, staged)
+        # Negative archive validation: strict anchor types and combinations.
+        negative_anchor_cases = [
+            ("boolean_material_identity", {"anchor_material_stable_id": True}),
+            ("integer_material_identity", {"anchor_material_stable_id": 7}),
+            ("array_material_identity", {"anchor_material_stable_id": ["material"]}),
+            ("object_material_identity", {"anchor_material_stable_id": {"id": "material"}}),
+            ("overlong_material_identity", {"anchor_material_stable_id": "x" * 201}),
+            ("malformed_material_identity", {"anchor_material_stable_id": "!bad"}),
+            ("boolean_version_identity", {"anchor_version_stable_id": True}),
+            ("missing_version_identity", {"anchor_version_stable_id": ""}),
+            ("mismatched_material_identity", {"anchor_material_stable_id": "mat_mismatch"}),
+            ("invalid_anchor_version", {"anchor_version": 2}),
+            ("boolean_anchor_version", {"anchor_version": True}),
+            ("zero_anchor_page", {"anchor_page": 0}),
+            ("negative_anchor_page", {"anchor_page": -2}),
+            ("boolean_anchor_page", {"anchor_page": True}),
+            ("string_anchor_page", {"anchor_page": "2"}),
+            ("float_anchor_page", {"anchor_page": 2.5}),
+            ("page_without_material", {"anchor_material_stable_id": ""}),
+            ("material_without_page", {"anchor_page": None}),
+        ]
+        for case_name, changes in negative_anchor_cases:
+            def mutate_anchor(payload, changes=changes):
+                record = next(record for record in payload["records"] if record.get("anchor_page"))
+                record.update(changes)
+            mutated = mutate_backup_dataset(server, archive_path, "data/notes.json", mutate_anchor)
+            check(f"backup_{case_name}_rejected", rejected_archive(server, mutated), failures)
+
+        def strip_anchor_fields(payload):
+            for record in payload["records"]:
+                for key in ("anchor_version", "anchor_page", "anchor_material_stable_id", "anchor_version_stable_id"):
+                    record.pop(key, None)
+        legacy_path = mutate_backup_dataset(server, archive_path, "data/notes.json", strip_anchor_fields)
+        check("legacy_archive_without_anchor_fields_valid", not rejected_archive(server, legacy_path), failures)
+
+        # Full restore round-trip with exact anchor metadata and Undo evidence.
+        target, tconn, restore_tmp = prepare_target("restore", pdf.read_bytes())
+        target_file = tconn.execute(
+            "SELECT id, course_id, week_label FROM files WHERE filename='notes.pdf'"
+        ).fetchone()
+        target_file_id = int(target_file["id"])
+        target_material, target_version = target.note_anchor_for_file(tconn, target_file_id)
+
+        page_one_record = next(record for record in records if record.get("anchor_page") == 1)
+        tconn.execute(
+            "INSERT INTO notes(target_type, target_id, course_id, week_label, body, created_at, updated_at, anchor_version, anchor_page, anchor_material_stable_id, anchor_version_stable_id) VALUES ('file', ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
+            (
+                target_file_id,
+                target_file["course_id"],
+                target_file["week_label"],
+                page_one_record["body"],
+                page_one_record["created_at"],
+                "2020-01-01T00:00:00+00:00",
+                2,
+                target_material,
+                target_version,
+            ),
+        )
+        tconn.execute(
+            "INSERT INTO notes(target_type, target_id, course_id, week_label, body, created_at, updated_at, anchor_version, anchor_page, anchor_material_stable_id, anchor_version_stable_id) VALUES ('file', ?, ?, ?, 'Target local note', '2019-01-01T00:00:00+00:00', '2019-01-01T00:00:00+00:00', 1, NULL, '', '')",
+            (target_file_id, target_file["course_id"], target_file["week_label"]),
+        )
+        tconn.commit()
+        prior_notes = notes_snapshot(tconn)
+
+        restore_id = "b" * 32
+        stage_restore(target, archive_path, restore_id)
         plan = target.preview_staged_restore(restore_id)
-        def decisions_for(plan):
-            result = []
-            for section in plan.get("sections", []):
-                for action in section.get("actions", []):
-                    classification = action.get("classification")
-                    if classification == "CONFLICT":
-                        decision = "KEEP_LOCAL"
-                    elif classification in {"RELINK_REQUIRED", "UNRESOLVED_REFERENCE", "UNSUPPORTED_BY_V1"}:
-                        decision = "SKIP"
-                    else:
-                        continue
-                    result.append({"dataset": action["dataset"], "stable_id": action["stable_id"], "decision": decision})
-            return result
-        result = target.apply_staged_restore(restore_id, plan["plan_revision"], decisions_for(plan))
-        check("restore_apply_succeeds", result.get("ok") is True or "applied" in result, failures)
-        tconn = target.connect_db()
-        target.init_db(tconn)
-        restored_file = tconn.execute("SELECT id FROM files WHERE filename='notes.pdf'").fetchone()
-        if restored_file:
-            restored = target.StudyHubHandler.handle_notes_get(None, tconn, {"targetType": ["file"], "targetId": [str(restored_file["id"])]})
-            check("restore_preserves_anchor_metadata", any(n.get("anchor_page") for n in restored), failures)
-            check("restore_preserves_unanchored_note", any(n.get("anchor_page") is None for n in restored), failures)
-        else:
-            check("restore_preserves_anchor_metadata", False, failures)
-            check("restore_preserves_unanchored_note", False, failures)
+        result = target.apply_staged_restore(
+            restore_id, plan["plan_revision"], decisions_for_notes_restore(plan)
+        )
+        check(
+            "restore_apply_succeeds",
+            result.get("ok") is True and bool(result.get("applied", {}).get("restore_operation_id")),
+            failures,
+        )
+        operation_id = result["applied"]["restore_operation_id"]
+
+        restored = target.StudyHubHandler.handle_notes_get(
+            None, tconn, {"targetType": ["file"], "targetId": [str(target_file_id)]}
+        )
+        restored_by_page = {note["anchor_page"]: note for note in restored if note["anchor_page"]}
+        check("restore_preserves_exact_anchor_pages", set(restored_by_page) == {1, 3}, failures)
+        current_material, current_version = target.note_anchor_for_file(tconn, target_file_id)
+        check(
+            "restore_preserves_exact_anchor_identities",
+            all(
+                note["anchor_material_stable_id"] == current_material
+                and note["anchor_version_stable_id"] == current_version
+                for note in restored_by_page.values()
+            ),
+            failures,
+        )
+        check(
+            "restore_anchored_notes_report_ok",
+            all(note["anchor_state"] == "ok" for note in restored_by_page.values()),
+            failures,
+        )
+        check(
+            "restore_preserves_unanchored_notes",
+            sum(1 for note in restored if note.get("anchor_page") is None) == 2,
+            failures,
+        )
+
+        undo_preview = target.preview_restore_undo(operation_id)
+        check("restore_undo_preview_available", undo_preview.get("undo_available") is True, failures)
+        undo_result = target.apply_restore_undo(operation_id, undo_preview["undo_revision"])
+        check(
+            "restore_undo_restores_exact_prior_notes",
+            undo_result.get("ok") is True and notes_snapshot(tconn) == prior_notes,
+            failures,
+        )
+        after_undo = target.StudyHubHandler.handle_notes_get(
+            None, tconn, {"targetType": ["file"], "targetId": [str(target_file_id)]}
+        )
+        check(
+            "restore_undo_preserves_local_anchored_note",
+            any(note["anchor_page"] == 2 and note["anchor_state"] == "ok" for note in after_undo),
+            failures,
+        )
         tconn.close()
         shutil.rmtree(restore_tmp, ignore_errors=True)
+
+        # Legacy archive round-trip without anchor metadata.
+        legacy_target, legacy_conn, legacy_tmp = prepare_target("legacy", pdf.read_bytes())
+        legacy_file = legacy_conn.execute("SELECT id FROM files WHERE filename='notes.pdf'").fetchone()
+        legacy_restore_id = "c" * 32
+        stage_restore(legacy_target, legacy_path, legacy_restore_id)
+        legacy_plan = legacy_target.preview_staged_restore(legacy_restore_id)
+        legacy_result = legacy_target.apply_staged_restore(
+            legacy_restore_id, legacy_plan["plan_revision"], decisions_for_notes_restore(legacy_plan)
+        )
+        check("legacy_archive_restore_succeeds", legacy_result.get("ok") is True, failures)
+        legacy_notes = legacy_target.StudyHubHandler.handle_notes_get(
+            None, legacy_conn, {"targetType": ["file"], "targetId": [str(legacy_file["id"])]}
+        )
+        check(
+            "legacy_archive_restores_unanchored_notes",
+            bool(legacy_notes) and all(note.get("anchor_page") is None for note in legacy_notes),
+            failures,
+        )
+        legacy_conn.close()
+        shutil.rmtree(legacy_tmp, ignore_errors=True)
 
     return 0 if not failures else 1
 

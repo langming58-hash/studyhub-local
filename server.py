@@ -5357,17 +5357,29 @@ def validate_backup_record_values(member: str, record: dict[str, Any]) -> None:
         if isinstance(anchor_version, bool) or not isinstance(anchor_version, int) or anchor_version not in {1}:
             raise ValueError("Backup note anchor version is invalid")
         anchor_page = record.get("anchor_page")
-        anchor_material = str(record.get("anchor_material_stable_id") or "")
-        anchor_version_stable = str(record.get("anchor_version_stable_id") or "")
+        anchor_material = record.get("anchor_material_stable_id")
+        anchor_version_stable = record.get("anchor_version_stable_id")
+        if anchor_material is None:
+            anchor_material = ""
+        if anchor_version_stable is None:
+            anchor_version_stable = ""
+        if not isinstance(anchor_material, str):
+            raise ValueError("Backup note anchor material identity is invalid")
+        if not isinstance(anchor_version_stable, str):
+            raise ValueError("Backup note anchor version identity is invalid")
+        if anchor_material:
+            validate_backup_stable_id(anchor_material)
+        if anchor_version_stable:
+            validate_backup_stable_id(anchor_version_stable)
         if anchor_page is not None:
             if isinstance(anchor_page, bool) or not isinstance(anchor_page, int) or anchor_page < 1 or anchor_page > 10000:
                 raise ValueError("Backup note anchor page is invalid")
-            if not anchor_material:
-                raise ValueError("Backup note anchor is missing its material identity")
+            if not anchor_material or not anchor_version_stable:
+                raise ValueError("Backup note anchor is inconsistent")
+            if anchor_material != record["target_ref"]:
+                raise ValueError("Backup note anchor material identity does not match its target")
         elif anchor_material or anchor_version_stable:
             raise ValueError("Backup note anchor is inconsistent")
-        if anchor_material and not anchor_version_stable:
-            raise ValueError("Backup note anchor is missing its version identity")
         return
 
     if member == "data/stars.json":
@@ -6940,7 +6952,11 @@ RESTORE_REVERSIBLE_ENTITY_SPECS = (
     ),
     RestoreReversibleEntitySpec(
         "note", "notes", "id",
-        ("id", "target_type", "target_id", "course_id", "week_label", "body", "created_at", "updated_at"),
+        (
+            "id", "target_type", "target_id", "course_id", "week_label", "body",
+            "created_at", "updated_at", "anchor_version", "anchor_page",
+            "anchor_material_stable_id", "anchor_version_stable_id",
+        ),
     ),
     RestoreReversibleEntitySpec(
         "star", "stars", "id", ("id", "target_type", "target_id", "created_at"),
@@ -9030,6 +9046,11 @@ def apply_restore_plan(
         file_id = resolved_file_ids[str(record["target_ref"])]
         file_row = conn.execute("SELECT course_id, week_label FROM files WHERE id=?", (file_id,)).fetchone()
         require_restore_dependency(file_row is not None)
+        anchor_material, anchor_version = str(record.get("anchor_material_stable_id") or ""), str(record.get("anchor_version_stable_id") or "")
+        if record.get("anchor_page") is not None:
+            resolved_material, resolved_version = note_anchor_for_file(conn, file_id)
+            if resolved_material:
+                anchor_material, anchor_version = resolved_material, resolved_version
         conn.execute(
             "INSERT INTO notes(target_type, target_id, course_id, week_label, body, created_at, updated_at, anchor_version, anchor_page, anchor_material_stable_id, anchor_version_stable_id) VALUES ('file', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
@@ -9041,8 +9062,8 @@ def apply_restore_plan(
                 record["updated_at"],
                 int(record.get("anchor_version") or 1),
                 record.get("anchor_page"),
-                str(record.get("anchor_material_stable_id") or ""),
-                str(record.get("anchor_version_stable_id") or ""),
+                anchor_material,
+                anchor_version,
             ),
         )
         created += 1
@@ -9053,6 +9074,13 @@ def apply_restore_plan(
         if not selected_for_backup("notes", stable_id):
             continue
         target_id = backup_target("notes", stable_id, "note")
+        anchor_material, anchor_version = str(record.get("anchor_material_stable_id") or ""), str(record.get("anchor_version_stable_id") or "")
+        if record.get("anchor_page") is not None:
+            note_file = conn.execute("SELECT target_id FROM notes WHERE id=?", (target_id,)).fetchone()
+            if note_file and note_file["target_id"]:
+                resolved_material, resolved_version = note_anchor_for_file(conn, int(note_file["target_id"]))
+                if resolved_material:
+                    anchor_material, anchor_version = resolved_material, resolved_version
         conn.execute(
             "UPDATE notes SET body=?, updated_at=?, anchor_version=?, anchor_page=?, anchor_material_stable_id=?, anchor_version_stable_id=? WHERE id=?",
             (
@@ -9060,8 +9088,8 @@ def apply_restore_plan(
                 record["updated_at"],
                 int(record.get("anchor_version") or 1),
                 record.get("anchor_page"),
-                str(record.get("anchor_material_stable_id") or ""),
-                str(record.get("anchor_version_stable_id") or ""),
+                anchor_material,
+                anchor_version,
                 target_id,
             ),
         )

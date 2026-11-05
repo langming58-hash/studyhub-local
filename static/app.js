@@ -2445,6 +2445,7 @@ async function openFileDrawer(fileId, page = 0, options = {}) {
     <div><span>${escapeHtml(t("common.source"))}</span><strong>${escapeHtml(file.source_label || file.source || t("file.local"))}</strong></div>
   `;
   $("#extractedText").textContent = file.extractedText || t("file.noReadableText");
+  currentReaderPage = Math.max(1, Number(page || 1));
   await window.StudyHubReader.open({
     fileId: file.id,
     page: page || 1,
@@ -2457,7 +2458,6 @@ async function openFileDrawer(fileId, page = 0, options = {}) {
   $("#askResponse").textContent = "";
   $("#askPrompt").value = "";
   $("#noteBody").value = "";
-  currentReaderPage = 1;
   await loadFileNotes(file.id);
   $("#fileDrawer").hidden = false;
   const savedWidth = localStorage.getItem("studyhub.previewWidth");
