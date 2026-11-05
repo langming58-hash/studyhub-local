@@ -5353,6 +5353,21 @@ def validate_backup_record_values(member: str, record: dict[str, Any]) -> None:
         validate_backup_text(record["body"], limit=BACKUP_NOTE_BODY_MAX, multiline=True)
         validate_backup_timestamp(record["created_at"])
         validate_backup_timestamp(record["updated_at"])
+        anchor_version = record.get("anchor_version", 1)
+        if isinstance(anchor_version, bool) or not isinstance(anchor_version, int) or anchor_version not in {1}:
+            raise ValueError("Backup note anchor version is invalid")
+        anchor_page = record.get("anchor_page")
+        anchor_material = str(record.get("anchor_material_stable_id") or "")
+        anchor_version_stable = str(record.get("anchor_version_stable_id") or "")
+        if anchor_page is not None:
+            if isinstance(anchor_page, bool) or not isinstance(anchor_page, int) or anchor_page < 1 or anchor_page > 10000:
+                raise ValueError("Backup note anchor page is invalid")
+            if not anchor_material:
+                raise ValueError("Backup note anchor is missing its material identity")
+        elif anchor_material or anchor_version_stable:
+            raise ValueError("Backup note anchor is inconsistent")
+        if anchor_material and not anchor_version_stable:
+            raise ValueError("Backup note anchor is missing its version identity")
         return
 
     if member == "data/stars.json":
@@ -14287,7 +14302,9 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 note["anchor_state"] = "unset"
             elif anchor_material != current_material:
                 note["anchor_state"] = "missing"
-            elif current_version and anchor_version != current_version:
+            elif not current_version:
+                note["anchor_state"] = "missing"
+            elif anchor_version != current_version:
                 note["anchor_state"] = "stale"
             else:
                 note["anchor_state"] = "ok"
@@ -14736,12 +14753,24 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 raise ValueError("Note body is required")
             anchor_page = body.get("anchorPage")
             if anchor_page is not None:
-                anchor_page = int(anchor_page)
+                if isinstance(anchor_page, bool) or not isinstance(anchor_page, int):
+                    raise ValueError("Page number must be a whole number")
                 if anchor_page < 1 or anchor_page > 10000:
                     raise ValueError("Page number is out of range")
+                page_count = body.get("pageCount")
+                if page_count is not None:
+                    if isinstance(page_count, bool) or not isinstance(page_count, int):
+                        raise ValueError("Page count must be a whole number")
+                    if page_count < 1 or page_count > 10000:
+                        raise ValueError("Page count is out of range")
+                    if anchor_page > page_count:
+                        raise ValueError("Page number exceeds the file page count")
             else:
                 anchor_page = None
-            material_stable_id, version_stable_id = note_anchor_for_file(conn, target_id)
+            if anchor_page is not None:
+                material_stable_id, version_stable_id = note_anchor_for_file(conn, target_id)
+            else:
+                material_stable_id, version_stable_id = "", ""
             conn.execute(
                 "INSERT INTO notes(target_type, target_id, course_id, week_label, body, created_at, updated_at, anchor_version, anchor_page, anchor_material_stable_id, anchor_version_stable_id) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
                 (

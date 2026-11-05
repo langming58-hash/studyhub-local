@@ -2457,6 +2457,7 @@ async function openFileDrawer(fileId, page = 0, options = {}) {
   $("#askResponse").textContent = "";
   $("#askPrompt").value = "";
   $("#noteBody").value = "";
+  currentReaderPage = 1;
   await loadFileNotes(file.id);
   $("#fileDrawer").hidden = false;
   const savedWidth = localStorage.getItem("studyhub.previewWidth");
@@ -2512,7 +2513,11 @@ async function saveNote() {
     toast(t("file.writeNote"));
     return;
   }
-  const isPdf = String(state.selectedFile.extension || state.selectedFile.mime_type || "").toLowerCase() === "pdf";
+  const anchor = window.StudyHubNotesUI?.noteAnchorPayload(
+    state.selectedFile,
+    currentReaderPage,
+    window.StudyHubReader?.pdf?.numPages,
+  ) || {};
   await api("/api/notes", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2522,7 +2527,7 @@ async function saveNote() {
       courseId: state.selectedFile.course_id,
       week: state.selectedFile.week_label,
       body,
-      ...(isPdf ? { anchorPage: currentReaderPage } : {}),
+      ...anchor,
     }),
   });
   $("#noteBody").value = "";
