@@ -96,6 +96,8 @@ const PUBLIC_LINKS = Object.freeze({
 let restoringRoute = false;
 let appLoaded = false;
 let currentReaderPage = 1;
+let reviewCardSession = { queue: [], index: 0, reveal: false, busy: false };
+const noteCardSource = new Map();
 
 function desktopInvoke(command, args = {}) {
   const invoke = window.__TAURI__?.core?.invoke;
@@ -142,6 +144,7 @@ function routeFromLocation() {
   if (parts[0] === "week" && parts[1] && parts[2]) return { view: "week", courseId: Number(parts[1]), week: parts[2] };
   if (parts[0] === "file" && parts[1]) return { view: "file", fileId: Number(parts[1]), page: Number(parts[2] || 0) };
   if (parts[0] === "study") return { view: "study", mode: parts[1] || "overview" };
+  if (parts[0] === "review-cards") return { view: "review-cards" };
   if (parts[0] === "whats-new") return { view: "whats-new" };
   if (["home", "courses", "today", "search", "ai", "settings"].includes(parts[0])) return { view: parts[0] };
   return { view: "home" };
@@ -155,6 +158,7 @@ async function restoreRouteFromLocation() {
     if (next.view === "week" && next.courseId && next.week) return await renderWeek(next.courseId, next.week);
     if (next.view === "file" && next.fileId) return await route("file", { fileId: next.fileId, page: next.page, history: false });
     if (next.view === "study") return await renderStudy(next.mode || "practice");
+    if (next.view === "review-cards") return await renderReviewCards();
     return await route(next.view || "home", { history: false });
   } finally {
     restoringRoute = false;
@@ -1635,12 +1639,19 @@ function studyRollup(row, label) {
 async function studyOverviewPanel() {
   const data = await api("/api/study/overview");
   const summary = data.summary || {};
+  const cards = data.cards || { due: 0, total: 0 };
   return `
     <section class="study-summary-grid" aria-label="${escapeHtml(t("study.overview"))}">
       <div><strong>${summary.in_progress || 0}</strong><span>${escapeHtml(t("study.continue"))}</span></div>
       <div><strong>${summary.review_due || 0}</strong><span>${escapeHtml(t("study.due"))}</span></div>
       <div><strong>${summary.needs_review || 0}</strong><span>${escapeHtml(t("study.needsReview"))}</span></div>
       <div><strong>${summary.completed || 0}/${summary.total || 0}</strong><span>${escapeHtml(t("study.completed"))}</span></div>
+    </section>
+    <section class="section-block quiet-section">
+      <div class="section-head">
+        <div><p class="eyebrow">${escapeHtml(t("cards.eyebrow"))}</p><h2>${escapeHtml(t("cards.title"))}</h2></div>
+        <button class="button secondary" data-review-cards-open="1">${escapeHtml(t("cards.reviewNow"))} (${cards.due || 0})</button>
+      </div>
     </section>
     <section class="section-block quiet-section">
       <div class="section-head"><div><p class="eyebrow">${escapeHtml(t("study.nextEyebrow"))}</p><h2>${escapeHtml(t("study.next"))}</h2></div></div>
@@ -2416,7 +2427,8 @@ async function route(viewName = state.view, options = {}) {
   state.view = viewName;
   if (viewName === "study" && options.mode) state.studyMode = options.mode;
   if (options.history !== false) recordRoute({ view: viewName, mode: viewName === "study" ? state.studyMode : undefined }, options.replace);
-  document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === (viewName === "whats-new" ? "home" : viewName)));
+  const navTarget = viewName === "whats-new" ? "home" : viewName === "review-cards" ? "study" : viewName;
+  document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === navTarget));
   if (viewName === "home") return renderHome();
   if (viewName === "whats-new") return renderWhatsNew();
   if (viewName === "courses") return renderCourses();
@@ -2424,6 +2436,7 @@ async function route(viewName = state.view, options = {}) {
   if (viewName === "search") return renderSearch();
   if (viewName === "ai") return renderAskGpt();
   if (viewName === "study") return renderStudy();
+  if (viewName === "review-cards") return renderReviewCards();
   if (viewName === "settings") return renderSettings();
 }
 
@@ -2459,6 +2472,7 @@ async function openFileDrawer(fileId, page = 0, options = {}) {
   $("#askPrompt").value = "";
   $("#noteBody").value = "";
   await loadFileNotes(file.id);
+  await loadFileCards(file.id);
   $("#fileDrawer").hidden = false;
   const savedWidth = localStorage.getItem("studyhub.previewWidth");
   if (savedWidth) document.querySelector(".drawer-panel").style.setProperty("--studyhub-preview-width", savedWidth);
@@ -2487,6 +2501,8 @@ async function updateStudyState(fileId, payload) {
 
 async function loadFileNotes(fileId) {
   const notes = await api(`/api/notes?targetType=file&targetId=${fileId}`);
+  noteCardSource.clear();
+  for (const note of notes) noteCardSource.set(Number(note.id), note);
   $("#fileNotes").innerHTML = notes.length
     ? notes.map(noteCard).join("")
     : `<div class="notice compact">${escapeHtml(t("file.noNotes"))}</div>`;
@@ -2502,6 +2518,7 @@ function noteCard(note) {
     <article class="note-card">
       <div class="chips"><span class="chip">${escapeHtml(t("file.userNote"))}</span>${anchor}<span class="chip">${escapeHtml(note.updated_at || "")}</span></div>
       <p>${escapeHtml(note.body)}</p>
+      <div class="note-card-actions"><button class="button secondary compact" type="button" data-note-card="${Number(note.id)}">${escapeHtml(t("cards.createFromNote"))}</button></div>
     </article>
   `;
 }
@@ -2533,6 +2550,132 @@ async function saveNote() {
   $("#noteBody").value = "";
   await loadFileNotes(state.selectedFile.id);
   toast(t("file.noteSaved"));
+}
+
+function reviewCardAnchorChip(card) {
+  return window.StudyHubReviewCardsUI?.anchorChip(card, t, escapeHtml) || "";
+}
+
+async function loadFileCards(fileId) {
+  const cards = await api(`/api/review-cards?fileId=${fileId}&includeArchived=1`);
+  const list = $("#fileCards");
+  if (!list) return;
+  list.innerHTML = cards.length
+    ? cards.map((card) => `
+        <article class="note-card">
+          <div class="chips"><span class="chip">${escapeHtml(t("cards.cards"))}</span>${reviewCardAnchorChip(card)}<span class="chip">${escapeHtml(card.updated_at || "")}</span></div>
+          <p><strong>${escapeHtml(card.front)}</strong>${card.back ? `<span class="muted">${escapeHtml(card.back)}</span>` : ""}</p>
+          <div class="note-card-actions">
+            <button class="button secondary compact" type="button" data-card-edit="${Number(card.id)}">${escapeHtml(t("cards.edit"))}</button>
+            <button class="button secondary compact" type="button" data-card-archive="${Number(card.id)}" data-card-archived="${Number(card.archived)}">${escapeHtml(card.archived ? t("cards.restore") : t("cards.archive"))}</button>
+          </div>
+        </article>`).join("")
+    : `<div class="notice compact">${escapeHtml(t("cards.empty"))}</div>`;
+}
+
+function openReviewCardDialog({ materialId = 0, noteId = 0, card = null } = {}) {
+  const dialog = $("#reviewCardDialog");
+  if (!dialog) return;
+  $("#reviewCardMaterialId").value = card ? Number(card.file_id || materialId || 0) : Number(materialId || 0);
+  $("#reviewCardEditId").value = card ? Number(card.id) : "";
+  $("#reviewCardFront").value = card ? card.front : "";
+  $("#reviewCardBack").value = card ? card.back : "";
+  $("#reviewCardAnchorPage").value = card ? Number(card.anchor_page || 0) : "";
+  if (!card && noteId) {
+    const note = noteCardSource.get(Number(noteId));
+    if (note) {
+      $("#reviewCardFront").value = "";
+      $("#reviewCardBack").value = note.body || "";
+      $("#reviewCardMaterialId").value = state.selectedFile?.id || 0;
+      $("#reviewCardAnchorPage").value = note.anchor_state === "ok" ? Number(note.anchor_page || 0) : "";
+    }
+  }
+  if (!card && !noteId && state.selectedFile) {
+    $("#reviewCardMaterialId").value = state.selectedFile.id;
+  }
+  dialog.showModal();
+}
+
+async function saveReviewCard() {
+  const dialog = $("#reviewCardDialog");
+  const materialId = Number($("#reviewCardMaterialId").value || 0);
+  const editId = $("#reviewCardEditId").value;
+  const front = $("#reviewCardFront").value.trim();
+  const back = $("#reviewCardBack").value.trim();
+  const anchorPage = Number($("#reviewCardAnchorPage").value || 0);
+  if (!materialId || !front) {
+    toast(t("cards.question"));
+    return;
+  }
+  const payload = editId
+    ? { action: "update", id: Number(editId), front, back }
+    : { action: "create", fileId: materialId, front, back, ...(anchorPage >= 1 ? { anchorPage } : {}) };
+  await api("/api/review-cards", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (dialog?.open) dialog.close();
+  if (state.selectedFile) await loadFileCards(state.selectedFile.id);
+  toast(t("cards.cardSaved"));
+}
+
+async function setReviewCardArchived(cardId, archived) {
+  await api("/api/review-cards", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: archived ? "restore" : "archive", id: Number(cardId) }),
+  });
+  if (state.selectedFile) await loadFileCards(state.selectedFile.id);
+  toast(t("cards.cardArchived"));
+}
+
+async function renderReviewCards() {
+  setTitle(t("cards.title"), t("cards.eyebrow"));
+  await fetchReviewCardSession();
+  renderReviewCardView();
+}
+
+async function fetchReviewCardSession() {
+  reviewCardSession.queue = await api("/api/review-cards/queue");
+  reviewCardSession.index = 0;
+  reviewCardSession.reveal = false;
+  reviewCardSession.busy = false;
+}
+
+function renderReviewCardView() {
+  const card = reviewCardSession.queue[reviewCardSession.index];
+  const ui = window.StudyHubReviewCardsUI;
+  view.innerHTML = `
+    <section class="study-shell">
+      <section class="section-block quiet-section">
+        <div class="section-head">
+          <div><p class="eyebrow">${escapeHtml(t("cards.eyebrow"))}</p><h2>${escapeHtml(t("cards.title"))}</h2></div>
+          <button class="button secondary" data-view="study" data-study-mode="overview">${escapeHtml(t("study.overview"))}</button>
+        </div>
+        ${reviewCardSession.queue.length
+          ? `<div class="review-card-session">
+               <p class="muted">${escapeHtml(t("cards.dueCount", { count: reviewCardSession.queue.length }))}</p>
+               ${ui ? ui.cardViewHtml(card, reviewCardSession.reveal, t, escapeHtml) : ""}
+               ${reviewCardSession.reveal && ui ? ui.gradeBar(card, t, escapeHtml) : ""}
+             </div>`
+          : `<div class="notice">${escapeHtml(t("cards.emptyQueue"))}</div>`}
+      </section>
+    </section>
+  `;
+}
+
+async function gradeReviewCard(cardId, grade) {
+  if (reviewCardSession.busy) return;
+  reviewCardSession.busy = true;
+  await api("/api/review-cards", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "review", id: Number(cardId), grade }),
+  });
+  await fetchReviewCardSession();
+  renderReviewCardView();
+  reviewCardSession.busy = false;
 }
 
 async function openAskForFile(fileId, prompt = "") {
@@ -3518,6 +3661,47 @@ document.addEventListener("click", async (event) => {
     if (page >= 1 && window.StudyHubReader?.goToPage) {
       window.StudyHubReader.goToPage(page);
     }
+    return;
+  }
+  if (target.dataset.noteCard) {
+    openReviewCardDialog({ materialId: state.selectedFile?.id, noteId: Number(target.dataset.noteCard) });
+    return;
+  }
+  if (target.id === "newReviewCard") {
+    openReviewCardDialog({ materialId: state.selectedFile?.id });
+    return;
+  }
+  if (target.id === "reviewCardSubmit") {
+    await saveReviewCard();
+    return;
+  }
+  if (target.dataset.cardReveal) {
+    reviewCardSession.reveal = true;
+    renderReviewCardView();
+    return;
+  }
+  if (target.dataset.cardGrade) {
+    await gradeReviewCard(Number(target.dataset.cardGrade), target.dataset.grade);
+    return;
+  }
+  if (target.dataset.cardSource) {
+    const fileId = Number(target.dataset.cardSourceFile || 0);
+    const page = Number(target.dataset.cardSourcePage || 0);
+    if (fileId && page >= 1) await route("file", { fileId, page });
+    return;
+  }
+  if (target.dataset.cardEdit) {
+    const cards = await api(`/api/review-cards?fileId=${state.selectedFile?.id || 0}&includeArchived=1`);
+    const card = cards.find((item) => Number(item.id) === Number(target.dataset.cardEdit));
+    openReviewCardDialog({ materialId: state.selectedFile?.id, card });
+    return;
+  }
+  if (target.dataset.cardArchive) {
+    await setReviewCardArchived(Number(target.dataset.cardArchive), target.dataset.cardArchived === "1");
+    return;
+  }
+  if (target.dataset.reviewCardsOpen) {
+    await route("review-cards");
     return;
   }
   if (target.dataset.view) return route(target.dataset.view);

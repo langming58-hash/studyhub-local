@@ -93,6 +93,9 @@
             <div id="fileNotes" class="notes-list"></div>
             <textarea id="noteBody" data-i18n-placeholder="file.notePlaceholder" placeholder="Add a private note for this file."></textarea>
             <button id="saveNote" class="button secondary full" data-i18n="file.saveNote">Save Note</button>
+            <h3 data-i18n="cards.title">Review cards</h3>
+            <div id="fileCards" class="notes-list"></div>
+            <button id="newReviewCard" class="button secondary full" data-i18n="cards.new">New review card</button>
             <h3 data-i18n="settings.askAi">Ask AI</h3>
             <textarea id="askPrompt" data-i18n-placeholder="file.askPlaceholder" placeholder="Ask about this selected file."></textarea>
             <button id="askBtn" class="button secondary full" data-i18n="courses.askAi">Ask AI</button>
@@ -179,6 +182,24 @@
       </form>
     </dialog>
 
+    <dialog id="reviewCardDialog">
+      <form method="dialog" class="dialog-form" id="reviewCardForm">
+        <div class="drawer-head">
+          <div><p class="eyebrow" data-i18n="cards.eyebrow">Manual review cards</p><h2 data-i18n="cards.new">New review card</h2></div>
+          <button class="icon-button" value="cancel" data-i18n-aria-label="common.close" aria-label="Close">×</button>
+        </div>
+        <input type="hidden" id="reviewCardMaterialId" />
+        <input type="hidden" id="reviewCardEditId" />
+        <input type="hidden" id="reviewCardAnchorPage" />
+        <label><span data-i18n="cards.question">Question</span> <textarea id="reviewCardFront" rows="2" maxlength="4000" required data-i18n-placeholder="cards.questionPlaceholder" placeholder="Write your own question."></textarea></label>
+        <label><span data-i18n="cards.answer">Answer</span> <textarea id="reviewCardBack" rows="4" maxlength="20000" data-i18n-placeholder="cards.answerPlaceholder" placeholder="Write the answer you want to recall."></textarea></label>
+        <menu>
+          <button value="cancel" class="button secondary" data-i18n="common.cancel">Cancel</button>
+          <button id="reviewCardSubmit" value="default" class="button primary" data-i18n="cards.saveCard">Save card</button>
+        </menu>
+      </form>
+    </dialog>
+
     <div id="historyDrawer" class="history-drawer" hidden>
       <div class="history-panel">
         <div class="drawer-head">
@@ -211,6 +232,7 @@
     <script src="/canvas-ui.js"></script>
     <script src="/today-ui.js"></script>
     <script src="/notes-ui.js"></script>
+    <script src="/review-cards-ui.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

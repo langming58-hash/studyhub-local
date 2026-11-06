@@ -102,7 +102,9 @@ The v2 projection includes only allowlisted fields:
 - user material presentation/classification overlays
 - safe descriptors for local user-owned sources
 - notes, stars, bookmarks, attempts, wrong-question state, study sessions, and
-  per-Material Study Engine progress/review state
+  per-Material Study Engine progress/review state, plus user-authored manual
+  review cards (question/answer, optional source-page anchor, and independent
+  portable FSRS fields)
 - What's New acknowledgements keyed by academic-event stable identity
 
 Canvas compatibility courses are included only when they carry an explicit
@@ -285,7 +287,8 @@ target state, or inspected source candidate fails closed and rolls back.
 Safe `CREATE`, `UPDATE_USER_STATE`, and explicitly selected `RESTORE_BACKUP`
 actions restore allowlisted versioned terms,
 local courses, managed learning units, material overlays on resolved Materials,
-notes, stars, attempts, wrong-question state, study sessions, bookmarks, and
+notes, stars, attempts, wrong-question state, study sessions, bookmarks,
+manual review cards, and
 acknowledgement of an existing identical academic-change event. Multiset records
 restore exact missing multiplicity, and private deterministic conflict targeting
 updates only the recomputed matching row. No SQLite row ID enters the backup,

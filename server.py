@@ -227,6 +227,8 @@ BACKUP_MATERIAL_TYPE_MAX = 40
 BACKUP_CATEGORY_MAX = 80
 BACKUP_EXERCISE_TYPE_MAX = 80
 BACKUP_NOTE_BODY_MAX = 10_000
+BACKUP_CARD_FRONT_MAX = 4_000
+BACKUP_CARD_BACK_MAX = 20_000
 BACKUP_ANSWER_TEXT_MAX = 20_000
 BACKUP_RESULT_MAX = 120
 BACKUP_QUESTION_REF_MAX = 240
@@ -308,6 +310,7 @@ RESTORE_CHANGE_ENTITY_KINDS = (
     "bookmark",
     "study_session",
     "material_study_state",
+    "review_card",
     "academic_change_event_state",
     "text_cache_artifact",
 )
@@ -2987,6 +2990,38 @@ def phase4_source_anchored_notes_migration(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE notes ADD COLUMN {name} {ddl}")
 
 
+def phase4_manual_review_cards_migration(conn: sqlite3.Connection) -> None:
+    upgrade_restore_operation_changes_entity_kinds(conn)
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS review_cards (
+          id INTEGER PRIMARY KEY,
+          stable_id TEXT NOT NULL UNIQUE,
+          material_id INTEGER NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+          front TEXT NOT NULL,
+          back TEXT NOT NULL DEFAULT '',
+          anchor_version INTEGER NOT NULL DEFAULT 1,
+          anchor_page INTEGER,
+          anchor_material_stable_id TEXT NOT NULL DEFAULT '',
+          anchor_version_stable_id TEXT NOT NULL DEFAULT '',
+          fsrs_state INTEGER CHECK(fsrs_state IS NULL OR fsrs_state IN (1, 2, 3)),
+          fsrs_step INTEGER,
+          fsrs_stability REAL,
+          fsrs_difficulty REAL,
+          fsrs_due_at TEXT,
+          fsrs_last_review_at TEXT,
+          archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0, 1)),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_review_cards_queue ON review_cards(archived, fsrs_due_at, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_review_cards_material ON review_cards(material_id)",
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+
 SCHEMA_MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "phase1_domain_foundation", phase1_domain_foundation_migration),
     (2, "phase2_canvas_course_selection", phase2_canvas_course_selection_migration),
@@ -2997,6 +3032,7 @@ SCHEMA_MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], 
     (7, "phase3_study_engine", phase3_study_engine_migration),
     (8, "phase3_academic_events", phase3_academic_events_migration),
     (9, "phase4_source_anchored_notes", phase4_source_anchored_notes_migration),
+    (10, "phase4_manual_review_cards", phase4_manual_review_cards_migration),
 )
 
 
@@ -5130,6 +5166,42 @@ def project_user_owned_backup(
                 "material_study_state",
                 int(row["material_id"]),
             )
+    for row in conn.execute(
+        """
+        SELECT card.*, material.stable_id AS material_ref
+        FROM review_cards card
+        JOIN materials material ON material.id=card.material_id
+        ORDER BY card.stable_id
+        """
+    ).fetchall():
+        stable_id = str(row["stable_id"])
+        study_records.append(
+            {
+                "stable_id": stable_id,
+                "record_type": "review_card",
+                "material_ref": str(row["material_ref"]),
+                "front": safe_backup_text(row["front"], limit=BACKUP_CARD_FRONT_MAX),
+                "back": safe_backup_text(row["back"], limit=BACKUP_CARD_BACK_MAX),
+                "anchor_version": int(row_value(row, "anchor_version", 1) or 1),
+                "anchor_page": row_value(row, "anchor_page", None),
+                "anchor_material_stable_id": str(row_value(row, "anchor_material_stable_id", "") or ""),
+                "anchor_version_stable_id": str(row_value(row, "anchor_version_stable_id", "") or ""),
+                "fsrs_state": row["fsrs_state"],
+                "fsrs_step": row["fsrs_step"],
+                "fsrs_stability": row["fsrs_stability"],
+                "fsrs_difficulty": row["fsrs_difficulty"],
+                "fsrs_due_at": row["fsrs_due_at"],
+                "fsrs_last_review_at": row["fsrs_last_review_at"],
+                "archived": bool(row["archived"]),
+                "created_at": str(row["created_at"]),
+                "updated_at": str(row["updated_at"]),
+            }
+        )
+        if private_targets is not None:
+            private_targets[("study_records", stable_id)] = (
+                "review_card",
+                int(row["id"]),
+            )
     datasets["data/study_records.json"] = study_records
 
     # Current AI rows have no portable immutable identity; v1 keeps the member empty.
@@ -5218,6 +5290,12 @@ BACKUP_STUDY_RECORD_FIELDS: dict[str, set[str]] = {
         "first_started_at", "completed_at", "last_studied_at", "fsrs_state", "fsrs_step",
         "fsrs_stability", "fsrs_difficulty", "fsrs_due_at", "fsrs_last_review_at",
         "created_at", "updated_at",
+    },
+    "review_card": {
+        "stable_id", "record_type", "material_ref", "front", "back",
+        "anchor_version", "anchor_page", "anchor_material_stable_id", "anchor_version_stable_id",
+        "fsrs_state", "fsrs_step", "fsrs_stability", "fsrs_difficulty",
+        "fsrs_due_at", "fsrs_last_review_at", "archived", "created_at", "updated_at",
     },
 }
 
@@ -5415,6 +5493,35 @@ def validate_backup_record_values(member: str, record: dict[str, Any]) -> None:
         validate_backup_int(record["fsrs_step"], nullable=True, maximum=1_000_000)
         validate_backup_number(record["fsrs_stability"], nullable=True)
         validate_backup_number(record["fsrs_difficulty"], nullable=True)
+        validate_backup_timestamp(record["created_at"])
+        validate_backup_timestamp(record["updated_at"])
+    elif record_type == "review_card":
+        validate_backup_stable_id(record["material_ref"])
+        validate_backup_text(record["front"], limit=BACKUP_CARD_FRONT_MAX, multiline=True, allow_empty=False)
+        validate_backup_text(record["back"], limit=BACKUP_CARD_BACK_MAX, multiline=True)
+        if isinstance(record["anchor_version"], bool) or not isinstance(record["anchor_version"], int) or record["anchor_version"] != 1:
+            raise ValueError("Backup review card anchor version is invalid")
+        anchor_page = record["anchor_page"]
+        anchor_material = record["anchor_material_stable_id"]
+        anchor_version_stable = record["anchor_version_stable_id"]
+        if not isinstance(anchor_material, str) or not isinstance(anchor_version_stable, str):
+            raise ValueError("Backup review card anchor identity is invalid")
+        if anchor_page is not None:
+            if isinstance(anchor_page, bool) or not isinstance(anchor_page, int) or anchor_page < 1 or anchor_page > 10000:
+                raise ValueError("Backup review card anchor page is invalid")
+            if not anchor_material or not anchor_version_stable:
+                raise ValueError("Backup review card anchor is inconsistent")
+        elif anchor_material or anchor_version_stable:
+            raise ValueError("Backup review card anchor is inconsistent")
+        if anchor_material:
+            validate_backup_stable_id(anchor_material)
+        if anchor_version_stable:
+            validate_backup_stable_id(anchor_version_stable)
+        validate_backup_int(record["fsrs_state"], nullable=True, minimum=1, maximum=3)
+        validate_backup_int(record["fsrs_step"], nullable=True, maximum=1_000_000)
+        validate_backup_number(record["fsrs_stability"], nullable=True)
+        validate_backup_number(record["fsrs_difficulty"], nullable=True)
+        validate_backup_bool(record["archived"])
         validate_backup_timestamp(record["created_at"])
         validate_backup_timestamp(record["updated_at"])
     elif record_type == "attempt":
@@ -6468,6 +6575,47 @@ def plan_restore_state(
             )
         )
 
+    current_cards = {
+        str(record["stable_id"]): record
+        for record in current_study
+        if record["record_type"] == "review_card"
+    }
+    card_fields = (
+        "material_ref", "front", "back", "anchor_version", "anchor_page",
+        "anchor_material_stable_id", "anchor_version_stable_id",
+        "fsrs_state", "fsrs_step", "fsrs_stability", "fsrs_difficulty",
+        "fsrs_due_at", "fsrs_last_review_at", "archived",
+    )
+    for record in [
+        item for item in backup_study if item["record_type"] == "review_card"
+    ]:
+        backup_ref = str(record["material_ref"])
+        resolved_ref = material_resolution.get(backup_ref)
+        local = current_cards.get(str(record["stable_id"]))
+        if not resolved_ref:
+            classification, differing = material_failure.get(backup_ref, "UNRESOLVED_REFERENCE"), []
+        elif local is None:
+            classification, differing = "CREATE", []
+        else:
+            normalized = dict(record)
+            normalized["material_ref"] = resolved_ref
+            differing = restore_differences(normalized, local, fields=card_fields)
+            classification = "NOOP" if not differing else "CONFLICT"
+        target_state_tokens[f"card:{record['stable_id']}"] = restore_record_state_token(
+            current_cards.get(str(record["stable_id"])) if resolved_ref else None,
+            fields=card_fields,
+        )
+        actions.append(
+            restore_action(
+                "study_records",
+                record,
+                classification,
+                label="Review card",
+                differing_fields=differing,
+                allow_backup_restore=bool(resolved_ref and local is not None),
+            )
+        )
+
     current_bookmarks = {
         str(record["target_ref"]): record
         for record in current_study
@@ -6984,6 +7132,15 @@ RESTORE_REVERSIBLE_ENTITY_SPECS = (
             "material_id", "progress_state", "needs_review", "first_started_at", "completed_at",
             "last_studied_at", "fsrs_state", "fsrs_step", "fsrs_stability", "fsrs_difficulty",
             "fsrs_due_at", "fsrs_last_review_at", "created_at", "updated_at",
+        ),
+    ),
+    RestoreReversibleEntitySpec(
+        "review_card", "review_cards", "id",
+        (
+            "id", "stable_id", "material_id", "front", "back",
+            "anchor_version", "anchor_page", "anchor_material_stable_id", "anchor_version_stable_id",
+            "fsrs_state", "fsrs_step", "fsrs_stability", "fsrs_difficulty",
+            "fsrs_due_at", "fsrs_last_review_at", "archived", "created_at", "updated_at",
         ),
     ),
     RestoreReversibleEntitySpec(
@@ -7679,6 +7836,9 @@ RESTORE_UNDO_DEPENDENCY_RULES = (
     RestoreUndoDependencyRule(
         "material", "material_study_state", "material_study_state", "material_id=?", ("id",),
         dependent_primary_key="material_id",
+    ),
+    RestoreUndoDependencyRule(
+        "material", "review_cards", "review_card", "material_id=?", ("id",)
     ),
     RestoreUndoDependencyRule(
         "source", "material_versions", "material_version", "source_id=?", ("id",)
@@ -8635,7 +8795,12 @@ def apply_restore_plan(
         for record in datasets["data/local_sources.json"]
     }
 
-    def resolve_restored_note_anchor(file_id: int, record: dict[str, Any]) -> tuple[str, str]:
+    def resolve_restored_anchor(
+        file_id: int,
+        record: dict[str, Any],
+        *,
+        source_ref_field: str = "target_ref",
+    ) -> tuple[str, str]:
         anchor_material = str(record.get("anchor_material_stable_id") or "")
         anchor_version = str(record.get("anchor_version_stable_id") or "")
         if record.get("anchor_page") is None:
@@ -8654,7 +8819,7 @@ def apply_restore_plan(
         dest_material = str(dest_row["material_stable_id"] or "") if dest_row else ""
         dest_version = str(dest_row["version_stable_id"] or "") if dest_row else ""
         dest_sha = str(dest_row["sha256"] or "") if dest_row else ""
-        source_material = str(record.get("target_ref") or "")
+        source_material = str(record.get(source_ref_field) or "")
         source_sha = source_sha_by_material.get(source_material, "")
         source_current_version = (
             domain_material_version_stable_id(source_material, source_sha) if source_sha else ""
@@ -9083,7 +9248,7 @@ def apply_restore_plan(
         file_id = resolved_file_ids[str(record["target_ref"])]
         file_row = conn.execute("SELECT course_id, week_label FROM files WHERE id=?", (file_id,)).fetchone()
         require_restore_dependency(file_row is not None)
-        anchor_material, anchor_version = resolve_restored_note_anchor(file_id, record)
+        anchor_material, anchor_version = resolve_restored_anchor(file_id, record)
         conn.execute(
             "INSERT INTO notes(target_type, target_id, course_id, week_label, body, created_at, updated_at, anchor_version, anchor_page, anchor_material_stable_id, anchor_version_stable_id) VALUES ('file', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
@@ -9109,7 +9274,7 @@ def apply_restore_plan(
         target_id = backup_target("notes", stable_id, "note")
         note_file = conn.execute("SELECT target_id FROM notes WHERE id=?", (target_id,)).fetchone()
         anchor_file_id = int(note_file["target_id"]) if note_file and note_file["target_id"] else 0
-        anchor_material, anchor_version = resolve_restored_note_anchor(anchor_file_id, record)
+        anchor_material, anchor_version = resolve_restored_anchor(anchor_file_id, record)
         conn.execute(
             "UPDATE notes SET body=?, updated_at=?, anchor_version=?, anchor_page=?, anchor_material_stable_id=?, anchor_version_stable_id=? WHERE id=?",
             (
@@ -9187,6 +9352,30 @@ def apply_restore_plan(
                     record["created_at"], record["updated_at"],
                 ),
             )
+        elif record_type == "review_card":
+            material_id = resolved_material_ids[str(record["material_ref"])]
+            file_id = resolved_file_ids[str(record["material_ref"])]
+            anchor_material, anchor_version = resolve_restored_anchor(
+                file_id, record, source_ref_field="material_ref"
+            )
+            conn.execute(
+                """
+                INSERT INTO review_cards(
+                  stable_id, material_id, front, back, anchor_version, anchor_page,
+                  anchor_material_stable_id, anchor_version_stable_id,
+                  fsrs_state, fsrs_step, fsrs_stability, fsrs_difficulty,
+                  fsrs_due_at, fsrs_last_review_at, archived, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record["stable_id"], material_id, record["front"], record["back"],
+                    int(record.get("anchor_version") or 1), record.get("anchor_page"),
+                    anchor_material, anchor_version,
+                    record["fsrs_state"], record["fsrs_step"], record["fsrs_stability"],
+                    record["fsrs_difficulty"], record["fsrs_due_at"], record["fsrs_last_review_at"],
+                    int(record["archived"]), record["created_at"], record["updated_at"],
+                ),
+            )
         elif record_type == "bookmark":
             conn.execute(
                 "INSERT INTO bookmarks(target_type, target_id, label, created_at) VALUES ('file', ?, ?, ?)",
@@ -9240,6 +9429,36 @@ def apply_restore_plan(
                     record["fsrs_state"], record["fsrs_step"], record["fsrs_stability"],
                     record["fsrs_difficulty"], record["fsrs_due_at"], record["fsrs_last_review_at"],
                     record["created_at"], record["updated_at"], target_id,
+                ),
+            )
+        elif record_type == "review_card":
+            target_id = backup_target("study_records", stable_id, "review_card")
+            card_row = conn.execute(
+                "SELECT material_id FROM review_cards WHERE id=?", (target_id,)
+            ).fetchone()
+            require_restore_dependency(
+                card_row is not None
+                and int(card_row["material_id"]) == resolved_material_ids[str(record["material_ref"])]
+            )
+            file_id = resolved_file_ids[str(record["material_ref"])]
+            anchor_material, anchor_version = resolve_restored_anchor(
+                file_id, record, source_ref_field="material_ref"
+            )
+            conn.execute(
+                """
+                UPDATE review_cards SET material_id=?, front=?, back=?, anchor_version=?,
+                  anchor_page=?, anchor_material_stable_id=?, anchor_version_stable_id=?,
+                  fsrs_state=?, fsrs_step=?, fsrs_stability=?, fsrs_difficulty=?,
+                  fsrs_due_at=?, fsrs_last_review_at=?, archived=?, created_at=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    resolved_material_ids[str(record["material_ref"])],
+                    record["front"], record["back"], int(record.get("anchor_version") or 1),
+                    record.get("anchor_page"), anchor_material, anchor_version,
+                    record["fsrs_state"], record["fsrs_step"], record["fsrs_stability"],
+                    record["fsrs_difficulty"], record["fsrs_due_at"], record["fsrs_last_review_at"],
+                    int(record["archived"]), record["created_at"], record["updated_at"], target_id,
                 ),
             )
         elif record_type == "bookmark":
@@ -11782,6 +12001,277 @@ def update_material_study_state(
     return {"ok": True, "file_id": file_id, **public_study_state(row)}
 
 
+def review_card_anchor_state(conn: sqlite3.Connection, row: sqlite3.Row | dict[str, Any]) -> str:
+    anchor_material = str(row_value(row, "anchor_material_stable_id") or "")
+    anchor_version = str(row_value(row, "anchor_version_stable_id") or "")
+    if not anchor_material or not row_value(row, "anchor_page"):
+        return "unset"
+    file_id = int(row_value(row, "legacy_file_id") or 0)
+    if not file_id and row_value(row, "material_id"):
+        material_row = conn.execute(
+            "SELECT legacy_file_id FROM materials WHERE id=?", (int(row_value(row, "material_id")),)
+        ).fetchone()
+        file_id = int(material_row["legacy_file_id"] or 0) if material_row else 0
+    if not file_id:
+        return "missing"
+    current_material, current_version = note_anchor_for_file(conn, file_id)
+    if anchor_material != current_material:
+        return "missing"
+    if not current_version:
+        return "missing"
+    if anchor_version != current_version:
+        return "stale"
+    return "ok"
+
+
+def public_review_card(row: sqlite3.Row | dict[str, Any], anchor_state: str = "unset") -> dict[str, Any]:
+    return {
+        "id": row_value(row, "id"),
+        "stable_id": str(row_value(row, "stable_id") or ""),
+        "material_id": row_value(row, "material_id"),
+        "file_id": row_value(row, "legacy_file_id"),
+        "front": str(row_value(row, "front") or ""),
+        "back": str(row_value(row, "back") or ""),
+        "anchor_page": row_value(row, "anchor_page"),
+        "anchor_state": anchor_state,
+        "archived": bool(row_value(row, "archived")),
+        "fsrs_due_at": row_value(row, "fsrs_due_at"),
+        "fsrs_last_review_at": row_value(row, "fsrs_last_review_at"),
+        "created_at": row_value(row, "created_at"),
+        "updated_at": row_value(row, "updated_at"),
+        "course_code": row_value(row, "course_code"),
+        "course_name": row_value(row, "course_name"),
+        "week_label": row_value(row, "week_label"),
+        "filename": row_value(row, "filename"),
+        "display_name": row_value(row, "display_name"),
+    }
+
+
+def review_card_rows(
+    conn: sqlite3.Connection,
+    *,
+    file_id: int = 0,
+    include_archived: bool = False,
+) -> list[sqlite3.Row]:
+    sql = """
+        SELECT card.*, material.legacy_file_id, material.stable_id AS material_stable_id,
+          f.course_code, f.course_name, f.week_label, f.filename, f.display_name
+        FROM review_cards card
+        JOIN materials material ON material.id=card.material_id
+        LEFT JOIN files f ON f.id=material.legacy_file_id
+        WHERE material.active=1
+    """
+    params: list[Any] = []
+    if file_id:
+        sql += " AND material.legacy_file_id=?"
+        params.append(file_id)
+    if not include_archived:
+        sql += " AND card.archived=0"
+    sql += " ORDER BY card.created_at, card.id"
+    return conn.execute(sql, params).fetchall()
+
+
+def review_card_queue(
+    conn: sqlite3.Connection,
+    *,
+    at: datetime | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    now = at or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now_text = now.isoformat(timespec="seconds")
+    rows = conn.execute(
+        """
+        SELECT card.*, material.legacy_file_id,
+          f.course_code, f.course_name, f.week_label, f.filename, f.display_name
+        FROM review_cards card
+        JOIN materials material ON material.id=card.material_id AND material.active=1
+        LEFT JOIN files f ON f.id=material.legacy_file_id
+        WHERE card.archived=0 AND (card.fsrs_due_at IS NULL OR card.fsrs_due_at<=?)
+        ORDER BY CASE WHEN card.fsrs_due_at IS NULL THEN 1 ELSE 0 END,
+          card.fsrs_due_at, card.created_at, card.id
+        LIMIT ?
+        """,
+        (now_text, limit),
+    ).fetchall()
+    return [public_review_card(row, review_card_anchor_state(conn, row)) for row in rows]
+
+
+def review_cards_summary(conn: sqlite3.Connection, *, at: datetime | None = None) -> dict[str, Any]:
+    now = at or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now_text = now.isoformat(timespec="seconds")
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS due,
+          (SELECT COUNT(*) FROM review_cards WHERE archived=0) AS total
+        FROM review_cards
+        WHERE archived=0 AND (fsrs_due_at IS NULL OR fsrs_due_at<=?)
+        """,
+        (now_text,),
+    ).fetchone()
+    return {"due": int(row["due"] or 0), "total": int(row["total"] or 0)}
+
+
+def create_review_card(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
+    if set(body) - {"fileId", "front", "back", "anchorPage"}:
+        raise ValueError("Review card contains unsupported fields")
+    file_id = int(body.get("fileId") or 0)
+    if not file_id:
+        raise ValueError("Choose a material")
+    material = study_material_row(conn, file_id)
+    material_id = int(material["material_id"])
+    front = str(body.get("front") or "").strip()
+    if not front:
+        raise ValueError("Review card question is required")
+    if len(front) > BACKUP_CARD_FRONT_MAX:
+        raise ValueError("Review card question is too long")
+    back = str(body.get("back") or "").strip()
+    if len(back) > BACKUP_CARD_BACK_MAX:
+        raise ValueError("Review card answer is too long")
+    anchor_page = body.get("anchorPage")
+    if anchor_page is not None:
+        if isinstance(anchor_page, bool) or not isinstance(anchor_page, int):
+            raise ValueError("Page number must be a whole number")
+        if anchor_page < 1 or anchor_page > 10000:
+            raise ValueError("Page number is out of range")
+    anchor_material, anchor_version = "", ""
+    if anchor_page is not None:
+        anchor_material, anchor_version = note_anchor_for_file(conn, file_id)
+        if not anchor_material:
+            raise ValueError("Review card source version is unavailable")
+    now = now_iso()
+    stable_id = new_stable_id("card")
+    conn.execute(
+        """
+        INSERT INTO review_cards(
+          stable_id, material_id, front, back, anchor_version, anchor_page,
+          anchor_material_stable_id, anchor_version_stable_id,
+          fsrs_state, fsrs_step, fsrs_stability, fsrs_difficulty,
+          fsrs_due_at, fsrs_last_review_at, archived, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, 0, ?, ?)
+        """,
+        (
+            stable_id, material_id, front, back, anchor_page, anchor_material,
+            anchor_version, now, now,
+        ),
+    )
+    conn.commit()
+    row = conn.execute(
+        """
+        SELECT card.*, material.legacy_file_id,
+          f.course_code, f.course_name, f.week_label, f.filename, f.display_name
+        FROM review_cards card
+        JOIN materials material ON material.id=card.material_id
+        LEFT JOIN files f ON f.id=material.legacy_file_id
+        WHERE card.id=?
+        """,
+        (conn.execute("SELECT last_insert_rowid()").fetchone()[0],),
+    ).fetchone()
+    return {"ok": True, **public_review_card(row, review_card_anchor_state(conn, row))}
+
+
+def update_review_card(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
+    if set(body) - {"id", "front", "back"}:
+        raise ValueError("Review card update contains unsupported fields")
+    card_id = int(body.get("id") or 0)
+    card = conn.execute("SELECT * FROM review_cards WHERE id=?", (card_id,)).fetchone()
+    if card is None:
+        raise FileNotFoundError("Review card was not found")
+    front = str(body.get("front") or "").strip()
+    if not front:
+        raise ValueError("Review card question is required")
+    if len(front) > BACKUP_CARD_FRONT_MAX:
+        raise ValueError("Review card question is too long")
+    back = str(body.get("back") or "").strip()
+    if len(back) > BACKUP_CARD_BACK_MAX:
+        raise ValueError("Review card answer is too long")
+    conn.execute(
+        "UPDATE review_cards SET front=?, back=?, updated_at=? WHERE id=?",
+        (front, back, now_iso(), card_id),
+    )
+    conn.commit()
+    return {"ok": True}
+
+
+def set_review_card_archived(conn: sqlite3.Connection, body: dict[str, Any], *, archived: bool) -> dict[str, Any]:
+    if set(body) - {"id"}:
+        raise ValueError("Review card archive update contains unsupported fields")
+    card_id = int(body.get("id") or 0)
+    card = conn.execute("SELECT id FROM review_cards WHERE id=?", (card_id,)).fetchone()
+    if card is None:
+        raise FileNotFoundError("Review card was not found")
+    conn.execute(
+        "UPDATE review_cards SET archived=?, updated_at=? WHERE id=?",
+        (1 if archived else 0, now_iso(), card_id),
+    )
+    conn.commit()
+    return {"ok": True, "archived": archived}
+
+
+def review_review_card(
+    conn: sqlite3.Connection,
+    body: dict[str, Any],
+    *,
+    reviewed_at: datetime | None = None,
+) -> dict[str, Any]:
+    if set(body) - {"id", "grade"}:
+        raise ValueError("Review card review contains unsupported fields")
+    card_id = int(body.get("id") or 0)
+    card = conn.execute("SELECT * FROM review_cards WHERE id=?", (card_id,)).fetchone()
+    if card is None:
+        raise FileNotFoundError("Review card was not found")
+    if card["archived"]:
+        raise ValueError("Archived review cards cannot be reviewed")
+    result = ReviewScheduler().review(card_id, card, str(body.get("grade") or ""), reviewed_at=reviewed_at)
+    now = now_iso()
+    conn.execute(
+        """
+        UPDATE review_cards SET fsrs_state=?, fsrs_step=?, fsrs_stability=?,
+          fsrs_difficulty=?, fsrs_due_at=?, fsrs_last_review_at=?, updated_at=?
+        WHERE id=?
+        """,
+        (
+            result["fsrs_state"], result["fsrs_step"], result["fsrs_stability"],
+            result["fsrs_difficulty"], result["fsrs_due_at"], result["fsrs_last_review_at"],
+            now, card_id,
+        ),
+    )
+    conn.commit()
+    row = conn.execute(
+        """
+        SELECT card.*, material.legacy_file_id,
+          f.course_code, f.course_name, f.week_label, f.filename, f.display_name
+        FROM review_cards card
+        JOIN materials material ON material.id=card.material_id
+        LEFT JOIN files f ON f.id=material.legacy_file_id
+        WHERE card.id=?
+        """,
+        (card_id,),
+    ).fetchone()
+    return {"ok": True, **public_review_card(row, review_card_anchor_state(conn, row))}
+
+
+def handle_review_cards_post(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(body, dict):
+        raise ValueError("Review card request is invalid")
+    action = str(body.get("action") or "create").strip().lower()
+    payload = {key: value for key, value in body.items() if key != "action"}
+    if action == "create":
+        return create_review_card(conn, payload)
+    if action == "update":
+        return update_review_card(conn, payload)
+    if action == "archive":
+        return set_review_card_archived(conn, payload, archived=True)
+    if action == "restore":
+        return set_review_card_archived(conn, payload, archived=False)
+    if action == "review":
+        return review_review_card(conn, payload)
+    raise ValueError("Unknown review card action")
+
+
 def study_overview(
     conn: sqlite3.Connection,
     course_id: int = 0,
@@ -11810,7 +12300,9 @@ def study_overview(
           COALESCE(ms.needs_review, 0) AS needs_review,
           ms.first_started_at, ms.completed_at, ms.last_studied_at,
           ms.fsrs_due_at, ms.fsrs_last_review_at,
-          CASE WHEN ms.fsrs_due_at IS NOT NULL AND ms.fsrs_due_at<=? THEN 1 ELSE 0 END AS review_due
+          CASE WHEN ms.fsrs_due_at IS NOT NULL AND ms.fsrs_due_at<=? THEN 1 ELSE 0 END AS review_due,
+          (SELECT COUNT(*) FROM review_cards WHERE archived=0 AND fsrs_due_at IS NOT NULL AND fsrs_due_at<=?) AS card_due,
+          (SELECT COUNT(*) FROM review_cards WHERE archived=0) AS card_total
         FROM files f
         JOIN materials m ON m.legacy_file_id=f.id AND m.active=1
         JOIN courses c ON c.id=f.course_id
@@ -11820,13 +12312,19 @@ def study_overview(
         ORDER BY f.course_code, COALESCE(f.week_number, 1000000), f.week_label,
           COALESCE(f.display_name, f.filename), f.id
         """.format(visibility=course_visibility_sql("c"), filters=filters),
-        [now_text, *params],
+        [now_text, now_text, *params],
     ).fetchall()
 
     summary = {
         "total": len(rows), "not_started": 0, "in_progress": 0,
-        "completed": 0, "needs_review": 0, "review_due": 0,
+        "completed": 0, "needs_review": 0, "review_due": 0, "card_due": 0, "card_total": 0,
     }
+    card_summary = {"due": 0, "total": 0}
+    if rows:
+        card_summary["due"] = int(rows[0]["card_due"] or 0)
+        card_summary["total"] = int(rows[0]["card_total"] or 0)
+        summary["card_due"] = card_summary["due"]
+        summary["card_total"] = card_summary["total"]
     course_groups: dict[int, dict[str, Any]] = {}
     unit_groups: dict[tuple[int, str], dict[str, Any]] = {}
     queue: list[dict[str, Any]] = []
@@ -11896,6 +12394,7 @@ def study_overview(
     summary["progress_percent"] = round(100 * summary["completed"] / max(summary["total"], 1))
     return {
         "summary": summary,
+        "cards": card_summary,
         "queue": queue[:50],
         "continue": [item for item in queue if item["queue_reason"] == "CONTINUE"][:8],
         "needs_review": [item for item in queue if item["queue_reason"] in {"FSRS_DUE", "NEEDS_REVIEW"}][:20],
@@ -12037,7 +12536,7 @@ def reset_studyhub_state(conn: sqlite3.Connection) -> dict[str, Any]:
         "ai_messages", "ai_conversations", "ai_interactions", "wrong_questions", "attempts", "bookmarks",
         "study_sessions", "notes", "stars", "questions", "solutions", "document_chunks", "file_versions",
         "academic_change_event_state", "academic_change_events", "material_study_state",
-        "material_versions", "materials", "sources", "blobs",
+        "review_cards", "material_versions", "materials", "sources", "blobs",
         "ai_index_state", "sync_events", "files", "weeks", "courses", "terms", "app_settings",
     ):
         conn.execute(f"DELETE FROM {table}")
@@ -13644,6 +14143,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.handle_star(int(parsed.path.rsplit("/", 1)[-1]))
             elif parsed.path == "/api/notes":
                 self.handle_note()
+            elif parsed.path == "/api/review-cards":
+                self.handle_review_cards_mutation()
             elif parsed.path == "/api/ask":
                 self.handle_ask()
             elif parsed.path == "/api/conversations":
@@ -14328,6 +14829,18 @@ class StudyHubHandler(BaseHTTPRequestHandler):
             elif path == "/api/wrong-questions":
                 rows = conn.execute("SELECT * FROM wrong_questions ORDER BY created_at DESC LIMIT 100").fetchall()
                 self.send_json(rows_to_dicts(rows))
+            elif path == "/api/review-cards/queue":
+                self.send_json(review_card_queue(conn))
+            elif path == "/api/review-cards":
+                file_id = int(qs.get("fileId", ["0"])[0] or 0)
+                include_archived = qs.get("includeArchived", ["0"])[0] == "1"
+                rows = review_card_rows(conn, file_id=file_id, include_archived=include_archived)
+                self.send_json(
+                    [
+                        public_review_card(row, review_card_anchor_state(conn, row))
+                        for row in rows
+                    ]
+                )
             else:
                 self.send_error_json(404, "Not found")
         finally:
@@ -14847,6 +15360,14 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         finally:
             conn.close()
         self.send_json({"ok": True})
+
+    def handle_review_cards_mutation(self) -> None:
+        body = self.parse_body_json()
+        conn = connect_db()
+        try:
+            self.send_json(handle_review_cards_post(conn, body))
+        finally:
+            conn.close()
 
     def handle_ask(self) -> None:
         body = self.parse_body_json()

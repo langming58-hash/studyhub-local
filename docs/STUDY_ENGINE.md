@@ -93,5 +93,18 @@ for product screenshots and visual QA and is excluded from packaged resources.
 ## Not Implemented Here
 
 Study Engine V1 does not add assignments/Today, notifications, streaks,
-gamification, flashcard authoring, optimizer training, background jobs, vector
+gamification, optimizer training, background jobs, vector
 search, Reader changes, OCR, or production Canvas connection UI.
+
+## Manual Review Cards
+
+Manual review cards are user-authored `USER_OWNED` review items with a portable
+stable identity, a user-written question/answer pair, an owning Material
+identity, optional source-page and MaterialVersion context, and their own FSRS
+fields. They never reuse Material-level FSRS state, are authored only by the
+user, and are reviewed with the same deterministic `Again`/`Hard`/`Good`/`Easy`
+transition behind the StudyHub `ReviewScheduler`. Due cards surface in the Study
+overview with a distinct count and review-session entry point, and cards
+participate in the same versioned backup, Restore Preview/Apply, and Undo
+contract as other study records. Stale or missing source anchors fail closed and
+never fabricate a valid current page reference.
