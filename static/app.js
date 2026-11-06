@@ -2557,7 +2557,7 @@ function reviewCardAnchorChip(card) {
 }
 
 async function loadFileCards(fileId) {
-  const cards = await api(`/api/review-cards?materialId=${fileId}`);
+  const cards = await api(`/api/review-cards?fileId=${fileId}&includeArchived=1`);
   const list = $("#fileCards");
   if (!list) return;
   list.innerHTML = cards.length
@@ -2580,12 +2580,14 @@ function openReviewCardDialog({ materialId = 0, noteId = 0, card = null } = {}) 
   $("#reviewCardEditId").value = card ? Number(card.id) : "";
   $("#reviewCardFront").value = card ? card.front : "";
   $("#reviewCardBack").value = card ? card.back : "";
+  $("#reviewCardAnchorPage").value = card ? Number(card.anchor_page || 0) : "";
   if (!card && noteId) {
     const note = noteCardSource.get(Number(noteId));
     if (note) {
       $("#reviewCardFront").value = "";
       $("#reviewCardBack").value = note.body || "";
       $("#reviewCardMaterialId").value = state.selectedFile?.id || 0;
+      $("#reviewCardAnchorPage").value = note.anchor_state === "ok" ? Number(note.anchor_page || 0) : "";
     }
   }
   if (!card && !noteId && state.selectedFile) {
@@ -2600,13 +2602,14 @@ async function saveReviewCard() {
   const editId = $("#reviewCardEditId").value;
   const front = $("#reviewCardFront").value.trim();
   const back = $("#reviewCardBack").value.trim();
+  const anchorPage = Number($("#reviewCardAnchorPage").value || 0);
   if (!materialId || !front) {
     toast(t("cards.question"));
     return;
   }
   const payload = editId
     ? { action: "update", id: Number(editId), front, back }
-    : { action: "create", materialId, front, back };
+    : { action: "create", fileId: materialId, front, back, ...(anchorPage >= 1 ? { anchorPage } : {}) };
   await api("/api/review-cards", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2629,8 +2632,19 @@ async function setReviewCardArchived(cardId, archived) {
 
 async function renderReviewCards() {
   setTitle(t("cards.title"), t("cards.eyebrow"));
-  reviewCardSession = { queue: await api("/api/review-cards/queue"), index: 0, reveal: false, busy: false };
-  const card = reviewCardSession.queue[0];
+  await fetchReviewCardSession();
+  renderReviewCardView();
+}
+
+async function fetchReviewCardSession() {
+  reviewCardSession.queue = await api("/api/review-cards/queue");
+  reviewCardSession.index = 0;
+  reviewCardSession.reveal = false;
+  reviewCardSession.busy = false;
+}
+
+function renderReviewCardView() {
+  const card = reviewCardSession.queue[reviewCardSession.index];
   const ui = window.StudyHubReviewCardsUI;
   view.innerHTML = `
     <section class="study-shell">
@@ -2652,12 +2666,16 @@ async function renderReviewCards() {
 }
 
 async function gradeReviewCard(cardId, grade) {
+  if (reviewCardSession.busy) return;
+  reviewCardSession.busy = true;
   await api("/api/review-cards", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action: "review", id: Number(cardId), grade }),
   });
-  await renderReviewCards();
+  await fetchReviewCardSession();
+  renderReviewCardView();
+  reviewCardSession.busy = false;
 }
 
 async function openAskForFile(fileId, prompt = "") {
@@ -3659,7 +3677,7 @@ document.addEventListener("click", async (event) => {
   }
   if (target.dataset.cardReveal) {
     reviewCardSession.reveal = true;
-    await renderReviewCards();
+    renderReviewCardView();
     return;
   }
   if (target.dataset.cardGrade) {
@@ -3667,12 +3685,13 @@ document.addEventListener("click", async (event) => {
     return;
   }
   if (target.dataset.cardSource) {
-    const card = reviewCardSession.queue[reviewCardSession.index];
-    if (card?.file_id && card.anchor_page) await route("file", { fileId: Number(card.file_id), page: Number(card.anchor_page) });
+    const fileId = Number(target.dataset.cardSourceFile || 0);
+    const page = Number(target.dataset.cardSourcePage || 0);
+    if (fileId && page >= 1) await route("file", { fileId, page });
     return;
   }
   if (target.dataset.cardEdit) {
-    const cards = await api(`/api/review-cards?materialId=${state.selectedFile?.id || 0}&includeArchived=1`);
+    const cards = await api(`/api/review-cards?fileId=${state.selectedFile?.id || 0}&includeArchived=1`);
     const card = cards.find((item) => Number(item.id) === Number(target.dataset.cardEdit));
     openReviewCardDialog({ materialId: state.selectedFile?.id, card });
     return;

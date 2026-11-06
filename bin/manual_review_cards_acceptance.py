@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
 import sys
 import tempfile
@@ -68,6 +67,10 @@ def cards_snapshot(conn) -> list[dict]:
     return [{column: row[column] for column in columns} for row in rows]
 
 
+def dispatch(server, conn, body: dict) -> dict:
+    return server.handle_review_cards_post(conn, body)
+
+
 def main() -> int:
     failures: list[str] = []
     with tempfile.TemporaryDirectory(prefix="studyhub-cards-") as raw:
@@ -89,68 +92,62 @@ def main() -> int:
         file_row = conn.execute("SELECT * FROM files WHERE filename='notes.pdf'").fetchone()
         file_id = int(file_row["id"])
         material_stable, version_stable = server.note_anchor_for_file(conn, file_id)
+        material_id = int(server.study_material_row(conn, file_id)["material_id"])
 
-        # Card creation, persistence, and anchor state.
-        created = server.create_review_card(
-            conn,
-            {"materialId": file_id, "front": "What is page one?", "back": "Page one answer", "anchorPage": 1},
-        )
-        check("card_creation_persists", created["id"] and created["stable_id"].startswith("card_"), failures)
+        # Actual dispatched POST payloads (the `action` field must be accepted).
+        created = dispatch(server, conn, {"action": "create", "fileId": file_id, "front": "What is page one?", "back": "Page one answer", "anchorPage": 1})
+        check("dispatched_create_persists", created["id"] and created["stable_id"].startswith("card_"), failures)
         check("card_anchor_state_ok_for_identical_source", created["anchor_state"] == "ok", failures)
         check("card_has_no_secret_fields", not any(key in created for key in ("sha256", "hash", "path", "locator")), failures)
 
-        rows = server.review_card_rows(conn)
-        check("card_list_returns_row", len(rows) == 1 and rows[0]["front"] == "What is page one?", failures)
+        rows = server.review_card_rows(conn, file_id=file_id)
+        check("card_list_by_file_id_returns_row", len(rows) == 1 and rows[0]["front"] == "What is page one?", failures)
 
-        # Editing and archiving.
-        server.update_review_card(conn, {"id": created["id"], "front": "Edited question", "back": "Edited answer"})
+        dispatch(server, conn, {"action": "update", "id": created["id"], "front": "Edited question", "back": "Edited answer"})
         edited = conn.execute("SELECT front, back FROM review_cards WHERE id=?", (created["id"],)).fetchone()
-        check("card_edit_persists", edited["front"] == "Edited question" and edited["back"] == "Edited answer", failures)
-        server.set_review_card_archived(conn, {"id": created["id"]}, archived=True)
-        check("card_archive_persists", conn.execute("SELECT archived FROM review_cards WHERE id=?", (created["id"],)).fetchone()["archived"] == 1, failures)
-        check("archived_card_excluded_from_queue", len(server.review_card_queue(conn)) == 0, failures)
-        server.set_review_card_archived(conn, {"id": created["id"]}, archived=False)
-        check("card_restore_persists", conn.execute("SELECT archived FROM review_cards WHERE id=?", (created["id"],)).fetchone()["archived"] == 0, failures)
+        check("dispatched_update_persists", edited["front"] == "Edited question" and edited["back"] == "Edited answer", failures)
 
-        # Note-to-card anchor reuse.
+        dispatch(server, conn, {"action": "archive", "id": created["id"]})
+        check("dispatched_archive_persists", conn.execute("SELECT archived FROM review_cards WHERE id=?", (created["id"],)).fetchone()["archived"] == 1, failures)
+        check("archived_card_excluded_from_queue", len(server.review_card_queue(conn)) == 0, failures)
+
+        dispatch(server, conn, {"action": "restore", "id": created["id"]})
+        check("dispatched_restore_persists", conn.execute("SELECT archived FROM review_cards WHERE id=?", (created["id"],)).fetchone()["archived"] == 0, failures)
+
+        # Newly created cards are reviewable even with no due date.
+        check("new_card_enters_review_queue", any(item["id"] == created["id"] for item in server.review_card_queue(conn)), failures)
+
+        # Dispatched review persists an FSRS transition.
+        reviewed = dispatch(server, conn, {"action": "review", "id": created["id"], "grade": "good"})
+        check("dispatched_review_sets_fsrs_fields", bool(reviewed["fsrs_due_at"]) and bool(reviewed["fsrs_last_review_at"]), failures)
+        material_after = conn.execute("SELECT fsrs_due_at FROM material_study_state WHERE material_id=?", (material_id,)).fetchone()
+        check(
+            "card_fsrs_is_independent_of_material_state",
+            (material_after["fsrs_due_at"] if material_after else None) is None,
+            failures,
+        )
+
+        # Note-to-card preserves a valid page anchor.
         note_create(
             server,
             {"targetType": "file", "targetId": file_id, "courseId": file_row["course_id"], "week": file_row["week_label"], "body": "Note for card", "anchorPage": 3, "pageCount": 3},
         )
-        from_note = server.create_review_card(
-            conn,
-            {"materialId": file_id, "front": "Page three?", "back": "From note", "anchorPage": 3},
-        )
+        from_note = dispatch(server, conn, {"action": "create", "fileId": file_id, "front": "Page three?", "back": "From note", "anchorPage": 3})
         check("note_anchor_card_is_ok", from_note["anchor_state"] == "ok" and from_note["anchor_page"] == 3, failures)
-
-        # Independent FSRS scheduling.
-        material_before = conn.execute(
-            "SELECT fsrs_due_at FROM material_study_state WHERE material_id=?", (server.study_material_row(conn, file_id)["material_id"],)
-        ).fetchone()
-        reviewed = server.review_review_card(conn, {"id": created["id"], "grade": "good"}, reviewed_at=fixed_iso())
-        check("card_review_sets_fsrs_fields", bool(reviewed["fsrs_due_at"]) and bool(reviewed["fsrs_last_review_at"]), failures)
-        material_after = conn.execute(
-            "SELECT fsrs_due_at FROM material_study_state WHERE material_id=?", (server.study_material_row(conn, file_id)["material_id"],)
-        ).fetchone()
-        check(
-            "card_fsrs_is_independent_of_material_state",
-            (material_before["fsrs_due_at"] if material_before else None) == (material_after["fsrs_due_at"] if material_after else None),
-            failures,
-        )
 
         # Deterministic transitions on identical fresh cards.
         def fresh_card_due(grade: str) -> str:
-            card = server.create_review_card(conn, {"materialId": file_id, "front": grade, "back": grade})
+            card = dispatch(server, conn, {"action": "create", "fileId": file_id, "front": grade, "back": grade})
             result = server.review_review_card(conn, {"id": card["id"], "grade": grade}, reviewed_at=fixed_iso())
             return str(result["fsrs_due_at"])
 
         again_due, hard_due, good_due, easy_due = (fresh_card_due(grade) for grade in ("again", "hard", "good", "easy"))
         check("grade_transitions_are_deterministic_and_ordered", again_due < hard_due < good_due < easy_due, failures)
-        again_card = server.create_review_card(conn, {"materialId": file_id, "front": "again-dup", "back": ""})
+        again_card = dispatch(server, conn, {"action": "create", "fileId": file_id, "front": "again-dup", "back": ""})
         again_dup = server.review_review_card(conn, {"id": again_card["id"], "grade": "again"}, reviewed_at=fixed_iso())
         check("same_grade_same_time_deterministic", str(again_dup["fsrs_due_at"]) == again_due, failures)
 
-        # Queue ordering by due time.
+        # Queue ordering: due cards first, then never-reviewed, stable within each.
         queue_due = {
             "again": "2026-05-01T12:00:00+00:00",
             "again-dup": "2026-05-01T13:00:00+00:00",
@@ -160,11 +157,12 @@ def main() -> int:
         }
         for front, due in queue_due.items():
             conn.execute("UPDATE review_cards SET fsrs_due_at=?, archived=0 WHERE front=?", (due, front))
-        conn.execute("UPDATE review_cards SET fsrs_due_at='2026-05-05T12:00:00+00:00', archived=0 WHERE id=?", (created["id"],))
+        conn.execute("UPDATE review_cards SET fsrs_due_at=NULL WHERE id IN (?, ?)", (created["id"], from_note["id"]))
         conn.commit()
         queue = server.review_card_queue(conn, at=fixed_iso(10))
         queue_fronts = [item["front"] for item in queue]
-        check("queue_orders_oldest_due_first", queue_fronts[:3] == ["again", "again-dup", "good"], failures)
+        check("queue_due_first_then_new", queue_fronts[:3] == ["again", "again-dup", "good"], failures)
+        check("never_reviewed_cards_follow_due", "Edited question" in queue_fronts and "Page three?" in queue_fronts, failures)
 
         # Stale and missing source safety.
         conn.execute(
@@ -182,10 +180,10 @@ def main() -> int:
         missing_row = conn.execute("SELECT * FROM review_cards WHERE id=?", (created["id"],)).fetchone()
         check("missing_source_reports_missing", server.review_card_anchor_state(conn, missing_row) == "missing", failures)
 
-        # Invalid inputs.
+        # Invalid inputs through the dispatcher.
         for bad_page in (0, -1, 2.5, True, "2"):
             try:
-                server.create_review_card(conn, {"materialId": file_id, "front": "bad", "back": "", "anchorPage": bad_page})
+                dispatch(server, conn, {"action": "create", "fileId": file_id, "front": "bad", "back": "", "anchorPage": bad_page})
                 check(f"invalid_anchor_{bad_page}_rejected", False, failures)
             except ValueError:
                 check(f"invalid_anchor_{bad_page}_rejected", True, failures)
@@ -196,7 +194,7 @@ def main() -> int:
             except ValueError:
                 check(f"invalid_grade_{bad_grade}_rejected", True, failures)
         try:
-            server.create_review_card(conn, {"materialId": file_id, "front": "", "back": ""})
+            dispatch(server, conn, {"action": "create", "fileId": file_id, "front": "", "back": ""})
             check("empty_question_rejected", False, failures)
         except ValueError:
             check("empty_question_rejected", True, failures)
@@ -204,11 +202,40 @@ def main() -> int:
         check("original_pdf_matches_rescanned_content", hashlib.sha256(pdf.read_bytes()).hexdigest() == hashlib.sha256(stale_pdf).hexdigest(), failures)
         check("original_pdf_content_changed_from_v1", hashlib.sha256(pdf.read_bytes()).hexdigest() != before, failures)
 
-        current_card = server.create_review_card(
+        current_card = dispatch(
+            server,
             conn,
-            {"materialId": file_id, "front": "Current version?", "back": "Current answer", "anchorPage": 2},
+            {"action": "create", "fileId": file_id, "front": "Current version?", "back": "Current answer", "anchorPage": 2},
         )
         check("current_version_card_reports_ok", current_card["anchor_state"] == "ok", failures)
+
+        # File ID vs Material ID are distinct domain identities.
+        divergent_profile = Path(tempfile.mkdtemp(prefix="studyhub-cards-div-"))
+        divergent_library = divergent_profile / "StudyLibrary"
+        divergent_db = divergent_profile / "runtime" / "studyhub.sqlite"
+        div = load_server(divergent_profile, divergent_library, divergent_db)
+        div_pdf = divergent_library / "TEST1001 - Course" / "Week 01" / "Lecture" / "notes.pdf"
+        div_pdf.parent.mkdir(parents=True)
+        div_pdf.write_bytes(pdf.read_bytes())
+        div.scan_library(divergent_library)
+        div_conn = div.connect_db()
+        div.init_db(div_conn)
+        div.run_schema_migrations(div_conn)
+        div_file = div_conn.execute("SELECT id FROM files WHERE filename='notes.pdf'").fetchone()
+        div_conn.execute("DELETE FROM materials WHERE legacy_file_id=?", (int(div_file["id"]),))
+        div_conn.commit()
+        div_conn.execute(
+            "INSERT INTO materials(id, stable_id, legacy_file_id, active, created_at, updated_at) VALUES (500, 'mat_divergent_500', ?, 1, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')",
+            (int(div_file["id"]),),
+        )
+        div_conn.commit()
+        div_material_after = int(div.study_material_row(div_conn, int(div_file["id"]))["material_id"])
+        check("file_and_material_ids_diverge", div_material_after == 500 and int(div_file["id"]) != 500, failures)
+        div_card = dispatch(div, div_conn, {"action": "create", "fileId": int(div_file["id"]), "front": "Divergent ids", "back": "Answer"})
+        check("divergent_card_owned_by_file", int(div_card["file_id"]) == int(div_file["id"]) and div_card["material_id"] == div_material_after, failures)
+        check("divergent_card_listed_by_file_id", any(item["front"] == "Divergent ids" for item in div.review_card_rows(div_conn, file_id=int(div_file["id"]))), failures)
+        div_conn.close()
+        shutil.rmtree(divergent_profile, ignore_errors=True)
 
         # Backup round-trip into an isolated workspace.
         archive = server.export_current_profile_backup()

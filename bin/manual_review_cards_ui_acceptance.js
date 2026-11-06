@@ -38,6 +38,7 @@ function card(overrides) {
       anchor_state: "ok",
       archived: false,
       filename: "notes.pdf",
+      file_id: 21,
     },
     overrides || {},
   );
@@ -45,7 +46,10 @@ function card(overrides) {
 
 // Pure render checks.
 const okChip = ui.anchorChip(card(), t, escapeHtml);
-check("ok_anchor_is_source_button", okChip.includes('data-card-source="1"') && okChip.includes("file.notePage"));
+check(
+  "ok_anchor_is_source_button_with_file_and_page",
+  okChip.includes('data-card-source="1"') && okChip.includes('data-card-source-file="21"') && okChip.includes('data-card-source-page="2"'),
+);
 const staleChip = ui.anchorChip(card({ anchor_state: "stale" }), t, escapeHtml);
 check("stale_anchor_is_not_actionable", !staleChip.includes("data-card-source") && staleChip.includes("file.pageAnchorStale"));
 check("unanchored_anchor_is_empty", ui.anchorChip(card({ anchor_page: null }), t, escapeHtml) === "");
@@ -141,7 +145,7 @@ sandbox.window = sandbox;
 vm.createContext(sandbox);
 vm.runInContext(
   appSource +
-    "\n;globalThis.__test = { api, renderReviewCards, gradeReviewCard, get viewHtml() { return view.innerHTML; } };",
+    "\n;globalThis.__test = { api, renderReviewCards, renderReviewCardView, gradeReviewCard, reviewCardSession, get viewHtml() { return view.innerHTML; } };",
   sandbox,
 );
 const app = sandbox.__test;
@@ -149,8 +153,8 @@ const app = sandbox.__test;
 async function main() {
   await new Promise((resolve) => setTimeout(resolve, 0));
   const queue = [
-    card({ id: 11, front: "Due one", back: "Answer one", anchor_state: "ok" }),
-    card({ id: 12, front: "Due two", back: "Answer two", anchor_state: "stale" }),
+    card({ id: 11, front: "Due one", back: "Answer one", anchor_state: "ok", file_id: 31, anchor_page: 2 }),
+    card({ id: 12, front: "Due two", back: "Answer two", anchor_state: "stale", file_id: 31, anchor_page: 2 }),
   ];
   fetchHandler = async (url, options = {}) => {
     if (url === "/api/review-cards/queue") return { ok: true, status: 200, json: async () => queue };
@@ -166,8 +170,18 @@ async function main() {
   check("review_session_renders_first_question", app.viewHtml.includes("Due one"));
   check("review_session_does_not_reveal_answer_yet", !app.viewHtml.includes("Answer one"));
 
+  app.reviewCardSession.reveal = true;
+  app.renderReviewCardView();
+  check("reveal_shows_answer", app.viewHtml.includes("Answer one"));
+  check("reveal_shows_four_grades", ["again", "hard", "good", "easy"].every((g) => app.viewHtml.includes(`data-grade="${g}"`)));
+  check("source_button_carries_file_and_page", app.viewHtml.includes('data-card-source-file="31"') && app.viewHtml.includes('data-card-source-page="2"'));
+
   await app.gradeReviewCard(11, "good");
   check("grading_posts_review_action", posted.length === 1 && posted[0].action === "review" && posted[0].id === 11 && posted[0].grade === "good");
+
+  app.reviewCardSession.busy = true;
+  await app.gradeReviewCard(12, "again");
+  check("busy_guard_prevents_double_submit", posted.length === 1);
 
   return failures;
 }

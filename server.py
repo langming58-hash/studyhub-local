@@ -12050,7 +12050,7 @@ def public_review_card(row: sqlite3.Row | dict[str, Any], anchor_state: str = "u
 def review_card_rows(
     conn: sqlite3.Connection,
     *,
-    material_id: int = 0,
+    file_id: int = 0,
     include_archived: bool = False,
 ) -> list[sqlite3.Row]:
     sql = """
@@ -12062,9 +12062,9 @@ def review_card_rows(
         WHERE material.active=1
     """
     params: list[Any] = []
-    if material_id:
-        sql += " AND card.material_id=?"
-        params.append(material_id)
+    if file_id:
+        sql += " AND material.legacy_file_id=?"
+        params.append(file_id)
     if not include_archived:
         sql += " AND card.archived=0"
     sql += " ORDER BY card.created_at, card.id"
@@ -12088,8 +12088,9 @@ def review_card_queue(
         FROM review_cards card
         JOIN materials material ON material.id=card.material_id AND material.active=1
         LEFT JOIN files f ON f.id=material.legacy_file_id
-        WHERE card.archived=0 AND card.fsrs_due_at IS NOT NULL AND card.fsrs_due_at<=?
-        ORDER BY card.fsrs_due_at, card.created_at, card.id
+        WHERE card.archived=0 AND (card.fsrs_due_at IS NULL OR card.fsrs_due_at<=?)
+        ORDER BY CASE WHEN card.fsrs_due_at IS NULL THEN 1 ELSE 0 END,
+          card.fsrs_due_at, card.created_at, card.id
         LIMIT ?
         """,
         (now_text, limit),
@@ -12107,7 +12108,7 @@ def review_cards_summary(conn: sqlite3.Connection, *, at: datetime | None = None
         SELECT COUNT(*) AS due,
           (SELECT COUNT(*) FROM review_cards WHERE archived=0) AS total
         FROM review_cards
-        WHERE archived=0 AND fsrs_due_at IS NOT NULL AND fsrs_due_at<=?
+        WHERE archived=0 AND (fsrs_due_at IS NULL OR fsrs_due_at<=?)
         """,
         (now_text,),
     ).fetchone()
@@ -12115,9 +12116,9 @@ def review_cards_summary(conn: sqlite3.Connection, *, at: datetime | None = None
 
 
 def create_review_card(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
-    if set(body) - {"materialId", "front", "back", "anchorPage"}:
+    if set(body) - {"fileId", "front", "back", "anchorPage"}:
         raise ValueError("Review card contains unsupported fields")
-    file_id = int(body.get("materialId") or 0)
+    file_id = int(body.get("fileId") or 0)
     if not file_id:
         raise ValueError("Choose a material")
     material = study_material_row(conn, file_id)
@@ -12257,16 +12258,17 @@ def handle_review_cards_post(conn: sqlite3.Connection, body: dict[str, Any]) -> 
     if not isinstance(body, dict):
         raise ValueError("Review card request is invalid")
     action = str(body.get("action") or "create").strip().lower()
+    payload = {key: value for key, value in body.items() if key != "action"}
     if action == "create":
-        return create_review_card(conn, body)
+        return create_review_card(conn, payload)
     if action == "update":
-        return update_review_card(conn, body)
+        return update_review_card(conn, payload)
     if action == "archive":
-        return set_review_card_archived(conn, body, archived=True)
+        return set_review_card_archived(conn, payload, archived=True)
     if action == "restore":
-        return set_review_card_archived(conn, body, archived=False)
+        return set_review_card_archived(conn, payload, archived=False)
     if action == "review":
-        return review_review_card(conn, body)
+        return review_review_card(conn, payload)
     raise ValueError("Unknown review card action")
 
 
@@ -14830,9 +14832,9 @@ class StudyHubHandler(BaseHTTPRequestHandler):
             elif path == "/api/review-cards/queue":
                 self.send_json(review_card_queue(conn))
             elif path == "/api/review-cards":
-                material_id = int(qs.get("materialId", ["0"])[0] or 0)
+                file_id = int(qs.get("fileId", ["0"])[0] or 0)
                 include_archived = qs.get("includeArchived", ["0"])[0] == "1"
-                rows = review_card_rows(conn, material_id=material_id, include_archived=include_archived)
+                rows = review_card_rows(conn, file_id=file_id, include_archived=include_archived)
                 self.send_json(
                     [
                         public_review_card(row, review_card_anchor_state(conn, row))

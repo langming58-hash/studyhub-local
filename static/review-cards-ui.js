@@ -12,7 +12,7 @@
     if (!card || !card.anchor_page) return "";
     const page = escapeHtml(t("file.notePage", { page: card.anchor_page }));
     if (anchorLabel(card) === "ok") {
-      return `<button class="chip chip-button" type="button" data-card-source="${escapeHtml(card.id)}">${page}</button>`;
+      return `<button class="chip chip-button" type="button" data-card-source="${escapeHtml(card.id)}" data-card-source-file="${escapeHtml(card.file_id)}" data-card-source-page="${escapeHtml(card.anchor_page)}">${page}</button>`;
     }
     return `<span class="chip" title="${escapeHtml(t("file.pageAnchorUnavailable"))}">${page} · ${escapeHtml(t("file.pageAnchorStale"))}</span>`;
   }
