@@ -371,6 +371,108 @@ def main() -> int:
         legacy_conn.close()
         shutil.rmtree(legacy_tmp, ignore_errors=True)
 
+        # Regression: a note that was already stale at export time must not be
+        # silently re-anchored to the destination's current version.
+        pdf_v2 = synthetic_pdf(["Version two one", "Version two two", "Version two three"])
+        stale_profile = Path(tempfile.mkdtemp(prefix="studyhub-notes-stale-"))
+        stale_library = stale_profile / "StudyLibrary"
+        stale_db = stale_profile / "runtime" / "studyhub.sqlite"
+        stale_pdf = stale_library / "TEST1001 - Course" / "Week 01" / "Lecture" / "notes.pdf"
+        stale_pdf.parent.mkdir(parents=True)
+        stale_pdf.write_bytes(pdf.read_bytes())
+        stale_server = load_server(stale_profile, stale_library, stale_db)
+        stale_server.scan_library(stale_library)
+        stale_conn = stale_server.connect_db()
+        stale_server.init_db(stale_conn)
+        stale_file = stale_conn.execute("SELECT * FROM files WHERE filename='notes.pdf'").fetchone()
+        stale_file_id = int(stale_file["id"])
+        stale_base = {"targetType": "file", "targetId": stale_file_id, "courseId": stale_file["course_id"], "week": stale_file["week_label"]}
+        note_create(stale_server, {**stale_base, "body": "Stale anchor note", "anchorPage": 1, "pageCount": 3})
+        _stale_material, stale_version = stale_server.note_anchor_for_file(stale_conn, stale_file_id)
+        stale_pdf.write_bytes(pdf_v2)
+        stale_server.scan_library(stale_library)
+        stale_conn.commit()
+        _stale_material_2, stale_version_2 = stale_server.note_anchor_for_file(stale_conn, stale_file_id)
+        check("stale_note_source_advanced_version", stale_version != stale_version_2, failures)
+        stale_archive = stale_server.export_current_profile_backup()
+        stale_target, stale_tconn, stale_tmp = prepare_target("stale", pdf_v2)
+        stale_target_file = stale_tconn.execute("SELECT id FROM files WHERE filename='notes.pdf'").fetchone()
+        stage_restore(stale_target, stale_server.EXPORT_DIR / stale_archive["filename"], "d" * 32)
+        stale_plan = stale_target.preview_staged_restore("d" * 32)
+        stale_result = stale_target.apply_staged_restore(
+            "d" * 32, stale_plan["plan_revision"], decisions_for_notes_restore(stale_plan)
+        )
+        stale_notes = stale_target.StudyHubHandler.handle_notes_get(
+            None, stale_tconn, {"targetType": ["file"], "targetId": [str(stale_target_file["id"])]}
+        )
+        check(
+            "stale_note_stays_stale_after_restore",
+            stale_result.get("ok") is True
+            and any(
+                note.get("anchor_page") == 1 and note.get("anchor_state") == "stale"
+                for note in stale_notes
+            ),
+            failures,
+        )
+        stale_conn.close()
+        stale_tconn.close()
+        shutil.rmtree(stale_profile, ignore_errors=True)
+        shutil.rmtree(stale_tmp, ignore_errors=True)
+
+        # Regression: same material identity but different destination bytes must
+        # not fabricate a valid current anchor.
+        diff_profile = Path(tempfile.mkdtemp(prefix="studyhub-notes-diff-"))
+        diff_library = diff_profile / "StudyLibrary"
+        diff_db = diff_profile / "runtime" / "studyhub.sqlite"
+        diff_pdf = diff_library / "TEST1001 - Course" / "Week 01" / "Lecture" / "notes.pdf"
+        diff_pdf.parent.mkdir(parents=True)
+        diff_pdf.write_bytes(pdf.read_bytes())
+        diff_server = load_server(diff_profile, diff_library, diff_db)
+        diff_server.scan_library(diff_library)
+        diff_conn = diff_server.connect_db()
+        diff_server.init_db(diff_conn)
+        diff_file = diff_conn.execute("SELECT id FROM files WHERE filename='notes.pdf'").fetchone()
+        diff_material = diff_conn.execute(
+            "SELECT id, current_version_id FROM materials WHERE legacy_file_id=?", (diff_file["id"],)
+        ).fetchone()
+        diff_conn.execute(
+            "UPDATE materials SET stable_id=? WHERE legacy_file_id=?",
+            (material_stable, diff_file["id"]),
+        )
+        diff_conn.execute(
+            "UPDATE material_versions SET sha256=? WHERE id=?",
+            (hashlib.sha256(pdf_v2).hexdigest(), diff_material["current_version_id"]),
+        )
+        diff_conn.commit()
+        stage_restore(diff_server, archive_path, "e" * 32)
+        diff_plan = diff_server.preview_staged_restore("e" * 32)
+        material_conflicts = [
+            action
+            for section in diff_plan.get("sections", [])
+            for action in section.get("actions", [])
+            if action.get("dataset") == "local_sources"
+            and action.get("classification") == "CONFLICT"
+            and action.get("reason") == "material_content_differs"
+        ]
+        check("preview_explains_material_content_conflict", bool(material_conflicts), failures)
+        diff_result = diff_server.apply_staged_restore(
+            "e" * 32, diff_plan["plan_revision"], decisions_for_notes_restore(diff_plan)
+        )
+        diff_notes = diff_server.StudyHubHandler.handle_notes_get(
+            None, diff_conn, {"targetType": ["file"], "targetId": [str(diff_file["id"])]}
+        )
+        check(
+            "differing_content_anchor_stays_not_ok",
+            diff_result.get("ok") is True
+            and any(
+                note.get("anchor_page") == 1 and note.get("anchor_state") == "stale"
+                for note in diff_notes
+            ),
+            failures,
+        )
+        diff_conn.close()
+        shutil.rmtree(diff_profile, ignore_errors=True)
+
     return 0 if not failures else 1
 
 

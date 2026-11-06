@@ -8630,6 +8630,43 @@ def apply_restore_plan(
     relink_candidates = dict(relink_candidates or {})
     relink_materials = {str(candidate["material_ref"]) for candidate in relink_candidates.values()}
     material_resolution = dict(context["material_resolution"])
+    source_sha_by_material = {
+        str(record["material_ref"]): str(record.get("sha256") or "")
+        for record in datasets["data/local_sources.json"]
+    }
+
+    def resolve_restored_note_anchor(file_id: int, record: dict[str, Any]) -> tuple[str, str]:
+        anchor_material = str(record.get("anchor_material_stable_id") or "")
+        anchor_version = str(record.get("anchor_version_stable_id") or "")
+        if record.get("anchor_page") is None:
+            return anchor_material, anchor_version
+        dest_row = conn.execute(
+            """
+            SELECT m.stable_id AS material_stable_id, mv.stable_id AS version_stable_id,
+              COALESCE(mv.sha256, f.sha256, f.hash, '') AS sha256
+            FROM materials m
+            LEFT JOIN material_versions mv ON mv.id=m.current_version_id
+            LEFT JOIN files f ON f.id=m.legacy_file_id
+            WHERE m.legacy_file_id=? AND m.active=1
+            """,
+            (file_id,),
+        ).fetchone()
+        dest_material = str(dest_row["material_stable_id"] or "") if dest_row else ""
+        dest_version = str(dest_row["version_stable_id"] or "") if dest_row else ""
+        dest_sha = str(dest_row["sha256"] or "") if dest_row else ""
+        source_material = str(record.get("target_ref") or "")
+        source_sha = source_sha_by_material.get(source_material, "")
+        source_current_version = (
+            domain_material_version_stable_id(source_material, source_sha) if source_sha else ""
+        )
+        content_equivalent = bool(source_sha) and source_sha == dest_sha
+        anchored_to_source_current = bool(anchor_version) and anchor_version == source_current_version
+        if content_equivalent and anchored_to_source_current:
+            # The anchor refers to the source's actual content version and the
+            # destination bytes are verifiably identical: remap to the active
+            # destination version. Never fabricate a current reference otherwise.
+            return dest_material or anchor_material, dest_version
+        return dest_material or anchor_material, anchor_version
 
     term_rows = {
         str(row["stable_id"]): row
@@ -9046,11 +9083,7 @@ def apply_restore_plan(
         file_id = resolved_file_ids[str(record["target_ref"])]
         file_row = conn.execute("SELECT course_id, week_label FROM files WHERE id=?", (file_id,)).fetchone()
         require_restore_dependency(file_row is not None)
-        anchor_material, anchor_version = str(record.get("anchor_material_stable_id") or ""), str(record.get("anchor_version_stable_id") or "")
-        if record.get("anchor_page") is not None:
-            resolved_material, resolved_version = note_anchor_for_file(conn, file_id)
-            if resolved_material:
-                anchor_material, anchor_version = resolved_material, resolved_version
+        anchor_material, anchor_version = resolve_restored_note_anchor(file_id, record)
         conn.execute(
             "INSERT INTO notes(target_type, target_id, course_id, week_label, body, created_at, updated_at, anchor_version, anchor_page, anchor_material_stable_id, anchor_version_stable_id) VALUES ('file', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
@@ -9074,13 +9107,9 @@ def apply_restore_plan(
         if not selected_for_backup("notes", stable_id):
             continue
         target_id = backup_target("notes", stable_id, "note")
-        anchor_material, anchor_version = str(record.get("anchor_material_stable_id") or ""), str(record.get("anchor_version_stable_id") or "")
-        if record.get("anchor_page") is not None:
-            note_file = conn.execute("SELECT target_id FROM notes WHERE id=?", (target_id,)).fetchone()
-            if note_file and note_file["target_id"]:
-                resolved_material, resolved_version = note_anchor_for_file(conn, int(note_file["target_id"]))
-                if resolved_material:
-                    anchor_material, anchor_version = resolved_material, resolved_version
+        note_file = conn.execute("SELECT target_id FROM notes WHERE id=?", (target_id,)).fetchone()
+        anchor_file_id = int(note_file["target_id"]) if note_file and note_file["target_id"] else 0
+        anchor_material, anchor_version = resolve_restored_note_anchor(anchor_file_id, record)
         conn.execute(
             "UPDATE notes SET body=?, updated_at=?, anchor_version=?, anchor_page=?, anchor_material_stable_id=?, anchor_version_stable_id=? WHERE id=?",
             (
