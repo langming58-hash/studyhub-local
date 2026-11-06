@@ -1133,6 +1133,40 @@ pre {
   font-size: 13px;
 }
 
+.note-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.review-card-session {
+  display: grid;
+  gap: 14px;
+  max-width: 720px;
+}
+
+.review-card {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.review-card-front {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.review-card-back {
+  font-size: 14px;
+  white-space: pre-wrap;
+  color: var(--text);
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
 textarea {
   min-height: 96px;
   resize: vertical;
