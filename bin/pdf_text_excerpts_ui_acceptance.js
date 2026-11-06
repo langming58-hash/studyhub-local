@@ -64,9 +64,16 @@ reader.fileId = 1;
 reader.generation = 1;
 reader.metadata = { visual_type: "pdf", source_version_stable_id: "matver_x" };
 reader.pdf = { numPages: 3 };
+const selectionEvents = [];
+reader.onSelectionStateChange = (hasSelection) => selectionEvents.push(hasSelection);
 reader.mount = {
   contains(node) {
     return pages.some((page) => page.contains(node));
+  },
+  querySelector(selector) {
+    const match = selector.match(/\.reader-page\[data-page="(\d+)"\]/);
+    if (match) return pages.find((page) => page.dataset.page === match[1]) || null;
+    return { textContent: "" };
   },
 };
 
@@ -110,6 +117,28 @@ check("different_file_selection_rejected", reader.getCapturedSelection() === nul
 reader.fileId = 1;
 reader.generation = 2;
 check("stale_generation_selection_rejected", reader.getCapturedSelection() === null);
+reader.generation = 1;
+
+readerSandbox.getSelection = () => selection("to be invalidated", page3Text, page3Text);
+reader.updateSelection();
+check("captured_before_invalidation", reader.getCapturedSelection() !== null);
+reader.invalidateSelection();
+check("invalidate_selection_clears_and_notifies", reader.getCapturedSelection() === null && selectionEvents[selectionEvents.length - 1] === false);
+
+// Zoom rebuild invalidates the pending selection.
+readerSandbox.getSelection = () => selection("zoom rebuild", page3Text, page3Text);
+reader.updateSelection();
+reader.renderPage = async () => {};
+reader.goToPage = () => {};
+reader.setZoom(1.5);
+check("zoom_rebuild_invalidates_selection", reader.getCapturedSelection() === null);
+
+// Lazy-page eviction invalidates the pending selection for the evicted page.
+reader.selection = { generation: reader.generation, fileId: reader.fileId, page: 8, pageCount: 8, text: "evicted", sourceVersion: "matver_x" };
+reader.rendered = new Map([...Array(8)].map((_value, index) => [index + 1, { page: { cleanup() {} }, holder: { innerHTML: "" } }]));
+reader.currentPage = 1;
+reader.trimRendered();
+check("lazy_eviction_invalidates_selection", reader.getCapturedSelection() === null);
 
 // --- Part B: app.js excerpt-to-note flow ---
 function makeElement(selector) {
@@ -165,12 +194,14 @@ const i18n = {
 };
 const posted = [];
 let fetchHandler = () => ({ ok: true, status: 200, statusText: "OK", json: async () => [] });
+let confirmResult = true;
 const appSandbox = {
   window: null,
   document: documentShim,
   addEventListener() {},
   removeEventListener() {},
   open() {},
+  confirm: () => confirmResult,
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   navigator: { clipboard: { writeText: async () => {} } },
   history: { pushState() {}, replaceState() {} },
@@ -197,7 +228,7 @@ appSandbox.window = appSandbox;
 vm.createContext(appSandbox);
 vm.runInContext(
   appSource +
-    "\n;globalThis.__test = { state, $, api, addSelectionToNote, persistNote, quotedExcerpt, get noteExcerpt() { return noteExcerpt; } };",
+    "\n;globalThis.__test = { state, $, api, addSelectionToNote, persistNote, quotedExcerpt, get noteExcerpt() { return noteExcerpt; }, set noteExcerpt(v) { noteExcerpt = v; } };",
   appSandbox,
 );
 const app = appSandbox.__test;
@@ -228,6 +259,28 @@ async function main() {
       && posted[0].body.includes("My commentary"),
   );
   check("excerpt_draft_cleared_after_save", app.noteExcerpt === null && app.$("#noteBody").value === "");
+
+  // Unsaved manual draft is appended, not silently overwritten.
+  app.noteExcerpt = null;
+  app.$("#noteBody").value = "Manual draft";
+  app.addSelectionToNote();
+  check("manual_draft_is_preserved_and_appended", app.$("#noteBody").value === "Manual draft\n\n> Selected text\n> Second line");
+  check("appended_excerpt_keeps_page_anchor", app.noteExcerpt && app.noteExcerpt.page === 3);
+
+  // Different-page excerpt requires an explicit replacement decision.
+  app.noteExcerpt = { page: 1, pageCount: 3, sourceVersion: "matver_x" };
+  app.$("#noteBody").value = "> Old page one excerpt";
+  confirmResult = false;
+  app.addSelectionToNote();
+  check("page_conflict_declined_keeps_draft", app.$("#noteBody").value === "> Old page one excerpt");
+  confirmResult = true;
+  app.addSelectionToNote();
+  check("page_conflict_confirmed_replaces_draft", app.$("#noteBody").value === "> Selected text\n> Second line" && app.noteExcerpt.page === 3);
+
+  // A populated draft survives Reader invalidation (zoom/eviction only clears pending capture).
+  app.$("#noteBody").value = "> Selected text\n> Second line\n\nCommentary";
+  appSandbox.StudyHubReader.getCapturedSelection = () => null;
+  check("draft_survives_reader_invalidation", app.$("#noteBody").value.includes("Commentary") && app.noteExcerpt !== null);
 
   return failures;
 }

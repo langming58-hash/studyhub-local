@@ -12643,6 +12643,40 @@ def note_anchor_for_file(conn: sqlite3.Connection, file_id: int) -> tuple[str, s
     return str(row["material_stable_id"] or ""), str(row["version_stable_id"] or "")
 
 
+def verify_note_excerpt_source(
+    conn: sqlite3.Connection,
+    file_id: int,
+    source_version: str,
+) -> None:
+    """Verify an explicit excerpt source-version identity against the current
+    readable physical bytes before an anchored quote is persisted."""
+    row = get_file(conn, file_id)
+    _material_stable, version_stable = note_anchor_for_file(conn, file_id)
+    if not version_stable:
+        raise ValueError("Source version is unavailable")
+    if source_version != version_stable:
+        raise ValueError("Source changed since the text was selected")
+    version_row = conn.execute(
+        """
+        SELECT mv.sha256
+        FROM materials m
+        LEFT JOIN material_versions mv ON mv.id=m.current_version_id
+        WHERE m.legacy_file_id=? AND m.active=1
+        """,
+        (file_id,),
+    ).fetchone()
+    expected_sha = str(version_row["sha256"] or "") if version_row else ""
+    if not expected_sha:
+        raise ValueError("Source version is unavailable")
+    source_path = Path(str(row["original_path"])).expanduser().resolve()
+    if not material_path_allowed(row, source_path):
+        raise PermissionError("Reader source is outside the StudyHub material allowlist.")
+    if not source_path.is_file():
+        raise FileNotFoundError("Original file is missing. Scan Library to refresh your file list.")
+    if sha256_file(source_path) != expected_sha:
+        raise ValueError("Source changed since the text was selected")
+
+
 class MultipartUpload:
     def __init__(self, content_type: str, body: bytes):
         m = re.search(r"boundary=(.+)", content_type)
@@ -15343,12 +15377,13 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 material_stable_id, version_stable_id = note_anchor_for_file(conn, target_id)
             else:
                 material_stable_id, version_stable_id = "", ""
-            source_version = body.get("sourceVersion")
-            if anchor_page is not None and source_version:
+            if "sourceVersion" in body:
+                source_version = body["sourceVersion"]
+                if anchor_page is None:
+                    raise ValueError("Source version requires a page anchor")
                 if not isinstance(source_version, str) or not source_version:
                     raise ValueError("Source version is invalid")
-                if source_version != version_stable_id:
-                    raise ValueError("Source changed since the text was selected")
+                verify_note_excerpt_source(conn, target_id, source_version)
             conn.execute(
                 "INSERT INTO notes(target_type, target_id, course_id, week_label, body, created_at, updated_at, anchor_version, anchor_page, anchor_material_stable_id, anchor_version_stable_id) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
                 (

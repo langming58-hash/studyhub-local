@@ -116,6 +116,13 @@
       }
     }
 
+    invalidateSelection() {
+      if (!this.selection && !this.selectionError) return;
+      this.selection = null;
+      this.selectionError = null;
+      this.onSelectionStateChange?.(false);
+    }
+
     updateSelection() {
       const rawSelection = window.getSelection?.();
       const rawText = rawSelection ? rawSelection.toString() : "";
@@ -134,6 +141,7 @@
 
     readCurrentSelection(selection = window.getSelection?.()) {
       if (!this.pdf || !this.mount || !this.metadata || this.metadata.visual_type !== "pdf") return null;
+      if (!this.metadata.source_version_stable_id) return null;
       if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
       const text = selection.toString().trim();
       if (!text || text.length > MAX_EXCERPT_CHARS) return null;
@@ -155,7 +163,7 @@
         page,
         pageCount,
         text,
-        sourceVersion: this.metadata.source_version_stable_id || "",
+        sourceVersion: this.metadata.source_version_stable_id,
       };
     }
 
@@ -211,6 +219,7 @@
         this.rendering.delete(pageNumber);
         return;
       }
+      if (this.selection && this.selection.page === pageNumber) this.invalidateSelection();
       const generation = this.generation;
       try {
         const page = await this.pdf.getPage(pageNumber);
@@ -254,6 +263,7 @@
         record.page.cleanup();
         record.holder.innerHTML = `<div class="reader-page-number">${page}</div>`;
         this.rendered.delete(page);
+        if (this.selection && this.selection.page === page) this.invalidateSelection();
       }
     }
 
@@ -303,6 +313,7 @@
     async setZoom(value) {
       this.zoom = Math.max(0.5, Math.min(3, value));
       this.mount.querySelector("[data-reader-zoom]").textContent = `${Math.round(this.zoom * 100)}%`;
+      this.invalidateSelection();
       for (const task of this.renderTasks.values()) task.cancel();
       this.renderTasks.clear();
       this.rendering.clear();

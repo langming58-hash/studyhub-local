@@ -75,6 +75,27 @@ def main() -> int:
         except ValueError:
             check("changed_source_version_rejected", True, failures)
 
+        # Malformed explicit sourceVersion values fail closed.
+        for bad_version in ("", None, False, 123, {"id": "x"}, ["x"]):
+            try:
+                post_note(server, {**base, "body": "> Page one text", "anchorPage": 1, "pageCount": 3, "sourceVersion": bad_version})
+                check(f"malformed_source_version_{bad_version!r}_rejected", False, failures)
+            except ValueError:
+                check(f"malformed_source_version_{bad_version!r}_rejected", True, failures)
+
+        # Physical PDF replacement without rescan rejects the excerpt save.
+        pdf.write_bytes(synthetic_pdf(["Replaced one", "Replaced two", "Replaced three"]))
+        replaced_ok = False
+        try:
+            post_note(server, {**base, "body": "> Page one text", "anchorPage": 1, "pageCount": 3, "sourceVersion": version_stable})
+            replaced_ok = True
+        except ValueError:
+            pass
+        check("physical_replacement_without_rescan_rejected", not replaced_ok, failures)
+        notes_after = server.StudyHubHandler.handle_notes_get(None, conn, {"targetType": ["file"], "targetId": [str(file_id)]})
+        check("rejected_excerpt_inserts_no_anchored_note", sum(1 for n in notes_after if n.get("anchor_page") == 1) == 1, failures)
+        pdf.write_bytes(pdf_bytes)
+
         # Ordinary unanchored notes remain unaffected.
         unanchored = post_note(server, {**base, "body": "Plain manual note"})
         check("plain_note_unchanged", unanchored.get("status") == 200, failures)

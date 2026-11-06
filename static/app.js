@@ -2589,13 +2589,23 @@ function addSelectionToNote() {
     toast(t("file.selectTextFirst"));
     return;
   }
+  const editor = $("#noteBody");
+  const existing = editor.value;
+  const quoted = quotedExcerpt(selection.text);
+  if (noteExcerpt && noteExcerpt.page !== selection.page) {
+    if (!confirm(t("file.excerptPageConflict"))) return;
+    editor.value = quoted;
+  } else if (existing.trim()) {
+    editor.value = `${existing}\n\n${quoted}`;
+  } else {
+    editor.value = quoted;
+  }
   noteExcerpt = {
     page: selection.page,
     pageCount: selection.pageCount,
     sourceVersion: selection.sourceVersion,
   };
-  $("#noteBody").value = quotedExcerpt(selection.text);
-  $("#noteBody").focus();
+  editor.focus();
   toast(t("file.selectionAdded"));
 }
 
