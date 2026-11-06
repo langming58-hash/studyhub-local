@@ -2732,14 +2732,19 @@ function renderReviewCardView() {
 async function gradeReviewCard(cardId, grade) {
   if (reviewCardSession.busy) return;
   reviewCardSession.busy = true;
-  await api("/api/review-cards", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "review", id: Number(cardId), grade }),
-  });
-  await fetchReviewCardSession();
-  renderReviewCardView();
-  reviewCardSession.busy = false;
+  try {
+    await api("/api/review-cards", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "review", id: Number(cardId), grade }),
+    });
+    await fetchReviewCardSession();
+    renderReviewCardView();
+  } catch (error) {
+    toast(error.message || String(error));
+  } finally {
+    reviewCardSession.busy = false;
+  }
 }
 
 async function openAskForFile(fileId, prompt = "") {
