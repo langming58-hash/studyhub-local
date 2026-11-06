@@ -98,6 +98,8 @@ let appLoaded = false;
 let currentReaderPage = 1;
 let reviewCardSession = { queue: [], index: 0, reveal: false, busy: false };
 const noteCardSource = new Map();
+let noteExcerpt = null;
+let noteSaveBusy = false;
 
 function desktopInvoke(command, args = {}) {
   const invoke = window.__TAURI__?.core?.invoke;
@@ -2459,6 +2461,7 @@ async function openFileDrawer(fileId, page = 0, options = {}) {
   `;
   $("#extractedText").textContent = file.extractedText || t("file.noReadableText");
   currentReaderPage = Math.max(1, Number(page || 1));
+  noteExcerpt = null;
   await window.StudyHubReader.open({
     fileId: file.id,
     page: page || 1,
@@ -2466,6 +2469,10 @@ async function openFileDrawer(fileId, page = 0, options = {}) {
     onPageChange: (nextPage) => {
       currentReaderPage = nextPage;
       recordRoute({ view: "file", fileId: file.id, page: nextPage }, true);
+    },
+    onSelectionChange: (hasSelection) => {
+      const button = $("#addSelectionNote");
+      if (button) button.disabled = !hasSelection;
     },
   });
   $("#askResponse").textContent = "";
@@ -2524,17 +2531,35 @@ function noteCard(note) {
 }
 
 async function saveNote() {
-  if (!state.selectedFile) return;
+  if (!state.selectedFile || noteSaveBusy) return;
+  noteSaveBusy = true;
+  try {
+    await persistNote();
+  } finally {
+    noteSaveBusy = false;
+  }
+}
+
+async function persistNote() {
   const body = $("#noteBody").value.trim();
   if (!body) {
     toast(t("file.writeNote"));
     return;
   }
-  const anchor = window.StudyHubNotesUI?.noteAnchorPayload(
-    state.selectedFile,
-    currentReaderPage,
-    window.StudyHubReader?.pdf?.numPages,
-  ) || {};
+  let anchor = {};
+  if (noteExcerpt) {
+    anchor = {
+      anchorPage: noteExcerpt.page,
+      pageCount: noteExcerpt.pageCount,
+      sourceVersion: noteExcerpt.sourceVersion,
+    };
+  } else {
+    anchor = window.StudyHubNotesUI?.noteAnchorPayload(
+      state.selectedFile,
+      currentReaderPage,
+      window.StudyHubReader?.pdf?.numPages,
+    ) || {};
+  }
   await api("/api/notes", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2548,8 +2573,47 @@ async function saveNote() {
     }),
   });
   $("#noteBody").value = "";
+  noteExcerpt = null;
   await loadFileNotes(state.selectedFile.id);
   toast(t("file.noteSaved"));
+}
+
+function addSelectionToNote() {
+  const reader = window.StudyHubReader;
+  const selection = reader?.getCapturedSelection?.();
+  if (!selection) {
+    toast(reader?.getSelectionError?.() === "too_long" ? t("file.selectionTooLong") : t("file.selectTextFirst"));
+    return;
+  }
+  if (!state.selectedFile || selection.fileId !== Number(state.selectedFile.id)) {
+    toast(t("file.selectTextFirst"));
+    return;
+  }
+  const editor = $("#noteBody");
+  const existing = editor.value;
+  const quoted = quotedExcerpt(selection.text);
+  if (noteExcerpt && noteExcerpt.page !== selection.page) {
+    if (!confirm(t("file.excerptPageConflict"))) return;
+    editor.value = quoted;
+  } else if (existing.trim()) {
+    editor.value = `${existing}\n\n${quoted}`;
+  } else {
+    editor.value = quoted;
+  }
+  noteExcerpt = {
+    page: selection.page,
+    pageCount: selection.pageCount,
+    sourceVersion: selection.sourceVersion,
+  };
+  editor.focus();
+  toast(t("file.selectionAdded"));
+}
+
+function quotedExcerpt(text) {
+  return String(text || "")
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
 }
 
 function reviewCardAnchorChip(card) {
@@ -3669,6 +3733,10 @@ document.addEventListener("click", async (event) => {
   }
   if (target.id === "newReviewCard") {
     openReviewCardDialog({ materialId: state.selectedFile?.id });
+    return;
+  }
+  if (target.id === "addSelectionNote") {
+    addSelectionToNote();
     return;
   }
   if (target.id === "reviewCardSubmit") {
