@@ -14697,6 +14697,7 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                     visual_type = "image"
                 else:
                     visual_type = "text"
+                _anchor_material, source_version = note_anchor_for_file(conn, file_id)
                 self.send_json(
                     {
                         "file_id": file_id,
@@ -14706,6 +14707,7 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                         "preview_url": f"/preview/{file_id}",
                         "readable_text": read_cached_text(row, 200_000),
                         "extraction": read_extraction_metadata(row["sha256"] or row["hash"] or ""),
+                        "source_version_stable_id": source_version,
                     }
                 )
             elif path == "/api/notes":
@@ -15341,6 +15343,12 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 material_stable_id, version_stable_id = note_anchor_for_file(conn, target_id)
             else:
                 material_stable_id, version_stable_id = "", ""
+            source_version = body.get("sourceVersion")
+            if anchor_page is not None and source_version:
+                if not isinstance(source_version, str) or not source_version:
+                    raise ValueError("Source version is invalid")
+                if source_version != version_stable_id:
+                    raise ValueError("Source changed since the text was selected")
             conn.execute(
                 "INSERT INTO notes(target_type, target_id, course_id, week_label, body, created_at, updated_at, anchor_version, anchor_page, anchor_material_stable_id, anchor_version_stable_id) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
                 (

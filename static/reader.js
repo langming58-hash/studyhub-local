@@ -2,6 +2,7 @@
   const PDFJS_URL = "/vendor/reader/pdfjs/pdf.mjs";
   const PDFJS_WORKER_URL = "/vendor/reader/pdfjs/pdf.worker.mjs";
   const MAX_RENDERED_PAGES = 7;
+  const MAX_EXCERPT_CHARS = 4000;
   const tr = (key, variables = {}) => window.StudyHubI18n?.t(key, variables) || key;
 
   class ReaderController {
@@ -13,12 +14,20 @@
       this.rendering = new Set();
       this.renderTasks = new Map();
       this.observer = null;
+      this.selection = null;
+      this.selectionError = null;
+      this.onSelectionStateChange = null;
+      this.selectionListener = null;
     }
 
     destroy() {
       this.generation += 1;
       this.observer?.disconnect();
       this.observer = null;
+      this.clearSelectionListener();
+      this.selection = null;
+      this.selectionError = null;
+      this.onSelectionStateChange?.(false);
       this.loadingTask?.destroy?.();
       this.loadingTask = null;
       this.pdf = null;
@@ -28,12 +37,15 @@
       this.rendering.clear();
     }
 
-    async open({ fileId, page = 1, mount, onPageChange }) {
+    async open({ fileId, page = 1, mount, onPageChange, onSelectionChange }) {
       this.destroy();
       const generation = this.generation;
       this.mount = mount;
       this.fileId = Number(fileId);
       this.onPageChange = onPageChange;
+      this.onSelectionStateChange = onSelectionChange || null;
+      this.selection = null;
+      this.selectionError = null;
       this.currentPage = Math.max(1, Number(page || 1));
       mount.innerHTML = `<div class="reader-loading" role="status">${tr("reader.loading")}</div>`;
       const response = await fetch(`/api/reader?id=${encodeURIComponent(this.fileId)}`, { credentials: "same-origin" });
@@ -68,6 +80,7 @@
     async openPdf(metadata, generation) {
       this.mount.innerHTML = `<div class="reader-shell">${this.toolbar()}<div class="reader-pages" data-reader-pages></div></div>`;
       this.bindToolbar();
+      this.bindSelectionListener();
       try {
         const pdfjs = await import(PDFJS_URL);
         pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
@@ -88,6 +101,79 @@
       } catch (error) {
         this.showTextFallback(error);
       }
+    }
+
+    bindSelectionListener() {
+      this.clearSelectionListener();
+      this.selectionListener = () => this.updateSelection();
+      document.addEventListener("selectionchange", this.selectionListener);
+    }
+
+    clearSelectionListener() {
+      if (this.selectionListener) {
+        document.removeEventListener("selectionchange", this.selectionListener);
+        this.selectionListener = null;
+      }
+    }
+
+    updateSelection() {
+      const rawSelection = window.getSelection?.();
+      const rawText = rawSelection ? rawSelection.toString() : "";
+      if (!rawText.trim()) return;
+      if (rawText.trim().length > MAX_EXCERPT_CHARS) {
+        this.selection = null;
+        this.selectionError = "too_long";
+        this.onSelectionStateChange?.(false);
+        return;
+      }
+      const captured = this.readCurrentSelection(rawSelection);
+      this.selection = captured;
+      this.selectionError = captured ? null : "invalid";
+      this.onSelectionStateChange?.(Boolean(captured));
+    }
+
+    readCurrentSelection(selection = window.getSelection?.()) {
+      if (!this.pdf || !this.mount || !this.metadata || this.metadata.visual_type !== "pdf") return null;
+      if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+      const text = selection.toString().trim();
+      if (!text || text.length > MAX_EXCERPT_CHARS) return null;
+      const range = selection.getRangeAt(0);
+      const startNode = range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement;
+      const endNode = range.endContainer.nodeType === 1 ? range.endContainer : range.endContainer.parentElement;
+      if (!startNode || !endNode || !this.mount.contains(startNode) || !this.mount.contains(endNode)) return null;
+      const startPage = startNode.closest?.(".reader-page[data-page]");
+      const endPage = endNode.closest?.(".reader-page[data-page]");
+      if (!startPage || startPage !== endPage) return null;
+      const textLayer = startPage.querySelector(".reader-text-layer");
+      if (!textLayer || !textLayer.contains(startNode) || !textLayer.contains(endNode)) return null;
+      const page = Number(startPage.dataset.page);
+      const pageCount = Number(this.pdf.numPages);
+      if (!Number.isInteger(page) || page < 1 || page > pageCount || !Number.isInteger(pageCount) || pageCount < 1) return null;
+      return {
+        generation: this.generation,
+        fileId: this.fileId,
+        page,
+        pageCount,
+        text,
+        sourceVersion: this.metadata.source_version_stable_id || "",
+      };
+    }
+
+    getCapturedSelection() {
+      const captured = this.selection;
+      if (
+        !captured
+        || !this.pdf
+        || captured.generation !== this.generation
+        || captured.fileId !== this.fileId
+      ) {
+        return null;
+      }
+      return captured;
+    }
+
+    getSelectionError() {
+      return this.selectionError || null;
     }
 
     async buildPagePlaceholders() {
