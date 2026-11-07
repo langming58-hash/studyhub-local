@@ -228,17 +228,18 @@
       const layer = holder.querySelector(".reader-text-layer");
       if (!layer) return;
       layer.querySelectorAll(".reader-highlight").forEach((node) => node.remove());
-      const pagePdfHeight = (viewport.viewBox && viewport.viewBox[3]) || (viewport.height / viewport.scale);
+      const pageWidth = (viewport.viewBox && viewport.viewBox[2]) || (viewport.width / viewport.scale);
+      const pageHeight = (viewport.viewBox && viewport.viewBox[3]) || (viewport.height / viewport.scale);
       for (const highlight of this.highlights) {
         if (Number(highlight.anchor_page) !== pageNumber || highlight.anchor_state !== "ok") continue;
         for (const rect of highlight.rects || []) {
           const [x, y, width, height] = rect;
           const div = document.createElement("div");
           div.className = "reader-highlight";
-          div.style.left = `${x * viewport.scale}px`;
-          div.style.top = `${(pagePdfHeight - y - height) * viewport.scale}px`;
-          div.style.width = `${width * viewport.scale}px`;
-          div.style.height = `${height * viewport.scale}px`;
+          div.style.left = `${(x / pageWidth) * 100}%`;
+          div.style.top = `${((pageHeight - y - height) / pageHeight) * 100}%`;
+          div.style.width = `${(width / pageWidth) * 100}%`;
+          div.style.height = `${(height / pageHeight) * 100}%`;
           layer.appendChild(div);
         }
       }

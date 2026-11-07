@@ -72,13 +72,13 @@ readerSandbox.document = {
 reader.rendered.set(3, { viewport: { scale: 1.15, height: 910.8, viewBox: [0, 0, 612, 792] }, holder });
 reader.highlights = [{ anchor_page: 3, anchor_state: "ok", rects: [[43.48, 769.39, 100, 13.91]] }];
 reader.applyPageHighlights(3);
-const px = (value) => parseFloat(value.replace("px", ""));
+const pct = (value) => parseFloat(value.replace("%", ""));
 check(
-  "highlight_overlay_rendered_at_viewport_position",
+  "highlight_overlay_rendered_as_page_percentage",
   renderedDivs.length === 1
-    && Math.abs(px(renderedDivs[0].style.left) - 50.002) < 0.01
-    && Math.abs(px(renderedDivs[0].style.top) - 10.005) < 0.01
-    && Math.abs(px(renderedDivs[0].style.width) - 115) < 0.01,
+    && Math.abs(pct(renderedDivs[0].style.left) - 7.1046) < 0.01
+    && Math.abs(pct(renderedDivs[0].style.top) - 1.0985) < 0.01
+    && Math.abs(pct(renderedDivs[0].style.width) - 16.3399) < 0.01,
 );
 readerSandbox.document = {};
 
