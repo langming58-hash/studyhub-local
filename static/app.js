@@ -2663,6 +2663,9 @@ async function saveHighlight() {
       rects: selection.rects,
       label: selection.text.slice(0, 2000),
       sourceVersion: selection.sourceVersion,
+      pageWidth: selection.pageWidth,
+      pageHeight: selection.pageHeight,
+      fontHeight: selection.fontHeight,
     }),
   });
   await loadFileHighlights(state.selectedFile.id);

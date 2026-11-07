@@ -160,6 +160,11 @@
       if (!startPage || startPage !== endPage) return null;
       const textLayer = startPage.querySelector(".reader-text-layer");
       if (!textLayer || !textLayer.contains(startNode) || !textLayer.contains(endNode)) return null;
+      const layerRect = typeof textLayer.getBoundingClientRect === "function"
+        ? textLayer.getBoundingClientRect()
+        : { width: 0, height: 0 };
+      const layerComputed = typeof window.getComputedStyle === "function" ? window.getComputedStyle(textLayer) : null;
+      const fontHeight = layerComputed ? (parseFloat(layerComputed.getPropertyValue("--font-height")) || 18) : 18;
       const page = Number(startPage.dataset.page);
       const pageCount = Number(this.pdf.numPages);
       if (!Number.isInteger(page) || page < 1 || page > pageCount || !Number.isInteger(pageCount) || pageCount < 1) return null;
@@ -172,6 +177,9 @@
         text,
         sourceVersion: this.metadata.source_version_stable_id,
         rects,
+        pageWidth: layerRect.width || 0,
+        pageHeight: layerRect.height || 0,
+        fontHeight,
       };
     }
 
@@ -186,17 +194,37 @@
         spans.push(...allSpans);
       }
       const rects = [];
+      const computed = typeof window.getComputedStyle === "function" ? window.getComputedStyle(textLayer) : null;
+      const fontHeight = computed ? (parseFloat(computed.getPropertyValue("--font-height")) || 18) : 18;
       for (const span of spans) {
-        const left = parseFloat(span.style.left) / 100;
-        const top = parseFloat(span.style.top) / 100;
-        if (!Number.isFinite(left) || !Number.isFinite(top)) continue;
-        const computed = typeof window.getComputedStyle === "function" ? window.getComputedStyle(span) : null;
-        const fontHeight = computed ? (parseFloat(computed.getPropertyValue("--font-height")) || 18) : 18;
-        const box = span.getBoundingClientRect();
-        const width = box.width / fontHeight;
-        const height = box.height / fontHeight;
-        if (width <= 0 || height <= 0) continue;
-        rects.push([round(left), round(top), round(width), round(height)]);
+        const spanLeft = parseFloat(span.style.left) / 100;
+        const spanTop = parseFloat(span.style.top) / 100;
+        if (!Number.isFinite(spanLeft) || !Number.isFinite(spanTop)) continue;
+        const spanRect = span.getBoundingClientRect();
+        let subRects;
+        if (typeof range.cloneRange === "function" && typeof document.createRange === "function" && typeof Range !== "undefined") {
+          const spanRange = document.createRange();
+          spanRange.selectNodeContents(span);
+          const sub = range.cloneRange();
+          if (sub.compareBoundaryPoints(Range.START_TO_START, spanRange) < 0) sub.setStart(spanRange.startContainer, spanRange.startOffset);
+          if (sub.compareBoundaryPoints(Range.END_TO_END, spanRange) > 0) sub.setEnd(spanRange.endContainer, spanRange.endOffset);
+          subRects = sub.getClientRects();
+        } else {
+          subRects = [spanRect];
+        }
+        for (let index = 0; index < subRects.length; index += 1) {
+          const box = subRects[index];
+          const offLeftEm = (box.left - spanRect.left) / fontHeight;
+          const offTopEm = (box.top - spanRect.top) / fontHeight;
+          const width = box.width / fontHeight;
+          const height = box.height / fontHeight;
+          if (width <= 0 || height <= 0) continue;
+          rects.push([
+            round(spanLeft), round(spanTop),
+            round(Math.max(0, offLeftEm)), round(Math.max(0, offTopEm)),
+            round(width), round(height),
+          ]);
+        }
       }
       return rects;
     }
@@ -231,18 +259,19 @@
       const layer = holder.querySelector(".reader-text-layer");
       if (!layer) return;
       layer.querySelectorAll(".reader-highlight").forEach((node) => node.remove());
+      const layerRect = layer.getBoundingClientRect();
       const computed = typeof window.getComputedStyle === "function" ? window.getComputedStyle(layer) : null;
       const fontHeight = computed ? (parseFloat(computed.getPropertyValue("--font-height")) || 18) : 18;
       for (const highlight of this.highlights) {
         if (Number(highlight.anchor_page) !== pageNumber || highlight.anchor_state !== "ok") continue;
         for (const rect of highlight.rects || []) {
-          const [left, top, width, height] = rect;
+          const [spanLeft, spanTop, offLeftEm, offTopEm, widthEm, heightEm] = rect;
           const div = document.createElement("div");
           div.className = "reader-highlight";
-          div.style.left = `${round(left * 100)}%`;
-          div.style.top = `${round(top * 100)}%`;
-          div.style.width = `${round(width * fontHeight)}px`;
-          div.style.height = `${round(height * fontHeight)}px`;
+          div.style.left = `${round((spanLeft + (offLeftEm * fontHeight) / layerRect.width) * 100)}%`;
+          div.style.top = `${round((spanTop + (offTopEm * fontHeight) / layerRect.height) * 100)}%`;
+          div.style.width = `${round(widthEm * fontHeight)}px`;
+          div.style.height = `${round(heightEm * fontHeight)}px`;
           layer.appendChild(div);
         }
       }

@@ -86,7 +86,7 @@ def main() -> int:
         file_id = int(file_row["id"])
         _material_stable, version_stable = server.note_anchor_for_file(conn, file_id)
 
-        rects = [[0.1176, 0.0736, 5.77, 0.89], [0.1176, 0.098, 5.77, 0.89]]
+        rects = [[0.1176, 0.0736, 0, 0, 5.77, 0.89], [0.1176, 0.098, 0, 0, 5.77, 0.89]]
         created = dispatch(server, conn, {
             "action": "create", "fileId": file_id, "anchorPage": 3,
             "rects": rects, "label": "Selected passage", "sourceVersion": version_stable,
@@ -107,9 +107,10 @@ def main() -> int:
 
         # Geometry and input validation.
         bad_rects = (
-            [], [[0.5, 0.5, 0, 1]], [[1.5, 0.5, 1, 1]], [[0.5, -0.1, 1, 1]],
-            [[0.5, 0.5, 1, 0]], [[0.5, 0.5, 201, 1]], [[True, 0.5, 1, 1]],
-            ["not-a-rect"], [[0.5, 0.5, 1, 1, 1]],
+            [], [[1.5, 0.5, 0, 0, 1, 1]], [[0.5, -0.1, 0, 0, 1, 1]],
+            [[0.5, 0.5, -0.1, 0, 1, 1]], [[0.5, 0.5, 0, 0, 0, 1]],
+            [[0.5, 0.5, 0, 0, 201, 1]], [[True, 0.5, 0, 0, 1, 1]],
+            ["not-a-rect"], [[0.5, 0.5, 0, 0, 1, 1, 1]], [[0.5, 0.5, 0, 0, 1]],
         )
         for bad in bad_rects:
             try:
@@ -119,16 +120,25 @@ def main() -> int:
                 check(f"invalid_rects_{bad!r}_rejected", True, failures)
         for bad_version in ("", None, False, 123, "matver_wrong"):
             try:
-                dispatch(server, conn, {"action": "create", "fileId": file_id, "anchorPage": 1, "rects": [[0, 0, 10, 5]], "label": "", "sourceVersion": bad_version})
+                dispatch(server, conn, {"action": "create", "fileId": file_id, "anchorPage": 1, "rects": [[0.1, 0.1, 0, 0, 1, 0.5]], "label": "", "sourceVersion": bad_version})
                 check(f"invalid_source_version_{bad_version!r}_rejected", False, failures)
             except ValueError:
                 check(f"invalid_source_version_{bad_version!r}_rejected", True, failures)
+
+        # Full-page bounds are enforced when page geometry is supplied.
+        try:
+            dispatch(server, conn, {"action": "create", "fileId": file_id, "anchorPage": 1,
+                                    "rects": [[0.99, 0.99, 0, 0, 10, 10]], "label": "", "sourceVersion": version_stable,
+                                    "pageWidth": 703.8, "pageHeight": 910.8, "fontHeight": 18})
+            check("out_of_page_rect_rejected", False, failures)
+        except ValueError:
+            check("out_of_page_rect_rejected", True, failures)
 
         # Physical replacement without rescan rejects highlight creation.
         pdf.write_bytes(synthetic_pdf(["Replaced one", "Replaced two", "Replaced three"]))
         rejected = False
         try:
-            dispatch(server, conn, {"action": "create", "fileId": file_id, "anchorPage": 1, "rects": [[0, 0, 10, 5]], "label": "", "sourceVersion": version_stable})
+            dispatch(server, conn, {"action": "create", "fileId": file_id, "anchorPage": 1, "rects": [[0.1, 0.1, 0, 0, 1, 0.5]], "label": "", "sourceVersion": version_stable})
             rejected = True
         except ValueError:
             pass
@@ -152,7 +162,7 @@ def main() -> int:
         docx_file = conn.execute("SELECT id, extension FROM files WHERE filename='notes.docx'").fetchone()
         if docx_file and str(docx_file["extension"] or "").lower() == ".docx":
             try:
-                dispatch(server, conn, {"action": "create", "fileId": int(docx_file["id"]), "anchorPage": 1, "rects": [[0.1, 0.1, 1, 0.5]], "label": "", "sourceVersion": version_stable})
+                dispatch(server, conn, {"action": "create", "fileId": int(docx_file["id"]), "anchorPage": 1, "rects": [[0.1, 0.1, 0, 0, 1, 0.5]], "label": "", "sourceVersion": version_stable})
                 check("non_native_pdf_rejected", False, failures)
             except ValueError:
                 check("non_native_pdf_rejected", True, failures)

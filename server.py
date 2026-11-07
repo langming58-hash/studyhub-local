@@ -5410,17 +5410,19 @@ def validate_pdf_highlight_rects(value: Any) -> None:
     if not isinstance(value, list) or not 1 <= len(value) <= BACKUP_HIGHLIGHT_RECTS_MAX:
         raise ValueError("Backup PDF highlight geometry is invalid")
     for rect in value:
-        if not isinstance(rect, list) or len(rect) != 4:
+        if not isinstance(rect, list) or len(rect) != 6:
             raise ValueError("Backup PDF highlight geometry is invalid")
         numbers: list[float] = []
         for number in rect:
             if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(float(number)):
                 raise ValueError("Backup PDF highlight geometry is invalid")
             numbers.append(float(number))
-        left, top, width, height = numbers
+        left, top, off_left_em, off_top_em, width_em, height_em = numbers
         if left < 0 or left > 1 or top < 0 or top > 1:
             raise ValueError("Backup PDF highlight geometry is invalid")
-        if width <= 0 or height <= 0 or width > BACKUP_HIGHLIGHT_EM_MAX or height > BACKUP_HIGHLIGHT_EM_MAX:
+        if off_left_em < 0 or off_top_em < 0 or width_em <= 0 or height_em <= 0:
+            raise ValueError("Backup PDF highlight geometry is invalid")
+        if max(off_left_em, off_top_em, width_em, height_em) > BACKUP_HIGHLIGHT_EM_MAX:
             raise ValueError("Backup PDF highlight geometry is invalid")
 
 
@@ -12522,33 +12524,43 @@ def highlight_source_state(conn: sqlite3.Connection, file_id: int) -> tuple[str,
         row = get_file(conn, file_id)
     except FileNotFoundError:
         return "missing", ""
-    _material_stable, current_version = note_anchor_for_file(conn, file_id)
+    try:
+        _material_stable, current_version = note_anchor_for_file(conn, file_id)
+    except (OSError, sqlite3.Error):
+        return "missing", ""
     if not current_version:
         return "missing", ""
-    version_row = conn.execute(
-        """
-        SELECT mv.sha256
-        FROM materials m
-        LEFT JOIN material_versions mv ON mv.id=m.current_version_id
-        WHERE m.legacy_file_id=? AND m.active=1
-        """,
-        (file_id,),
-    ).fetchone()
+    try:
+        version_row = conn.execute(
+            """
+            SELECT mv.sha256
+            FROM materials m
+            LEFT JOIN material_versions mv ON mv.id=m.current_version_id
+            WHERE m.legacy_file_id=? AND m.active=1
+            """,
+            (file_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        return "missing", ""
     expected_sha = str(version_row["sha256"] or "") if version_row else ""
     if not expected_sha:
         return "missing", ""
-    source_path = Path(str(row["original_path"])).expanduser().resolve()
-    if not material_path_allowed(row, source_path):
+    try:
+        source_path = Path(str(row["original_path"])).expanduser().resolve()
+        allowed = material_path_allowed(row, source_path)
+    except (OSError, ValueError):
         return "missing", ""
-    if not source_path.is_file():
+    if not allowed or not source_path.is_file():
         return "missing", ""
-    if sha256_file(source_path) != expected_sha:
-        return "stale", ""
-    return "ok", current_version
+    try:
+        actual_sha = sha256_file(source_path)
+    except (OSError, PermissionError):
+        return "missing", ""
+    return ("ok", current_version) if actual_sha == expected_sha else ("stale", "")
 
 
 def create_pdf_highlight(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
-    if set(body) - {"fileId", "anchorPage", "rects", "label", "sourceVersion"}:
+    if set(body) - {"fileId", "anchorPage", "rects", "label", "sourceVersion", "pageWidth", "pageHeight", "fontHeight"}:
         raise ValueError("PDF highlight contains unsupported fields")
     file_id = int(body.get("fileId") or 0)
     if not file_id:
@@ -12561,6 +12573,21 @@ def create_pdf_highlight(conn: sqlite3.Connection, body: dict[str, Any]) -> dict
     if isinstance(anchor_page, bool) or not isinstance(anchor_page, int) or anchor_page < 1 or anchor_page > 10000:
         raise ValueError("Page number is out of range")
     validate_pdf_highlight_rects(body.get("rects"))
+    page_width = body.get("pageWidth")
+    page_height = body.get("pageHeight")
+    font_height = body.get("fontHeight")
+    if page_width is not None or page_height is not None or font_height is not None:
+        if not all(
+            isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+            for value in (page_width, page_height, font_height)
+        ):
+            raise ValueError("Highlight page geometry is invalid")
+        for rect in body["rects"]:
+            left, top, off_left_em, off_top_em, width_em, height_em = rect
+            if left * page_width + (off_left_em + width_em) * font_height > page_width:
+                raise ValueError("Highlight extends beyond the page")
+            if top * page_height + (off_top_em + height_em) * font_height > page_height:
+                raise ValueError("Highlight extends beyond the page")
     label = str(body.get("label") or "").strip()
     if len(label) > BACKUP_HIGHLIGHT_LABEL_MAX:
         raise ValueError("Highlight label is too long")

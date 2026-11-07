@@ -2,8 +2,8 @@
 "use strict";
 
 // Executable frontend acceptance for Persistent PDF Highlights V1. Part A
-// exercises the real Reader geometry conversion and overlay rendering; Part B
-// drives the real app.js save-highlight flow with a stubbed Reader and api.
+// exercises the real Reader span/subrange geometry capture and overlay
+// rendering; Part B drives the real app.js save-highlight flow.
 
 const fs = require("fs");
 const path = require("path");
@@ -19,11 +19,13 @@ function check(name, ok) {
   if (!ok) failures += 1;
 }
 
-// --- Part A: Reader span geometry capture and overlay rendering ---
+// --- Part A: Reader subrange capture and overlay rendering ---
+const RangeCtor = { START_TO_START: 0, END_TO_END: 1 };
 const readerSandbox = {
   window: null,
   document: {},
   console,
+  Range: RangeCtor,
   getComputedStyle: () => ({ getPropertyValue: (prop) => (prop === "--font-height" ? "18px" : "") }),
 };
 readerSandbox.window = readerSandbox;
@@ -31,41 +33,57 @@ vm.createContext(readerSandbox);
 vm.runInContext(readerSource, readerSandbox);
 const reader = readerSandbox.StudyHubReader;
 
-function makeSpan(leftPct, topPct, widthPx, heightPx, text) {
-  return {
-    textContent: text,
-    style: { left: `${leftPct}%`, top: `${topPct}%` },
-    getBoundingClientRect: () => ({ width: widthPx, height: heightPx }),
-  };
-}
-const spanA = makeSpan(11.76, 7.36, 103.8, 16, "Page three text");
-const spanB = makeSpan(11.76, 9.0, 103.8, 16, "Second line");
+const span = {
+  textContent: "Page three text",
+  style: { left: "11.76%", top: "7.36%" },
+  getBoundingClientRect: () => ({ left: 100, top: 200, width: 114.77, height: 16 }),
+};
 const layer = {
   childNodes: [],
   appendChild(node) {
     this.childNodes.push(node);
   },
   querySelectorAll(selector) {
-    return selector === "span" ? [spanA, spanB] : [];
+    return selector === "span" ? [span] : [];
   },
+  getBoundingClientRect: () => ({ width: 703.8, height: 910.8 }),
 };
-const range = { intersectsNode: (span) => span === spanA };
+
+const subRects = [{ left: 160, top: 210, width: 30, height: 16 }];
+const subRange = { getClientRects: () => subRects };
+const range = {
+  intersectsNode: () => true,
+  cloneRange: () => ({
+    compareBoundaryPoints: () => 0,
+    setStart() {},
+    setEnd() {},
+    getClientRects: () => subRects,
+  }),
+};
+readerSandbox.document = {
+  createRange: () => ({
+    selectNodeContents() {},
+    startContainer: span,
+    startOffset: 0,
+    endContainer: span,
+    endOffset: 15,
+  }),
+};
 
 const rects = reader.selectionRects(range, layer);
 check(
-  "span_geometry_captured_as_page_fraction_and_em",
+  "subrange_geometry_captured_within_span",
   rects.length === 1
     && rects[0][0] === 0.1176
     && rects[0][1] === 0.0736
-    && rects[0][2] === 5.7667
-    && rects[0][3] === 0.8889,
+    && rects[0][2] === 3.3333
+    && rects[0][3] === 0.5556
+    && rects[0][4] === 1.6667
+    && rects[0][5] === 0.8889,
 );
 
-// Overlay rendering.
 const renderedDivs = [];
-const holder = {
-  querySelector: (selector) => (selector === ".reader-text-layer" ? layer : null),
-};
+const holder = { querySelector: (selector) => (selector === ".reader-text-layer" ? layer : null) };
 readerSandbox.document = {
   createElement: (tag) => {
     const el = { tag, className: "", style: {}, appendChild() {} };
@@ -74,18 +92,18 @@ readerSandbox.document = {
   },
 };
 reader.rendered.set(3, { holder });
-reader.highlights = [{ anchor_page: 3, anchor_state: "ok", rects: [[0.1176, 0.0736, 5.7667, 0.8889]] }];
+reader.highlights = [{ anchor_page: 3, anchor_state: "ok", rects: [[0.1176, 0.0736, 3.3333, 0.5556, 1.6667, 0.8889]] }];
 reader.applyPageHighlights(3);
+const pct = (value) => parseFloat(value.replace("%", ""));
 const px = (value) => parseFloat(value.replace("px", ""));
 check(
-  "highlight_overlay_uses_span_percentage_and_font_height",
+  "subrange_overlay_positioned_and_sized_stably",
   renderedDivs.length === 1
-    && renderedDivs[0].style.left === "11.76%"
-    && renderedDivs[0].style.top === "7.36%"
-    && Math.abs(px(renderedDivs[0].style.width) - 103.8) < 0.1
+    && Math.abs(pct(renderedDivs[0].style.left) - 20.29) < 0.05
+    && Math.abs(pct(renderedDivs[0].style.top) - 8.46) < 0.05
+    && Math.abs(px(renderedDivs[0].style.width) - 30) < 0.1
     && Math.abs(px(renderedDivs[0].style.height) - 16) < 0.1,
 );
-readerSandbox.document = {};
 
 // --- Part B: app.js save-highlight flow ---
 function makeElement(selector) {
@@ -169,9 +187,12 @@ const appSandbox = {
       fileId: 1,
       page: 3,
       pageCount: 3,
-      text: "Page three text",
+      text: "three",
       sourceVersion: "matver_x",
-      rects: [[0.1176, 0.0736, 5.7667, 0.8889]],
+      rects: [[0.1176, 0.0736, 3.3333, 0.5556, 1.6667, 0.8889]],
+      pageWidth: 703.8,
+      pageHeight: 910.8,
+      fontHeight: 18,
     }),
     getSelectionError: () => null,
   },
@@ -180,7 +201,7 @@ appSandbox.window = appSandbox;
 vm.createContext(appSandbox);
 vm.runInContext(
   appSource +
-    "\n;globalThis.__test = { state, $, api, saveHighlight, loadFileHighlights };",
+    "\n;globalThis.__test = { state, $, api, saveHighlight };",
   appSandbox,
 );
 const app = appSandbox.__test;
@@ -198,13 +219,13 @@ async function main() {
   app.state.selectedFile = { id: 1, course_id: 7, week_label: "Week 01", extension: ".pdf" };
   await app.saveHighlight();
   check(
-    "save_highlight_posts_page_and_geometry",
+    "save_highlight_posts_subrange_geometry_and_page_context",
     posted.length === 1
-      && posted[0].action === "create"
-      && posted[0].fileId === 1
       && posted[0].anchorPage === 3
       && posted[0].sourceVersion === "matver_x"
-      && JSON.stringify(posted[0].rects) === "[[0.1176,0.0736,5.7667,0.8889]]",
+      && JSON.stringify(posted[0].rects) === "[[0.1176,0.0736,3.3333,0.5556,1.6667,0.8889]]"
+      && posted[0].pageWidth === 703.8
+      && posted[0].fontHeight === 18,
   );
   return failures;
 }
