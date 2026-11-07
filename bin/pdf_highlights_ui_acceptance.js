@@ -19,43 +19,47 @@ function check(name, ok) {
   if (!ok) failures += 1;
 }
 
-// --- Part A: Reader geometry conversion and overlay rendering ---
-const readerSandbox = { window: null, document: {}, console };
+// --- Part A: Reader span geometry capture and overlay rendering ---
+const readerSandbox = {
+  window: null,
+  document: {},
+  console,
+  getComputedStyle: () => ({ getPropertyValue: (prop) => (prop === "--font-height" ? "18px" : "") }),
+};
 readerSandbox.window = readerSandbox;
 vm.createContext(readerSandbox);
 vm.runInContext(readerSource, readerSandbox);
 const reader = readerSandbox.StudyHubReader;
 
-reader.rendered = new Map([
-  [3, { viewport: { scale: 1.15, height: 910.8, viewBox: [0, 0, 612, 792] } }],
-]);
+function makeSpan(leftPct, topPct, widthPx, heightPx, text) {
+  return {
+    textContent: text,
+    style: { left: `${leftPct}%`, top: `${topPct}%` },
+    getBoundingClientRect: () => ({ width: widthPx, height: heightPx }),
+  };
+}
+const spanA = makeSpan(11.76, 7.36, 103.8, 16, "Page three text");
+const spanB = makeSpan(11.76, 9.0, 103.8, 16, "Second line");
 const layer = {
-  getBoundingClientRect: () => ({ left: 100, top: 200, width: 703.8, height: 910.8 }),
   childNodes: [],
   appendChild(node) {
     this.childNodes.push(node);
   },
-  querySelectorAll() {
-    return [];
+  querySelectorAll(selector) {
+    return selector === "span" ? [spanA, spanB] : [];
   },
 };
-const range = {
-  getClientRects: () => [
-    { left: 150, top: 210, width: 115, height: 16 },
-    { left: 150, top: 230, width: 115, height: 16 },
-  ],
-};
+const range = { intersectsNode: (span) => span === spanA };
 
-const rects = reader.selectionRectsInPdf(range, layer, 3);
+const rects = reader.selectionRects(range, layer);
 check(
-  "pdf_geometry_conversion_from_client_rects",
-  rects.length === 2
-    && rects[0][0] === 43.48
-    && rects[0][1] === 769.39
-    && rects[0][2] === 100
-    && rects[0][3] === 13.91,
+  "span_geometry_captured_as_page_fraction_and_em",
+  rects.length === 1
+    && rects[0][0] === 0.1176
+    && rects[0][1] === 0.0736
+    && rects[0][2] === 5.7667
+    && rects[0][3] === 0.8889,
 );
-check("pdf_geometry_uses_bottom_origin", rects[0][1] + rects[0][3] < 792 && rects[0][1] > 700);
 
 // Overlay rendering.
 const renderedDivs = [];
@@ -69,16 +73,17 @@ readerSandbox.document = {
     return el;
   },
 };
-reader.rendered.set(3, { viewport: { scale: 1.15, height: 910.8, viewBox: [0, 0, 612, 792] }, holder });
-reader.highlights = [{ anchor_page: 3, anchor_state: "ok", rects: [[43.48, 769.39, 100, 13.91]] }];
+reader.rendered.set(3, { holder });
+reader.highlights = [{ anchor_page: 3, anchor_state: "ok", rects: [[0.1176, 0.0736, 5.7667, 0.8889]] }];
 reader.applyPageHighlights(3);
-const pct = (value) => parseFloat(value.replace("%", ""));
+const px = (value) => parseFloat(value.replace("px", ""));
 check(
-  "highlight_overlay_rendered_as_page_percentage",
+  "highlight_overlay_uses_span_percentage_and_font_height",
   renderedDivs.length === 1
-    && Math.abs(pct(renderedDivs[0].style.left) - 7.1046) < 0.01
-    && Math.abs(pct(renderedDivs[0].style.top) - 1.0985) < 0.01
-    && Math.abs(pct(renderedDivs[0].style.width) - 16.3399) < 0.01,
+    && renderedDivs[0].style.left === "11.76%"
+    && renderedDivs[0].style.top === "7.36%"
+    && Math.abs(px(renderedDivs[0].style.width) - 103.8) < 0.1
+    && Math.abs(px(renderedDivs[0].style.height) - 16) < 0.1,
 );
 readerSandbox.document = {};
 
@@ -166,7 +171,7 @@ const appSandbox = {
       pageCount: 3,
       text: "Page three text",
       sourceVersion: "matver_x",
-      rects: [[43.48, 769.39, 100, 13.91]],
+      rects: [[0.1176, 0.0736, 5.7667, 0.8889]],
     }),
     getSelectionError: () => null,
   },
@@ -190,7 +195,7 @@ async function main() {
     if (url.startsWith("/api/highlights?")) return { ok: true, status: 200, json: async () => [] };
     return { ok: true, status: 200, json: async () => [] };
   };
-  app.state.selectedFile = { id: 1, course_id: 7, week_label: "Week 01" };
+  app.state.selectedFile = { id: 1, course_id: 7, week_label: "Week 01", extension: ".pdf" };
   await app.saveHighlight();
   check(
     "save_highlight_posts_page_and_geometry",
@@ -199,7 +204,7 @@ async function main() {
       && posted[0].fileId === 1
       && posted[0].anchorPage === 3
       && posted[0].sourceVersion === "matver_x"
-      && JSON.stringify(posted[0].rects) === "[[43.48,769.39,100,13.91]]",
+      && JSON.stringify(posted[0].rects) === "[[0.1176,0.0736,5.7667,0.8889]]",
   );
   return failures;
 }

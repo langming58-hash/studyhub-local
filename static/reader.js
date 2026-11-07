@@ -3,7 +3,7 @@
   const PDFJS_WORKER_URL = "/vendor/reader/pdfjs/pdf.worker.mjs";
   const MAX_RENDERED_PAGES = 7;
   const MAX_EXCERPT_CHARS = 4000;
-  const round = (value) => Math.round(value * 100) / 100;
+  const round = (value) => Math.round(value * 10000) / 10000;
   const tr = (key, variables = {}) => window.StudyHubI18n?.t(key, variables) || key;
 
   class ReaderController {
@@ -163,7 +163,7 @@
       const page = Number(startPage.dataset.page);
       const pageCount = Number(this.pdf.numPages);
       if (!Number.isInteger(page) || page < 1 || page > pageCount || !Number.isInteger(pageCount) || pageCount < 1) return null;
-      const rects = this.selectionRectsInPdf(range, textLayer, page);
+      const rects = this.selectionRects(range, textLayer);
       return {
         generation: this.generation,
         fileId: this.fileId,
@@ -175,24 +175,28 @@
       };
     }
 
-    selectionRectsInPdf(range, textLayer, page) {
-      const record = this.rendered.get(page);
-      const viewport = record && record.viewport;
-      if (!viewport) return [];
-      const layerRect = textLayer.getBoundingClientRect();
-      const pagePdfHeight = (viewport.viewBox && viewport.viewBox[3]) || (viewport.height / viewport.scale);
+    selectionRects(range, textLayer) {
+      const spans = [];
+      const allSpans = textLayer.querySelectorAll ? Array.from(textLayer.querySelectorAll("span")) : [];
+      if (typeof range.intersectsNode === "function") {
+        for (const span of allSpans) {
+          if (span.textContent && span.textContent.trim() && range.intersectsNode(span)) spans.push(span);
+        }
+      } else {
+        spans.push(...allSpans);
+      }
       const rects = [];
-      const clientRects = typeof range.getClientRects === "function" ? range.getClientRects() : [];
-      for (let index = 0; index < clientRects.length; index += 1) {
-        const rect = clientRects[index];
-        const x = (rect.left - layerRect.left) / viewport.scale;
-        const top = (rect.top - layerRect.top) / viewport.scale;
-        const width = rect.width / viewport.scale;
-        const height = rect.height / viewport.scale;
+      for (const span of spans) {
+        const left = parseFloat(span.style.left) / 100;
+        const top = parseFloat(span.style.top) / 100;
+        if (!Number.isFinite(left) || !Number.isFinite(top)) continue;
+        const computed = typeof window.getComputedStyle === "function" ? window.getComputedStyle(span) : null;
+        const fontHeight = computed ? (parseFloat(computed.getPropertyValue("--font-height")) || 18) : 18;
+        const box = span.getBoundingClientRect();
+        const width = box.width / fontHeight;
+        const height = box.height / fontHeight;
         if (width <= 0 || height <= 0) continue;
-        const y = pagePdfHeight - top - height;
-        if (x < 0 || y < 0) continue;
-        rects.push([round(x), round(y), round(width), round(height)]);
+        rects.push([round(left), round(top), round(width), round(height)]);
       }
       return rects;
     }
@@ -223,23 +227,22 @@
     applyPageHighlights(pageNumber) {
       const record = this.rendered.get(pageNumber);
       if (!record) return;
-      const viewport = record.viewport;
       const holder = record.holder;
       const layer = holder.querySelector(".reader-text-layer");
       if (!layer) return;
       layer.querySelectorAll(".reader-highlight").forEach((node) => node.remove());
-      const pageWidth = (viewport.viewBox && viewport.viewBox[2]) || (viewport.width / viewport.scale);
-      const pageHeight = (viewport.viewBox && viewport.viewBox[3]) || (viewport.height / viewport.scale);
+      const computed = typeof window.getComputedStyle === "function" ? window.getComputedStyle(layer) : null;
+      const fontHeight = computed ? (parseFloat(computed.getPropertyValue("--font-height")) || 18) : 18;
       for (const highlight of this.highlights) {
         if (Number(highlight.anchor_page) !== pageNumber || highlight.anchor_state !== "ok") continue;
         for (const rect of highlight.rects || []) {
-          const [x, y, width, height] = rect;
+          const [left, top, width, height] = rect;
           const div = document.createElement("div");
           div.className = "reader-highlight";
-          div.style.left = `${(x / pageWidth) * 100}%`;
-          div.style.top = `${((pageHeight - y - height) / pageHeight) * 100}%`;
-          div.style.width = `${(width / pageWidth) * 100}%`;
-          div.style.height = `${(height / pageHeight) * 100}%`;
+          div.style.left = `${round(left * 100)}%`;
+          div.style.top = `${round(top * 100)}%`;
+          div.style.width = `${round(width * fontHeight)}px`;
+          div.style.height = `${round(height * fontHeight)}px`;
           layer.appendChild(div);
         }
       }

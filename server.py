@@ -231,7 +231,7 @@ BACKUP_CARD_FRONT_MAX = 4_000
 BACKUP_CARD_BACK_MAX = 20_000
 BACKUP_HIGHLIGHT_LABEL_MAX = 2_000
 BACKUP_HIGHLIGHT_RECTS_MAX = 32
-BACKUP_HIGHLIGHT_COORD_MAX = 100_000.0
+BACKUP_HIGHLIGHT_EM_MAX = 200.0
 BACKUP_ANSWER_TEXT_MAX = 20_000
 BACKUP_RESULT_MAX = 120
 BACKUP_QUESTION_REF_MAX = 240
@@ -5417,10 +5417,10 @@ def validate_pdf_highlight_rects(value: Any) -> None:
             if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(float(number)):
                 raise ValueError("Backup PDF highlight geometry is invalid")
             numbers.append(float(number))
-        x, y, width, height = numbers
-        if x < 0 or y < 0 or width <= 0 or height <= 0:
+        left, top, width, height = numbers
+        if left < 0 or left > 1 or top < 0 or top > 1:
             raise ValueError("Backup PDF highlight geometry is invalid")
-        if max(abs(x), abs(y), abs(width), abs(height)) > BACKUP_HIGHLIGHT_COORD_MAX:
+        if width <= 0 or height <= 0 or width > BACKUP_HIGHLIGHT_EM_MAX or height > BACKUP_HIGHLIGHT_EM_MAX:
             raise ValueError("Backup PDF highlight geometry is invalid")
 
 
@@ -12495,6 +12495,7 @@ def public_pdf_highlight(row: sqlite3.Row | dict[str, Any], anchor_state: str) -
 
 
 def pdf_highlight_rows(conn: sqlite3.Connection, file_id: int) -> list[dict[str, Any]]:
+    source_state, current_version = highlight_source_state(conn, file_id)
     rows = conn.execute(
         """
         SELECT highlight.*, material.legacy_file_id
@@ -12505,7 +12506,45 @@ def pdf_highlight_rows(conn: sqlite3.Connection, file_id: int) -> list[dict[str,
         """,
         (file_id,),
     ).fetchall()
-    return [public_pdf_highlight(row, highlight_anchor_state(conn, row)) for row in rows]
+    result = []
+    for row in rows:
+        if source_state == "ok":
+            anchor_state = "ok" if str(row_value(row, "source_version_stable_id") or "") == current_version else "stale"
+        else:
+            anchor_state = source_state
+        result.append(public_pdf_highlight(row, anchor_state))
+    return result
+
+
+def highlight_source_state(conn: sqlite3.Connection, file_id: int) -> tuple[str, str]:
+    """Classify the physical source for display without mutating anything."""
+    try:
+        row = get_file(conn, file_id)
+    except FileNotFoundError:
+        return "missing", ""
+    _material_stable, current_version = note_anchor_for_file(conn, file_id)
+    if not current_version:
+        return "missing", ""
+    version_row = conn.execute(
+        """
+        SELECT mv.sha256
+        FROM materials m
+        LEFT JOIN material_versions mv ON mv.id=m.current_version_id
+        WHERE m.legacy_file_id=? AND m.active=1
+        """,
+        (file_id,),
+    ).fetchone()
+    expected_sha = str(version_row["sha256"] or "") if version_row else ""
+    if not expected_sha:
+        return "missing", ""
+    source_path = Path(str(row["original_path"])).expanduser().resolve()
+    if not material_path_allowed(row, source_path):
+        return "missing", ""
+    if not source_path.is_file():
+        return "missing", ""
+    if sha256_file(source_path) != expected_sha:
+        return "stale", ""
+    return "ok", current_version
 
 
 def create_pdf_highlight(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
@@ -12514,6 +12553,9 @@ def create_pdf_highlight(conn: sqlite3.Connection, body: dict[str, Any]) -> dict
     file_id = int(body.get("fileId") or 0)
     if not file_id:
         raise ValueError("Choose a material")
+    file_row = get_file(conn, file_id)
+    if str(file_row["extension"] or "").lower() != ".pdf":
+        raise ValueError("Highlights are supported for native PDF files only")
     material = study_material_row(conn, file_id)
     anchor_page = body.get("anchorPage")
     if isinstance(anchor_page, bool) or not isinstance(anchor_page, int) or anchor_page < 1 or anchor_page > 10000:

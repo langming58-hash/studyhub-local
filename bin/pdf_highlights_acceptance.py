@@ -9,6 +9,7 @@ import shutil
 import sys
 import tempfile
 import zipfile
+import io
 from pathlib import Path
 
 
@@ -85,7 +86,7 @@ def main() -> int:
         file_id = int(file_row["id"])
         _material_stable, version_stable = server.note_anchor_for_file(conn, file_id)
 
-        rects = [[10.5, 20.25, 120.0, 12.0], [10.5, 36.0, 120.0, 12.0]]
+        rects = [[0.1176, 0.0736, 5.77, 0.89], [0.1176, 0.098, 5.77, 0.89]]
         created = dispatch(server, conn, {
             "action": "create", "fileId": file_id, "anchorPage": 3,
             "rects": rects, "label": "Selected passage", "sourceVersion": version_stable,
@@ -106,8 +107,9 @@ def main() -> int:
 
         # Geometry and input validation.
         bad_rects = (
-            [], [[0, 0, 0, 0]], [[0, 0, 10]], [[True, 0, 10, 5]], [[0, 0, -1, 5]],
-            [[200000, 0, 10, 5]], ["not-a-rect"], [[0, 0, 10, 5, 1]],
+            [], [[0.5, 0.5, 0, 1]], [[1.5, 0.5, 1, 1]], [[0.5, -0.1, 1, 1]],
+            [[0.5, 0.5, 1, 0]], [[0.5, 0.5, 201, 1]], [[True, 0.5, 1, 1]],
+            ["not-a-rect"], [[0.5, 0.5, 1, 1, 1]],
         )
         for bad in bad_rects:
             try:
@@ -131,7 +133,31 @@ def main() -> int:
         except ValueError:
             pass
         check("physical_replacement_without_rescan_rejected", not rejected, failures)
+        rows_after_replace = server.pdf_highlight_rows(conn, file_id)
+        check("replaced_source_not_renderable", len(rows_after_replace) >= 1 and all(h["anchor_state"] != "ok" for h in rows_after_replace), failures)
+        check("replaced_source_preserves_history", len(rows_after_replace) >= 1, failures)
         pdf.write_bytes(pdf_bytes)
+
+        # Non-native (converted Office) previews cannot host persistent geometry.
+        def minimal_docx_bytes() -> bytes:
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("[Content_Types].xml", "<Types/>")
+                zf.writestr("word/document.xml", "<w:document/>")
+            return buffer.getvalue()
+
+        docx = library / "TEST1001 - Course" / "Week 01" / "Lecture" / "notes.docx"
+        docx.write_bytes(minimal_docx_bytes())
+        server.scan_library(library)
+        docx_file = conn.execute("SELECT id, extension FROM files WHERE filename='notes.docx'").fetchone()
+        if docx_file and str(docx_file["extension"] or "").lower() == ".docx":
+            try:
+                dispatch(server, conn, {"action": "create", "fileId": int(docx_file["id"]), "anchorPage": 1, "rects": [[0.1, 0.1, 1, 0.5]], "label": "", "sourceVersion": version_stable})
+                check("non_native_pdf_rejected", False, failures)
+            except ValueError:
+                check("non_native_pdf_rejected", True, failures)
+        else:
+            check("non_native_pdf_rejected", False, failures)
 
         check("original_pdf_unchanged", hashlib.sha256(pdf.read_bytes()).hexdigest() == before, failures)
 

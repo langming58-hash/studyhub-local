@@ -2462,6 +2462,9 @@ async function openFileDrawer(fileId, page = 0, options = {}) {
   $("#extractedText").textContent = file.extractedText || t("file.noReadableText");
   currentReaderPage = Math.max(1, Number(page || 1));
   noteExcerpt = null;
+  const nativePdf = String(file.extension || "").toLowerCase() === ".pdf";
+  const highlightButton = $("#saveHighlight");
+  if (highlightButton) highlightButton.disabled = true;
   await window.StudyHubReader.open({
     fileId: file.id,
     page: page || 1,
@@ -2473,8 +2476,8 @@ async function openFileDrawer(fileId, page = 0, options = {}) {
     onSelectionChange: (hasSelection) => {
       const button = $("#addSelectionNote");
       if (button) button.disabled = !hasSelection;
-      const highlightButton = $("#saveHighlight");
-      if (highlightButton) highlightButton.disabled = !hasSelection;
+      const highlightBtn = $("#saveHighlight");
+      if (highlightBtn) highlightBtn.disabled = !hasSelection || !nativePdf;
     },
   });
   $("#askResponse").textContent = "";
@@ -2642,6 +2645,10 @@ async function loadFileHighlights(fileId) {
 async function saveHighlight() {
   const reader = window.StudyHubReader;
   const selection = reader?.getCapturedSelection?.();
+  if (String(state.selectedFile?.extension || "").toLowerCase() !== ".pdf") {
+    toast(t("file.selectTextFirst"));
+    return;
+  }
   if (!selection || !selection.rects?.length || !state.selectedFile || selection.fileId !== Number(state.selectedFile.id)) {
     toast(t("file.selectTextFirst"));
     return;
