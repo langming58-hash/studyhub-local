@@ -229,6 +229,9 @@ BACKUP_EXERCISE_TYPE_MAX = 80
 BACKUP_NOTE_BODY_MAX = 10_000
 BACKUP_CARD_FRONT_MAX = 4_000
 BACKUP_CARD_BACK_MAX = 20_000
+BACKUP_HIGHLIGHT_LABEL_MAX = 2_000
+BACKUP_HIGHLIGHT_RECTS_MAX = 32
+BACKUP_HIGHLIGHT_COORD_MAX = 100_000.0
 BACKUP_ANSWER_TEXT_MAX = 20_000
 BACKUP_RESULT_MAX = 120
 BACKUP_QUESTION_REF_MAX = 240
@@ -311,6 +314,7 @@ RESTORE_CHANGE_ENTITY_KINDS = (
     "study_session",
     "material_study_state",
     "review_card",
+    "pdf_highlight",
     "academic_change_event_state",
     "text_cache_artifact",
 )
@@ -3022,6 +3026,28 @@ def phase4_manual_review_cards_migration(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def phase4_pdf_highlights_migration(conn: sqlite3.Connection) -> None:
+    upgrade_restore_operation_changes_entity_kinds(conn)
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS pdf_highlights (
+          id INTEGER PRIMARY KEY,
+          stable_id TEXT NOT NULL UNIQUE,
+          material_id INTEGER NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+          source_version_stable_id TEXT NOT NULL DEFAULT '',
+          anchor_page INTEGER NOT NULL,
+          rects_json TEXT NOT NULL,
+          label TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_pdf_highlights_material ON pdf_highlights(material_id, anchor_page)",
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+
 SCHEMA_MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "phase1_domain_foundation", phase1_domain_foundation_migration),
     (2, "phase2_canvas_course_selection", phase2_canvas_course_selection_migration),
@@ -3033,6 +3059,7 @@ SCHEMA_MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], 
     (8, "phase3_academic_events", phase3_academic_events_migration),
     (9, "phase4_source_anchored_notes", phase4_source_anchored_notes_migration),
     (10, "phase4_manual_review_cards", phase4_manual_review_cards_migration),
+    (11, "phase4_pdf_highlights", phase4_pdf_highlights_migration),
 )
 
 
@@ -5202,6 +5229,35 @@ def project_user_owned_backup(
                 "review_card",
                 int(row["id"]),
             )
+    for row in conn.execute(
+        """
+        SELECT highlight.*, material.stable_id AS material_ref
+        FROM pdf_highlights highlight
+        JOIN materials material ON material.id=highlight.material_id
+        ORDER BY highlight.stable_id
+        """
+    ).fetchall():
+        stable_id = str(row["stable_id"])
+        rects = json.loads(str(row["rects_json"]))
+        validate_pdf_highlight_rects(rects)
+        study_records.append(
+            {
+                "stable_id": stable_id,
+                "record_type": "pdf_highlight",
+                "material_ref": str(row["material_ref"]),
+                "source_version_stable_id": str(row["source_version_stable_id"] or ""),
+                "anchor_page": int(row["anchor_page"]),
+                "rects": rects,
+                "label": safe_backup_text(row["label"], limit=BACKUP_HIGHLIGHT_LABEL_MAX),
+                "created_at": str(row["created_at"]),
+                "updated_at": str(row["updated_at"]),
+            }
+        )
+        if private_targets is not None:
+            private_targets[("study_records", stable_id)] = (
+                "pdf_highlight",
+                int(row["id"]),
+            )
     datasets["data/study_records.json"] = study_records
 
     # Current AI rows have no portable immutable identity; v1 keeps the member empty.
@@ -5297,6 +5353,10 @@ BACKUP_STUDY_RECORD_FIELDS: dict[str, set[str]] = {
         "fsrs_state", "fsrs_step", "fsrs_stability", "fsrs_difficulty",
         "fsrs_due_at", "fsrs_last_review_at", "archived", "created_at", "updated_at",
     },
+    "pdf_highlight": {
+        "stable_id", "record_type", "material_ref", "source_version_stable_id",
+        "anchor_page", "rects", "label", "created_at", "updated_at",
+    },
 }
 
 
@@ -5344,6 +5404,24 @@ def validate_backup_number(value: Any, *, nullable: bool = False) -> None:
         return
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
         raise ValueError("Backup record numeric value is invalid")
+
+
+def validate_pdf_highlight_rects(value: Any) -> None:
+    if not isinstance(value, list) or not 1 <= len(value) <= BACKUP_HIGHLIGHT_RECTS_MAX:
+        raise ValueError("Backup PDF highlight geometry is invalid")
+    for rect in value:
+        if not isinstance(rect, list) or len(rect) != 4:
+            raise ValueError("Backup PDF highlight geometry is invalid")
+        numbers: list[float] = []
+        for number in rect:
+            if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(float(number)):
+                raise ValueError("Backup PDF highlight geometry is invalid")
+            numbers.append(float(number))
+        x, y, width, height = numbers
+        if x < 0 or y < 0 or width <= 0 or height <= 0:
+            raise ValueError("Backup PDF highlight geometry is invalid")
+        if max(abs(x), abs(y), abs(width), abs(height)) > BACKUP_HIGHLIGHT_COORD_MAX:
+            raise ValueError("Backup PDF highlight geometry is invalid")
 
 
 def validate_backup_stable_id(value: Any, *, nullable: bool = False) -> None:
@@ -5522,6 +5600,16 @@ def validate_backup_record_values(member: str, record: dict[str, Any]) -> None:
         validate_backup_number(record["fsrs_stability"], nullable=True)
         validate_backup_number(record["fsrs_difficulty"], nullable=True)
         validate_backup_bool(record["archived"])
+        validate_backup_timestamp(record["created_at"])
+        validate_backup_timestamp(record["updated_at"])
+    elif record_type == "pdf_highlight":
+        validate_backup_stable_id(record["material_ref"])
+        if not isinstance(record["source_version_stable_id"], str) or not record["source_version_stable_id"]:
+            raise ValueError("Backup PDF highlight source version is invalid")
+        validate_backup_stable_id(record["source_version_stable_id"])
+        validate_backup_int(record["anchor_page"], minimum=1, maximum=10000)
+        validate_pdf_highlight_rects(record["rects"])
+        validate_backup_text(record["label"], limit=BACKUP_HIGHLIGHT_LABEL_MAX, multiline=True)
         validate_backup_timestamp(record["created_at"])
         validate_backup_timestamp(record["updated_at"])
     elif record_type == "attempt":
@@ -6616,6 +6704,44 @@ def plan_restore_state(
             )
         )
 
+    current_highlights = {
+        str(record["stable_id"]): record
+        for record in current_study
+        if record["record_type"] == "pdf_highlight"
+    }
+    highlight_fields = (
+        "material_ref", "source_version_stable_id", "anchor_page", "rects", "label",
+    )
+    for record in [
+        item for item in backup_study if item["record_type"] == "pdf_highlight"
+    ]:
+        backup_ref = str(record["material_ref"])
+        resolved_ref = material_resolution.get(backup_ref)
+        local = current_highlights.get(str(record["stable_id"]))
+        if not resolved_ref:
+            classification, differing = material_failure.get(backup_ref, "UNRESOLVED_REFERENCE"), []
+        elif local is None:
+            classification, differing = "CREATE", []
+        else:
+            normalized = dict(record)
+            normalized["material_ref"] = resolved_ref
+            differing = restore_differences(normalized, local, fields=highlight_fields)
+            classification = "NOOP" if not differing else "CONFLICT"
+        target_state_tokens[f"highlight:{record['stable_id']}"] = restore_record_state_token(
+            current_highlights.get(str(record["stable_id"])) if resolved_ref else None,
+            fields=highlight_fields,
+        )
+        actions.append(
+            restore_action(
+                "study_records",
+                record,
+                classification,
+                label="PDF highlight",
+                differing_fields=differing,
+                allow_backup_restore=bool(resolved_ref and local is not None),
+            )
+        )
+
     current_bookmarks = {
         str(record["target_ref"]): record
         for record in current_study
@@ -7141,6 +7267,13 @@ RESTORE_REVERSIBLE_ENTITY_SPECS = (
             "anchor_version", "anchor_page", "anchor_material_stable_id", "anchor_version_stable_id",
             "fsrs_state", "fsrs_step", "fsrs_stability", "fsrs_difficulty",
             "fsrs_due_at", "fsrs_last_review_at", "archived", "created_at", "updated_at",
+        ),
+    ),
+    RestoreReversibleEntitySpec(
+        "pdf_highlight", "pdf_highlights", "id",
+        (
+            "id", "stable_id", "material_id", "source_version_stable_id",
+            "anchor_page", "rects_json", "label", "created_at", "updated_at",
         ),
     ),
     RestoreReversibleEntitySpec(
@@ -7839,6 +7972,9 @@ RESTORE_UNDO_DEPENDENCY_RULES = (
     ),
     RestoreUndoDependencyRule(
         "material", "review_cards", "review_card", "material_id=?", ("id",)
+    ),
+    RestoreUndoDependencyRule(
+        "material", "pdf_highlights", "pdf_highlight", "material_id=?", ("id",)
     ),
     RestoreUndoDependencyRule(
         "source", "material_versions", "material_version", "source_id=?", ("id",)
@@ -8833,6 +8969,18 @@ def apply_restore_plan(
             return dest_material or anchor_material, dest_version
         return dest_material or anchor_material, anchor_version
 
+    def resolve_restored_highlight_version(file_id: int, record: dict[str, Any]) -> str:
+        anchor_record = {
+            "anchor_page": record.get("anchor_page"),
+            "anchor_material_stable_id": "",
+            "anchor_version_stable_id": str(record.get("source_version_stable_id") or ""),
+            "material_ref": record.get("material_ref"),
+        }
+        _material, version = resolve_restored_anchor(
+            file_id, anchor_record, source_ref_field="material_ref"
+        )
+        return version or str(record.get("source_version_stable_id") or "")
+
     term_rows = {
         str(row["stable_id"]): row
         for row in conn.execute("SELECT * FROM terms WHERE stable_id!=''").fetchall()
@@ -9376,6 +9524,24 @@ def apply_restore_plan(
                     int(record["archived"]), record["created_at"], record["updated_at"],
                 ),
             )
+        elif record_type == "pdf_highlight":
+            material_id = resolved_material_ids[str(record["material_ref"])]
+            file_id = resolved_file_ids[str(record["material_ref"])]
+            resolved_version = resolve_restored_highlight_version(file_id, record)
+            conn.execute(
+                """
+                INSERT INTO pdf_highlights(
+                  stable_id, material_id, source_version_stable_id, anchor_page,
+                  rects_json, label, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record["stable_id"], material_id, resolved_version,
+                    int(record["anchor_page"]),
+                    json.dumps(record["rects"], sort_keys=True, separators=(",", ":")),
+                    record["label"], record["created_at"], record["updated_at"],
+                ),
+            )
         elif record_type == "bookmark":
             conn.execute(
                 "INSERT INTO bookmarks(target_type, target_id, label, created_at) VALUES ('file', ?, ?, ?)",
@@ -9459,6 +9625,31 @@ def apply_restore_plan(
                     record["fsrs_state"], record["fsrs_step"], record["fsrs_stability"],
                     record["fsrs_difficulty"], record["fsrs_due_at"], record["fsrs_last_review_at"],
                     int(record["archived"]), record["created_at"], record["updated_at"], target_id,
+                ),
+            )
+        elif record_type == "pdf_highlight":
+            target_id = backup_target("study_records", stable_id, "pdf_highlight")
+            highlight_row = conn.execute(
+                "SELECT material_id FROM pdf_highlights WHERE id=?", (target_id,)
+            ).fetchone()
+            require_restore_dependency(
+                highlight_row is not None
+                and int(highlight_row["material_id"]) == resolved_material_ids[str(record["material_ref"])]
+            )
+            file_id = resolved_file_ids[str(record["material_ref"])]
+            resolved_version = resolve_restored_highlight_version(file_id, record)
+            conn.execute(
+                """
+                UPDATE pdf_highlights SET material_id=?, source_version_stable_id=?,
+                  anchor_page=?, rects_json=?, label=?, created_at=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    resolved_material_ids[str(record["material_ref"])],
+                    resolved_version,
+                    int(record["anchor_page"]),
+                    json.dumps(record["rects"], sort_keys=True, separators=(",", ":")),
+                    record["label"], record["created_at"], record["updated_at"], target_id,
                 ),
             )
         elif record_type == "bookmark":
@@ -12272,6 +12463,126 @@ def handle_review_cards_post(conn: sqlite3.Connection, body: dict[str, Any]) -> 
     raise ValueError("Unknown review card action")
 
 
+def highlight_anchor_state(conn: sqlite3.Connection, row: sqlite3.Row | dict[str, Any]) -> str:
+    file_id = int(row_value(row, "legacy_file_id") or 0)
+    if not file_id:
+        material_id = int(row_value(row, "material_id") or 0)
+        if material_id:
+            material_row = conn.execute(
+                "SELECT legacy_file_id FROM materials WHERE id=?", (material_id,)
+            ).fetchone()
+            file_id = int(material_row["legacy_file_id"] or 0) if material_row else 0
+    if not file_id:
+        return "missing"
+    _material_stable, current_version = note_anchor_for_file(conn, file_id)
+    source_version = str(row_value(row, "source_version_stable_id") or "")
+    if not source_version or not current_version:
+        return "missing"
+    return "ok" if source_version == current_version else "stale"
+
+
+def public_pdf_highlight(row: sqlite3.Row | dict[str, Any], anchor_state: str) -> dict[str, Any]:
+    return {
+        "id": row_value(row, "id"),
+        "stable_id": str(row_value(row, "stable_id") or ""),
+        "file_id": row_value(row, "legacy_file_id"),
+        "anchor_page": row_value(row, "anchor_page"),
+        "rects": json.loads(str(row_value(row, "rects_json") or "[]")),
+        "label": str(row_value(row, "label") or ""),
+        "anchor_state": anchor_state,
+        "created_at": row_value(row, "created_at"),
+    }
+
+
+def pdf_highlight_rows(conn: sqlite3.Connection, file_id: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT highlight.*, material.legacy_file_id
+        FROM pdf_highlights highlight
+        JOIN materials material ON material.id=highlight.material_id
+        WHERE material.legacy_file_id=?
+        ORDER BY highlight.anchor_page, highlight.created_at, highlight.id
+        """,
+        (file_id,),
+    ).fetchall()
+    return [public_pdf_highlight(row, highlight_anchor_state(conn, row)) for row in rows]
+
+
+def create_pdf_highlight(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
+    if set(body) - {"fileId", "anchorPage", "rects", "label", "sourceVersion"}:
+        raise ValueError("PDF highlight contains unsupported fields")
+    file_id = int(body.get("fileId") or 0)
+    if not file_id:
+        raise ValueError("Choose a material")
+    material = study_material_row(conn, file_id)
+    anchor_page = body.get("anchorPage")
+    if isinstance(anchor_page, bool) or not isinstance(anchor_page, int) or anchor_page < 1 or anchor_page > 10000:
+        raise ValueError("Page number is out of range")
+    validate_pdf_highlight_rects(body.get("rects"))
+    label = str(body.get("label") or "").strip()
+    if len(label) > BACKUP_HIGHLIGHT_LABEL_MAX:
+        raise ValueError("Highlight label is too long")
+    source_version = body.get("sourceVersion")
+    if not isinstance(source_version, str) or not source_version:
+        raise ValueError("Source version is invalid")
+    verify_note_excerpt_source(conn, file_id, source_version)
+    now = now_iso()
+    stable_id = new_stable_id("hl")
+    conn.execute(
+        """
+        INSERT INTO pdf_highlights(
+          stable_id, material_id, source_version_stable_id, anchor_page,
+          rects_json, label, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            stable_id,
+            int(material["material_id"]),
+            source_version,
+            int(anchor_page),
+            json.dumps(body["rects"], sort_keys=True, separators=(",", ":")),
+            label,
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    row = conn.execute(
+        """
+        SELECT highlight.*, material.legacy_file_id
+        FROM pdf_highlights highlight
+        JOIN materials material ON material.id=highlight.material_id
+        WHERE highlight.id=?
+        """,
+        (conn.execute("SELECT last_insert_rowid()").fetchone()[0],),
+    ).fetchone()
+    return {"ok": True, **public_pdf_highlight(row, "ok")}
+
+
+def delete_pdf_highlight(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
+    if set(body) - {"id"}:
+        raise ValueError("PDF highlight delete contains unsupported fields")
+    highlight_id = int(body.get("id") or 0)
+    row = conn.execute("SELECT id FROM pdf_highlights WHERE id=?", (highlight_id,)).fetchone()
+    if row is None:
+        raise FileNotFoundError("Highlight was not found")
+    conn.execute("DELETE FROM pdf_highlights WHERE id=?", (highlight_id,))
+    conn.commit()
+    return {"ok": True, "deleted": highlight_id}
+
+
+def handle_highlights_post(conn: sqlite3.Connection, body: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(body, dict):
+        raise ValueError("Highlight request is invalid")
+    action = str(body.get("action") or "create").strip().lower()
+    payload = {key: value for key, value in body.items() if key != "action"}
+    if action == "create":
+        return create_pdf_highlight(conn, payload)
+    if action == "delete":
+        return delete_pdf_highlight(conn, payload)
+    raise ValueError("Unknown highlight action")
+
+
 def study_overview(
     conn: sqlite3.Connection,
     course_id: int = 0,
@@ -12536,7 +12847,7 @@ def reset_studyhub_state(conn: sqlite3.Connection) -> dict[str, Any]:
         "ai_messages", "ai_conversations", "ai_interactions", "wrong_questions", "attempts", "bookmarks",
         "study_sessions", "notes", "stars", "questions", "solutions", "document_chunks", "file_versions",
         "academic_change_event_state", "academic_change_events", "material_study_state",
-        "review_cards", "material_versions", "materials", "sources", "blobs",
+        "review_cards", "pdf_highlights", "material_versions", "materials", "sources", "blobs",
         "ai_index_state", "sync_events", "files", "weeks", "courses", "terms", "app_settings",
     ):
         conn.execute(f"DELETE FROM {table}")
@@ -14179,6 +14490,8 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                 self.handle_note()
             elif parsed.path == "/api/review-cards":
                 self.handle_review_cards_mutation()
+            elif parsed.path == "/api/highlights":
+                self.handle_highlights_mutation()
             elif parsed.path == "/api/ask":
                 self.handle_ask()
             elif parsed.path == "/api/conversations":
@@ -14877,6 +15190,12 @@ class StudyHubHandler(BaseHTTPRequestHandler):
                         for row in rows
                     ]
                 )
+            elif path == "/api/highlights":
+                file_id = int(qs.get("fileId", ["0"])[0] or 0)
+                if not file_id:
+                    self.send_json([])
+                else:
+                    self.send_json(pdf_highlight_rows(conn, file_id))
             else:
                 self.send_error_json(404, "Not found")
         finally:
@@ -15409,6 +15728,14 @@ class StudyHubHandler(BaseHTTPRequestHandler):
         conn = connect_db()
         try:
             self.send_json(handle_review_cards_post(conn, body))
+        finally:
+            conn.close()
+
+    def handle_highlights_mutation(self) -> None:
+        body = self.parse_body_json()
+        conn = connect_db()
+        try:
+            self.send_json(handle_highlights_post(conn, body))
         finally:
             conn.close()
 

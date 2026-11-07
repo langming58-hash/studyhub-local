@@ -3,6 +3,7 @@
   const PDFJS_WORKER_URL = "/vendor/reader/pdfjs/pdf.worker.mjs";
   const MAX_RENDERED_PAGES = 7;
   const MAX_EXCERPT_CHARS = 4000;
+  const round = (value) => Math.round(value * 100) / 100;
   const tr = (key, variables = {}) => window.StudyHubI18n?.t(key, variables) || key;
 
   class ReaderController {
@@ -18,6 +19,8 @@
       this.selectionError = null;
       this.onSelectionStateChange = null;
       this.selectionListener = null;
+      this.highlights = [];
+      this.onHighlightStateChange = null;
     }
 
     destroy() {
@@ -27,6 +30,7 @@
       this.clearSelectionListener();
       this.selection = null;
       this.selectionError = null;
+      this.highlights = [];
       this.onSelectionStateChange?.(false);
       this.loadingTask?.destroy?.();
       this.loadingTask = null;
@@ -37,15 +41,17 @@
       this.rendering.clear();
     }
 
-    async open({ fileId, page = 1, mount, onPageChange, onSelectionChange }) {
+    async open({ fileId, page = 1, mount, onPageChange, onSelectionChange, onHighlightStateChange }) {
       this.destroy();
       const generation = this.generation;
       this.mount = mount;
       this.fileId = Number(fileId);
       this.onPageChange = onPageChange;
       this.onSelectionStateChange = onSelectionChange || null;
+      this.onHighlightStateChange = onHighlightStateChange || null;
       this.selection = null;
       this.selectionError = null;
+      this.highlights = [];
       this.currentPage = Math.max(1, Number(page || 1));
       mount.innerHTML = `<div class="reader-loading" role="status">${tr("reader.loading")}</div>`;
       const response = await fetch(`/api/reader?id=${encodeURIComponent(this.fileId)}`, { credentials: "same-origin" });
@@ -157,6 +163,7 @@
       const page = Number(startPage.dataset.page);
       const pageCount = Number(this.pdf.numPages);
       if (!Number.isInteger(page) || page < 1 || page > pageCount || !Number.isInteger(pageCount) || pageCount < 1) return null;
+      const rects = this.selectionRectsInPdf(range, textLayer, page);
       return {
         generation: this.generation,
         fileId: this.fileId,
@@ -164,7 +171,30 @@
         pageCount,
         text,
         sourceVersion: this.metadata.source_version_stable_id,
+        rects,
       };
+    }
+
+    selectionRectsInPdf(range, textLayer, page) {
+      const record = this.rendered.get(page);
+      const viewport = record && record.viewport;
+      if (!viewport) return [];
+      const layerRect = textLayer.getBoundingClientRect();
+      const pagePdfHeight = (viewport.viewBox && viewport.viewBox[3]) || (viewport.height / viewport.scale);
+      const rects = [];
+      const clientRects = typeof range.getClientRects === "function" ? range.getClientRects() : [];
+      for (let index = 0; index < clientRects.length; index += 1) {
+        const rect = clientRects[index];
+        const x = (rect.left - layerRect.left) / viewport.scale;
+        const top = (rect.top - layerRect.top) / viewport.scale;
+        const width = rect.width / viewport.scale;
+        const height = rect.height / viewport.scale;
+        if (width <= 0 || height <= 0) continue;
+        const y = pagePdfHeight - top - height;
+        if (x < 0 || y < 0) continue;
+        rects.push([round(x), round(y), round(width), round(height)]);
+      }
+      return rects;
     }
 
     getCapturedSelection() {
@@ -182,6 +212,36 @@
 
     getSelectionError() {
       return this.selectionError || null;
+    }
+
+    setHighlights(highlights) {
+      this.highlights = Array.isArray(highlights) ? highlights : [];
+      for (const page of this.rendered.keys()) this.applyPageHighlights(page);
+      this.onHighlightStateChange?.(this.highlights.length);
+    }
+
+    applyPageHighlights(pageNumber) {
+      const record = this.rendered.get(pageNumber);
+      if (!record) return;
+      const viewport = record.viewport;
+      const holder = record.holder;
+      const layer = holder.querySelector(".reader-text-layer");
+      if (!layer) return;
+      layer.querySelectorAll(".reader-highlight").forEach((node) => node.remove());
+      const pagePdfHeight = (viewport.viewBox && viewport.viewBox[3]) || (viewport.height / viewport.scale);
+      for (const highlight of this.highlights) {
+        if (Number(highlight.anchor_page) !== pageNumber || highlight.anchor_state !== "ok") continue;
+        for (const rect of highlight.rects || []) {
+          const [x, y, width, height] = rect;
+          const div = document.createElement("div");
+          div.className = "reader-highlight";
+          div.style.left = `${x * viewport.scale}px`;
+          div.style.top = `${(pagePdfHeight - y - height) * viewport.scale}px`;
+          div.style.width = `${width * viewport.scale}px`;
+          div.style.height = `${height * viewport.scale}px`;
+          layer.appendChild(div);
+        }
+      }
     }
 
     async buildPagePlaceholders() {
@@ -244,7 +304,8 @@
         if (generation !== this.generation) return;
         const layer = new this.pdfjs.TextLayer({ textContentSource: textContent, container: textLayer, viewport });
         await layer.render();
-        this.rendered.set(pageNumber, { page, holder });
+        this.rendered.set(pageNumber, { page, holder, viewport });
+        this.applyPageHighlights(pageNumber);
       } catch (error) {
         if (error?.name !== "RenderingCancelledException") throw error;
       } finally {

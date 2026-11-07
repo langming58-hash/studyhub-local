@@ -104,7 +104,8 @@ The v2 projection includes only allowlisted fields:
 - notes, stars, bookmarks, attempts, wrong-question state, study sessions, and
   per-Material Study Engine progress/review state, plus user-authored manual
   review cards (question/answer, optional source-page anchor, and independent
-  portable FSRS fields)
+  portable FSRS fields) and persistent PDF highlights (source-version-bound
+  page geometry and an optional bounded text label)
 - What's New acknowledgements keyed by academic-event stable identity
 
 Canvas compatibility courses are included only when they carry an explicit
