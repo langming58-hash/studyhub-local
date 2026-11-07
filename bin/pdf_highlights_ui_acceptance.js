@@ -82,6 +82,45 @@ check(
     && rects[0][5] === 0.8889,
 );
 
+// Cross-span selection: one rect per intersecting span with correct anchors.
+function multiSpan(leftPct, topPct, text) {
+  return {
+    textContent: text,
+    style: { left: `${leftPct}%`, top: `${topPct}%` },
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 50, height: 16 }),
+  };
+}
+const multiA = multiSpan(10, 5, "First span text");
+const multiB = multiSpan(10, 20, "Second span text");
+const multiLayer = {
+  childNodes: [],
+  appendChild(node) {
+    this.childNodes.push(node);
+  },
+  querySelectorAll(selector) {
+    return selector === "span" ? [multiA, multiB] : [];
+  },
+  getBoundingClientRect: () => ({ width: 703.8, height: 910.8 }),
+};
+const multiRange = {
+  intersectsNode: () => true,
+  cloneRange: () => ({
+    compareBoundaryPoints: () => 0,
+    setStart() {},
+    setEnd() {},
+    getClientRects: () => [{ left: 5, top: 2, width: 10, height: 10 }],
+  }),
+};
+const multiRects = reader.selectionRects(multiRange, multiLayer);
+check(
+  "cross_span_selection_captures_per_span_anchors",
+  multiRects.length === 2
+    && multiRects[0][0] === 0.1
+    && multiRects[0][1] === 0.05
+    && multiRects[1][0] === 0.1
+    && multiRects[1][1] === 0.2,
+);
+
 const renderedDivs = [];
 const holder = { querySelector: (selector) => (selector === ".reader-text-layer" ? layer : null) };
 readerSandbox.document = {

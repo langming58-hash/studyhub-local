@@ -85,11 +85,12 @@ def main() -> int:
         file_row = conn.execute("SELECT * FROM files WHERE filename='notes.pdf'").fetchone()
         file_id = int(file_row["id"])
         _material_stable, version_stable = server.note_anchor_for_file(conn, file_id)
+        GEO = {"pageWidth": 703.8, "pageHeight": 910.8, "fontHeight": 18}
 
         rects = [[0.1176, 0.0736, 0, 0, 5.77, 0.89], [0.1176, 0.098, 0, 0, 5.77, 0.89]]
         created = dispatch(server, conn, {
             "action": "create", "fileId": file_id, "anchorPage": 3,
-            "rects": rects, "label": "Selected passage", "sourceVersion": version_stable,
+            "rects": rects, "label": "Selected passage", "sourceVersion": version_stable, **GEO,
         })
         check("highlight_create_persists", created.get("ok") is True and created.get("id") and created.get("anchor_state") == "ok", failures)
         check("highlight_has_no_secret_fields", not any(key in created for key in ("sha256", "hash", "path", "locator")), failures)
@@ -102,7 +103,7 @@ def main() -> int:
         # Recreate for round-trip testing.
         created = dispatch(server, conn, {
             "action": "create", "fileId": file_id, "anchorPage": 2,
-            "rects": rects, "label": "Round trip", "sourceVersion": version_stable,
+            "rects": rects, "label": "Round trip", "sourceVersion": version_stable, **GEO,
         })
 
         # Geometry and input validation.
@@ -114,16 +115,32 @@ def main() -> int:
         )
         for bad in bad_rects:
             try:
-                dispatch(server, conn, {"action": "create", "fileId": file_id, "anchorPage": 1, "rects": bad, "label": "", "sourceVersion": version_stable})
+                dispatch(server, conn, {"action": "create", "fileId": file_id, "anchorPage": 1, "rects": bad, "label": "", "sourceVersion": version_stable, **GEO})
                 check(f"invalid_rects_{bad!r}_rejected", False, failures)
             except ValueError:
                 check(f"invalid_rects_{bad!r}_rejected", True, failures)
         for bad_version in ("", None, False, 123, "matver_wrong"):
             try:
-                dispatch(server, conn, {"action": "create", "fileId": file_id, "anchorPage": 1, "rects": [[0.1, 0.1, 0, 0, 1, 0.5]], "label": "", "sourceVersion": bad_version})
+                dispatch(server, conn, {"action": "create", "fileId": file_id, "anchorPage": 1, "rects": [[0.1, 0.1, 0, 0, 1, 0.5]], "label": "", "sourceVersion": bad_version, **GEO})
                 check(f"invalid_source_version_{bad_version!r}_rejected", False, failures)
             except ValueError:
                 check(f"invalid_source_version_{bad_version!r}_rejected", True, failures)
+
+        # Page geometry is mandatory and malformed dimensions fail closed.
+        for bad_geo in (
+            {},
+            {"pageWidth": 703.8},
+            {"pageWidth": 703.8, "pageHeight": 910.8, "fontHeight": None},
+            {"pageWidth": True, "pageHeight": 910.8, "fontHeight": 18},
+            {"pageWidth": 0, "pageHeight": 910.8, "fontHeight": 18},
+            {"pageWidth": -1, "pageHeight": 910.8, "fontHeight": 18},
+            {"pageWidth": 703.8, "pageHeight": 910.8, "fontHeight": float("nan")},
+        ):
+            try:
+                dispatch(server, conn, {"action": "create", "fileId": file_id, "anchorPage": 1, "rects": [[0.1, 0.1, 0, 0, 1, 0.5]], "label": "", "sourceVersion": version_stable, **bad_geo})
+                check(f"invalid_geometry_{bad_geo!r}_rejected", False, failures)
+            except ValueError:
+                check(f"invalid_geometry_{bad_geo!r}_rejected", True, failures)
 
         # Full-page bounds are enforced when page geometry is supplied.
         try:
@@ -138,7 +155,7 @@ def main() -> int:
         pdf.write_bytes(synthetic_pdf(["Replaced one", "Replaced two", "Replaced three"]))
         rejected = False
         try:
-            dispatch(server, conn, {"action": "create", "fileId": file_id, "anchorPage": 1, "rects": [[0.1, 0.1, 0, 0, 1, 0.5]], "label": "", "sourceVersion": version_stable})
+            dispatch(server, conn, {"action": "create", "fileId": file_id, "anchorPage": 1, "rects": [[0.1, 0.1, 0, 0, 1, 0.5]], "label": "", "sourceVersion": version_stable, **GEO})
             rejected = True
         except ValueError:
             pass
@@ -170,6 +187,23 @@ def main() -> int:
             check("non_native_pdf_rejected", False, failures)
 
         check("original_pdf_unchanged", hashlib.sha256(pdf.read_bytes()).hexdigest() == before, failures)
+
+        # Unreadable sources are non-renderable, never an unhandled listing error.
+        original_get_file = server.get_file
+        server.get_file = lambda conn, fid: (_ for _ in ()).throw(PermissionError("denied"))
+        try:
+            rows = server.pdf_highlight_rows(conn, file_id)
+        finally:
+            server.get_file = original_get_file
+        check("get_file_permission_failure_reports_missing", all(h["anchor_state"] == "missing" for h in rows), failures)
+
+        original_sha = server.sha256_file
+        server.sha256_file = lambda path: (_ for _ in ()).throw(OSError("unreadable"))
+        try:
+            rows = server.pdf_highlight_rows(conn, file_id)
+        finally:
+            server.sha256_file = original_sha
+        check("hash_failure_reports_missing", all(h["anchor_state"] == "missing" for h in rows), failures)
 
         # Backup round-trip.
         archive = server.export_current_profile_backup()
