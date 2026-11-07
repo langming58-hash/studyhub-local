@@ -156,9 +156,14 @@ async function main() {
     card({ id: 11, front: "Due one", back: "Answer one", anchor_state: "ok", file_id: 31, anchor_page: 2 }),
     card({ id: 12, front: "Due two", back: "Answer two", anchor_state: "stale", file_id: 31, anchor_page: 2 }),
   ];
+  let failNextGrade = false;
   fetchHandler = async (url, options = {}) => {
     if (url === "/api/review-cards/queue") return { ok: true, status: 200, json: async () => queue };
     if (url === "/api/review-cards" && (options.method || "GET").toUpperCase() === "POST") {
+      if (failNextGrade) {
+        failNextGrade = false;
+        return { ok: false, status: 500, statusText: "Server Error", json: async () => ({ error: "boom" }) };
+      }
       posted.push(JSON.parse(options.body));
       return { ok: true, status: 200, json: async () => card({}) };
     }
@@ -182,6 +187,13 @@ async function main() {
   app.reviewCardSession.busy = true;
   await app.gradeReviewCard(12, "again");
   check("busy_guard_prevents_double_submit", posted.length === 1);
+
+  app.reviewCardSession.busy = false;
+  failNextGrade = true;
+  await app.gradeReviewCard(11, "good");
+  check("failed_grade_resets_busy", app.reviewCardSession.busy === false && posted.length === 1);
+  await app.gradeReviewCard(11, "good");
+  check("grade_retries_after_failure", posted.length === 2 && posted[1].grade === "good");
 
   return failures;
 }
