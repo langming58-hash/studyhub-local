@@ -3,6 +3,7 @@
   const PDFJS_WORKER_URL = "/vendor/reader/pdfjs/pdf.worker.mjs";
   const MAX_RENDERED_PAGES = 7;
   const MAX_EXCERPT_CHARS = 4000;
+  const round = (value) => Math.round(value * 10000) / 10000;
   const tr = (key, variables = {}) => window.StudyHubI18n?.t(key, variables) || key;
 
   class ReaderController {
@@ -18,6 +19,8 @@
       this.selectionError = null;
       this.onSelectionStateChange = null;
       this.selectionListener = null;
+      this.highlights = [];
+      this.onHighlightStateChange = null;
     }
 
     destroy() {
@@ -27,6 +30,7 @@
       this.clearSelectionListener();
       this.selection = null;
       this.selectionError = null;
+      this.highlights = [];
       this.onSelectionStateChange?.(false);
       this.loadingTask?.destroy?.();
       this.loadingTask = null;
@@ -37,15 +41,17 @@
       this.rendering.clear();
     }
 
-    async open({ fileId, page = 1, mount, onPageChange, onSelectionChange }) {
+    async open({ fileId, page = 1, mount, onPageChange, onSelectionChange, onHighlightStateChange }) {
       this.destroy();
       const generation = this.generation;
       this.mount = mount;
       this.fileId = Number(fileId);
       this.onPageChange = onPageChange;
       this.onSelectionStateChange = onSelectionChange || null;
+      this.onHighlightStateChange = onHighlightStateChange || null;
       this.selection = null;
       this.selectionError = null;
+      this.highlights = [];
       this.currentPage = Math.max(1, Number(page || 1));
       mount.innerHTML = `<div class="reader-loading" role="status">${tr("reader.loading")}</div>`;
       const response = await fetch(`/api/reader?id=${encodeURIComponent(this.fileId)}`, { credentials: "same-origin" });
@@ -154,9 +160,15 @@
       if (!startPage || startPage !== endPage) return null;
       const textLayer = startPage.querySelector(".reader-text-layer");
       if (!textLayer || !textLayer.contains(startNode) || !textLayer.contains(endNode)) return null;
+      const layerRect = typeof textLayer.getBoundingClientRect === "function"
+        ? textLayer.getBoundingClientRect()
+        : { width: 0, height: 0 };
+      const layerComputed = typeof window.getComputedStyle === "function" ? window.getComputedStyle(textLayer) : null;
+      const fontHeight = layerComputed ? (parseFloat(layerComputed.getPropertyValue("--font-height")) || 18) : 18;
       const page = Number(startPage.dataset.page);
       const pageCount = Number(this.pdf.numPages);
       if (!Number.isInteger(page) || page < 1 || page > pageCount || !Number.isInteger(pageCount) || pageCount < 1) return null;
+      const rects = this.selectionRects(range, textLayer);
       return {
         generation: this.generation,
         fileId: this.fileId,
@@ -164,7 +176,57 @@
         pageCount,
         text,
         sourceVersion: this.metadata.source_version_stable_id,
+        rects,
+        pageWidth: layerRect.width || 0,
+        pageHeight: layerRect.height || 0,
+        fontHeight,
       };
+    }
+
+    selectionRects(range, textLayer) {
+      const spans = [];
+      const allSpans = textLayer.querySelectorAll ? Array.from(textLayer.querySelectorAll("span")) : [];
+      if (typeof range.intersectsNode === "function") {
+        for (const span of allSpans) {
+          if (span.textContent && span.textContent.trim() && range.intersectsNode(span)) spans.push(span);
+        }
+      } else {
+        spans.push(...allSpans);
+      }
+      const rects = [];
+      const computed = typeof window.getComputedStyle === "function" ? window.getComputedStyle(textLayer) : null;
+      const fontHeight = computed ? (parseFloat(computed.getPropertyValue("--font-height")) || 18) : 18;
+      for (const span of spans) {
+        const spanLeft = parseFloat(span.style.left) / 100;
+        const spanTop = parseFloat(span.style.top) / 100;
+        if (!Number.isFinite(spanLeft) || !Number.isFinite(spanTop)) continue;
+        const spanRect = span.getBoundingClientRect();
+        let subRects;
+        if (typeof range.cloneRange === "function" && typeof document.createRange === "function" && typeof Range !== "undefined") {
+          const spanRange = document.createRange();
+          spanRange.selectNodeContents(span);
+          const sub = range.cloneRange();
+          if (sub.compareBoundaryPoints(Range.START_TO_START, spanRange) < 0) sub.setStart(spanRange.startContainer, spanRange.startOffset);
+          if (sub.compareBoundaryPoints(Range.END_TO_END, spanRange) > 0) sub.setEnd(spanRange.endContainer, spanRange.endOffset);
+          subRects = sub.getClientRects();
+        } else {
+          subRects = [spanRect];
+        }
+        for (let index = 0; index < subRects.length; index += 1) {
+          const box = subRects[index];
+          const offLeftEm = (box.left - spanRect.left) / fontHeight;
+          const offTopEm = (box.top - spanRect.top) / fontHeight;
+          const width = box.width / fontHeight;
+          const height = box.height / fontHeight;
+          if (width <= 0 || height <= 0) continue;
+          rects.push([
+            round(spanLeft), round(spanTop),
+            round(Math.max(0, offLeftEm)), round(Math.max(0, offTopEm)),
+            round(width), round(height),
+          ]);
+        }
+      }
+      return rects;
     }
 
     getCapturedSelection() {
@@ -182,6 +244,37 @@
 
     getSelectionError() {
       return this.selectionError || null;
+    }
+
+    setHighlights(highlights) {
+      this.highlights = Array.isArray(highlights) ? highlights : [];
+      for (const page of this.rendered.keys()) this.applyPageHighlights(page);
+      this.onHighlightStateChange?.(this.highlights.length);
+    }
+
+    applyPageHighlights(pageNumber) {
+      const record = this.rendered.get(pageNumber);
+      if (!record) return;
+      const holder = record.holder;
+      const layer = holder.querySelector(".reader-text-layer");
+      if (!layer) return;
+      layer.querySelectorAll(".reader-highlight").forEach((node) => node.remove());
+      const layerRect = layer.getBoundingClientRect();
+      const computed = typeof window.getComputedStyle === "function" ? window.getComputedStyle(layer) : null;
+      const fontHeight = computed ? (parseFloat(computed.getPropertyValue("--font-height")) || 18) : 18;
+      for (const highlight of this.highlights) {
+        if (Number(highlight.anchor_page) !== pageNumber || highlight.anchor_state !== "ok") continue;
+        for (const rect of highlight.rects || []) {
+          const [spanLeft, spanTop, offLeftEm, offTopEm, widthEm, heightEm] = rect;
+          const div = document.createElement("div");
+          div.className = "reader-highlight";
+          div.style.left = `${round((spanLeft + (offLeftEm * fontHeight) / layerRect.width) * 100)}%`;
+          div.style.top = `${round((spanTop + (offTopEm * fontHeight) / layerRect.height) * 100)}%`;
+          div.style.width = `${round(widthEm * fontHeight)}px`;
+          div.style.height = `${round(heightEm * fontHeight)}px`;
+          layer.appendChild(div);
+        }
+      }
     }
 
     async buildPagePlaceholders() {
@@ -244,7 +337,8 @@
         if (generation !== this.generation) return;
         const layer = new this.pdfjs.TextLayer({ textContentSource: textContent, container: textLayer, viewport });
         await layer.render();
-        this.rendered.set(pageNumber, { page, holder });
+        this.rendered.set(pageNumber, { page, holder, viewport });
+        this.applyPageHighlights(pageNumber);
       } catch (error) {
         if (error?.name !== "RenderingCancelledException") throw error;
       } finally {

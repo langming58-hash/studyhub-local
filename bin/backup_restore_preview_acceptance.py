@@ -628,8 +628,8 @@ def main() -> int:
         check("restore_apply_is_separate_narrow_endpoint", 'parsed.path == "/api/backup/restore-apply"' in server_source, failures)
         check(
             "preview_uses_current_schema_without_extra_migrations",
-            len(match.SCHEMA_MIGRATIONS) == 10
-            and match_conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=10").fetchone()[0] == 1,
+            len(match.SCHEMA_MIGRATIONS) == 11
+            and match_conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version=11").fetchone()[0] == 1,
             failures,
         )
 

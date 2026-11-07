@@ -2462,6 +2462,9 @@ async function openFileDrawer(fileId, page = 0, options = {}) {
   $("#extractedText").textContent = file.extractedText || t("file.noReadableText");
   currentReaderPage = Math.max(1, Number(page || 1));
   noteExcerpt = null;
+  const nativePdf = String(file.extension || "").toLowerCase() === ".pdf";
+  const highlightButton = $("#saveHighlight");
+  if (highlightButton) highlightButton.disabled = true;
   await window.StudyHubReader.open({
     fileId: file.id,
     page: page || 1,
@@ -2473,6 +2476,8 @@ async function openFileDrawer(fileId, page = 0, options = {}) {
     onSelectionChange: (hasSelection) => {
       const button = $("#addSelectionNote");
       if (button) button.disabled = !hasSelection;
+      const highlightBtn = $("#saveHighlight");
+      if (highlightBtn) highlightBtn.disabled = !hasSelection || !nativePdf;
     },
   });
   $("#askResponse").textContent = "";
@@ -2480,6 +2485,7 @@ async function openFileDrawer(fileId, page = 0, options = {}) {
   $("#noteBody").value = "";
   await loadFileNotes(file.id);
   await loadFileCards(file.id);
+  await loadFileHighlights(file.id);
   $("#fileDrawer").hidden = false;
   const savedWidth = localStorage.getItem("studyhub.previewWidth");
   if (savedWidth) document.querySelector(".drawer-panel").style.setProperty("--studyhub-preview-width", savedWidth);
@@ -2614,6 +2620,66 @@ function quotedExcerpt(text) {
     .split("\n")
     .map((line) => `> ${line}`)
     .join("\n");
+}
+
+async function loadFileHighlights(fileId) {
+  const highlights = await api(`/api/highlights?fileId=${fileId}`);
+  window.StudyHubReader?.setHighlights?.(highlights);
+  const list = $("#fileHighlights");
+  if (!list) return;
+  list.innerHTML = highlights.length
+    ? highlights.map((highlight) => `
+        <article class="note-card">
+          <div class="chips">
+            <span class="chip">${escapeHtml(t("file.highlights"))}</span>
+            ${highlight.anchor_state === "ok"
+              ? `<button class="chip chip-button" type="button" data-highlight-page="${Number(highlight.anchor_page)}">${escapeHtml(t("file.notePage", { page: highlight.anchor_page }))}</button>`
+              : `<span class="chip" title="${escapeHtml(t("file.pageAnchorUnavailable"))}">${escapeHtml(t("file.notePage", { page: highlight.anchor_page }))} · ${escapeHtml(t("file.pageAnchorStale"))}</span>`}
+          </div>
+          ${highlight.label ? `<p class="muted">${escapeHtml(highlight.label)}</p>` : ""}
+          <div class="note-card-actions"><button class="button secondary compact" type="button" data-highlight-delete="${Number(highlight.id)}">${escapeHtml(t("common.delete"))}</button></div>
+        </article>`).join("")
+    : `<div class="notice compact">${escapeHtml(t("file.noHighlights"))}</div>`;
+}
+
+async function saveHighlight() {
+  const reader = window.StudyHubReader;
+  const selection = reader?.getCapturedSelection?.();
+  if (String(state.selectedFile?.extension || "").toLowerCase() !== ".pdf") {
+    toast(t("file.selectTextFirst"));
+    return;
+  }
+  if (!selection || !selection.rects?.length || !state.selectedFile || selection.fileId !== Number(state.selectedFile.id)) {
+    toast(t("file.selectTextFirst"));
+    return;
+  }
+  await api("/api/highlights", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      action: "create",
+      fileId: state.selectedFile.id,
+      anchorPage: selection.page,
+      rects: selection.rects,
+      label: selection.text.slice(0, 2000),
+      sourceVersion: selection.sourceVersion,
+      pageWidth: selection.pageWidth,
+      pageHeight: selection.pageHeight,
+      fontHeight: selection.fontHeight,
+    }),
+  });
+  await loadFileHighlights(state.selectedFile.id);
+  toast(t("file.highlightSaved"));
+}
+
+async function deleteHighlight(highlightId) {
+  await api("/api/highlights", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "delete", id: Number(highlightId) }),
+  });
+  if (state.selectedFile) await loadFileHighlights(state.selectedFile.id);
+  toast(t("file.highlightDeleted"));
 }
 
 function reviewCardAnchorChip(card) {
@@ -3742,6 +3808,19 @@ document.addEventListener("click", async (event) => {
   }
   if (target.id === "addSelectionNote") {
     addSelectionToNote();
+    return;
+  }
+  if (target.id === "saveHighlight") {
+    await saveHighlight();
+    return;
+  }
+  if (target.dataset.highlightDelete) {
+    await deleteHighlight(Number(target.dataset.highlightDelete));
+    return;
+  }
+  if (target.dataset.highlightPage) {
+    const page = Number(target.dataset.highlightPage);
+    if (page >= 1 && window.StudyHubReader?.goToPage) window.StudyHubReader.goToPage(page);
     return;
   }
   if (target.id === "reviewCardSubmit") {
