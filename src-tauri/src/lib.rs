@@ -841,8 +841,9 @@ async fn export_backup_archive(
         else {
             return Ok(None);
         };
+        let destination = Path::new(&destination.to_string()).to_path_buf();
         save_backup_export(&data_dir, &filename, &destination, profile)
-            .map(|()| Some(destination.to_string()))
+            .map(|()| Some(destination.to_string_lossy().to_string()))
     })
     .await
     .map_err(|_| "StudyHub could not open the save dialog.".to_string())?
