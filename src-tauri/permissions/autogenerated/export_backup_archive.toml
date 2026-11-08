@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-export-backup-archive"
+description = "Enables the export_backup_archive command without any pre-configured scope."
+commands.allow = ["export_backup_archive"]
+
+[[permission]]
+identifier = "deny-export-backup-archive"
+description = "Denies the export_backup_archive command without any pre-configured scope."
+commands.deny = ["export_backup_archive"]

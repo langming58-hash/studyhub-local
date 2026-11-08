@@ -9,6 +9,7 @@
   "permissions": [
     "core:default",
     "dialog:allow-open",
+    "dialog:allow-save",
     {
       "identifier": "opener:allow-open-url",
       "allow": [
@@ -21,6 +22,7 @@
     "allow-choose-study-files",
     "allow-choose-backup-archive",
     "allow-choose-restore-relink-file",
+    "allow-export-backup-archive",
     "allow-canvas-connection-status",
     "allow-start-canvas-oauth",
     "allow-cancel-canvas-oauth",

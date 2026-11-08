@@ -115,13 +115,13 @@ async function main() {
   fetchHandler = async (url, options = {}) => {
     if (url === "/api/backup/export" && (options.method || "GET").toUpperCase() === "POST") {
       posted.push(options.body || "");
-      return { ok: true, status: 200, statusText: "OK", json: async () => ({ export_id: "abc", filename: "studyhub-backup-v2-test.zip" }) };
+      return { ok: true, status: 200, statusText: "OK", json: async () => ({ ok: true, backup: { export_id: "abc", filename: "studyhub-backup-v2-test.zip" } }) };
     }
     return { ok: true, status: 200, statusText: "OK", json: async () => ({}) };
   };
 
   await app.exportBackup();
-  check("export_posts_to_backend", posted.length === 1);
+  check("export_posts_to_backend", posted.length === 1 && posted[0] === "{}");
   check("export_invokes_native_save", invocations.length === 1 && invocations[0].command === "export_backup_archive" && invocations[0].args.filename === "studyhub-backup-v2-test.zip");
   check("export_success_toast", sandbox.document.querySelector("#toast").textContent === "backup.exportSaved");
 
@@ -129,9 +129,17 @@ async function main() {
   await app.exportBackup();
   check("export_cancel_toast", sandbox.document.querySelector("#toast").textContent === "backup.exportCancelled");
 
+  fetchHandler = async () => ({ ok: true, status: 200, statusText: "OK", json: async () => ({ ok: true, backup: {} }) });
+  await app.exportBackup();
+  check("missing_filename_fails", invocations.length === 2 && sandbox.document.querySelector("#toast").textContent === "backup.exportFailed");
+
+  fetchHandler = async () => ({ ok: true, status: 200, statusText: "OK", json: async () => ({ ok: true, backup: { filename: "not-a-zip" } }) });
+  await app.exportBackup();
+  check("malformed_filename_fails", invocations.length === 2 && sandbox.document.querySelector("#toast").textContent === "backup.exportFailed");
+
   fetchHandler = async () => ({ ok: false, status: 500, statusText: "ERR", json: async () => ({ error: "boom" }) });
   await app.exportBackup();
-  check("export_failure_toast", sandbox.document.querySelector("#toast").textContent === "boom");
+  check("export_failure_toast", invocations.length === 2 && sandbox.document.querySelector("#toast").textContent === "boom");
 
   return failures;
 }

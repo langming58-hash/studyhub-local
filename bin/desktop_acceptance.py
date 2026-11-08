@@ -242,6 +242,9 @@ def source_checks() -> dict[str, bool]:
     capability = json.loads(
         (ROOT / "src-tauri" / "capabilities" / "studyhub-production.json").read_text(encoding="utf-8")
     )
+    development_capability = (ROOT / "src-tauri" / "capabilities" / "studyhub-development.json").read_text(encoding="utf-8")
+    demo_capability = (ROOT / "src-tauri" / "capabilities" / "studyhub-demo.json").read_text(encoding="utf-8")
+    build_manifest = (ROOT / "src-tauri" / "build.rs").read_text(encoding="utf-8")
     rust = (ROOT / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
     frontend = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
     builder = (ROOT / "bin" / "build_desktop.py").read_text(encoding="utf-8")
@@ -276,6 +279,11 @@ def source_checks() -> dict[str, bool]:
         "native_picker_frontend_hook_present": 'desktopInvoke("choose_study_folder")' in frontend,
         "backup_export_native_command_present": "export_backup_archive" in rust,
         "backup_export_frontend_hook_present": 'desktopInvoke("export_backup_archive"' in frontend,
+        "backup_export_command_manifest": '"export_backup_archive"' in build_manifest,
+        "backup_export_production_permission": "allow-export-backup-archive" in permissions,
+        "backup_export_save_dialog_permission": "dialog:allow-save" in permissions,
+        "backup_export_development_permission": '"allow-export-backup-archive"' in development_capability,
+        "backup_export_demo_restricted": '"allow-export-backup-archive"' not in demo_capability,
         "maintainer_key_not_present": "OPENAI_API_KEY=" not in rust,
         "public_bind_not_present": "0.0.0.0" not in rust,
         "release_build_remaps_private_home": "--remap-path-prefix=" in builder,

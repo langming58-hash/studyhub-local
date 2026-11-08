@@ -2787,7 +2787,11 @@ async function exportBackup() {
   toast(t("backup.exporting"));
   try {
     const exported = await postJson("/api/backup/export", {});
-    const destination = await desktopInvoke("export_backup_archive", { filename: exported.filename });
+    const filename = exported?.backup?.filename;
+    if (typeof filename !== "string" || !filename.endsWith(".zip")) {
+      throw new Error(t("backup.exportFailed"));
+    }
+    const destination = await desktopInvoke("export_backup_archive", { filename });
     if (destination) {
       toast(t("backup.exportSaved"));
     } else {
