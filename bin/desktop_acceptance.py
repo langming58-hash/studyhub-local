@@ -274,6 +274,8 @@ def source_checks() -> dict[str, bool]:
         "backend_uses_process_api_without_shell": "Command::new" in rust and "shell=True" not in rust,
         "desktop_runtime_is_outside_bundle": "app_data_dir()" in rust and "app_config_dir()" in rust,
         "native_picker_frontend_hook_present": 'desktopInvoke("choose_study_folder")' in frontend,
+        "backup_export_native_command_present": "export_backup_archive" in rust,
+        "backup_export_frontend_hook_present": 'desktopInvoke("export_backup_archive"' in frontend,
         "maintainer_key_not_present": "OPENAI_API_KEY=" not in rust,
         "public_bind_not_present": "0.0.0.0" not in rust,
         "release_build_remaps_private_home": "--remap-path-prefix=" in builder,
