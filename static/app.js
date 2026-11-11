@@ -2342,10 +2342,11 @@ async function renderSettings() {
           <div><p class="eyebrow">${escapeHtml(t("settings.localData"))}</p><h2>${escapeHtml(t("settings.storageControls"))}</h2></div>
         </div>
         <div class="settings-actions">
+          <button class="button secondary" data-export-backup="1" ${state.health.desktopMode ? "" : "disabled"}>${escapeHtml(t("backup.export"))}</button>
           <button class="button secondary" data-clear-cache="1">${escapeHtml(t("settings.clearCache"))}</button>
           <button class="button secondary" data-reset-studyhub="1">${escapeHtml(t("settings.resetMetadata"))}</button>
         </div>
-        <p class="muted">${escapeHtml(t("settings.dataSafety"))}</p>
+        <p class="muted">${escapeHtml(t(state.health.desktopMode ? "settings.dataSafety" : "backup.desktopRequired"))}</p>
       </section>
       <section class="section-block quiet-section restore-section">
         <div class="section-head">
@@ -2778,6 +2779,29 @@ async function copyContext(fileId) {
   toast(t("file.sourceCopied"));
 }
 
+async function exportBackup() {
+  if (!state.health?.desktopMode) {
+    toast(t("backup.desktopRequired"));
+    return;
+  }
+  toast(t("backup.exporting"));
+  try {
+    const exported = await postJson("/api/backup/export", {});
+    const filename = exported?.backup?.filename;
+    if (typeof filename !== "string" || !filename.endsWith(".zip")) {
+      throw new Error(t("backup.exportFailed"));
+    }
+    const destination = await desktopInvoke("export_backup_archive", { filename });
+    if (destination) {
+      toast(t("backup.exportSaved"));
+    } else {
+      toast(t("backup.exportCancelled"));
+    }
+  } catch (error) {
+    toast(error.message || t("backup.exportFailed"));
+  }
+}
+
 async function askAboutFile() {
   if (!state.selectedFile) return;
   const prompt = $("#askPrompt").value.trim();
@@ -3144,6 +3168,10 @@ document.addEventListener("click", async (event) => {
       state.restore.error = error.message || String(error);
     }
     await renderSettings();
+    return;
+  }
+  if (target.dataset.exportBackup) {
+    await exportBackup();
     return;
   }
   if (target.dataset.chooseRestoreRelink) {

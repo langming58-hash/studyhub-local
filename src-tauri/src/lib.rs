@@ -793,6 +793,62 @@ async fn choose_restore_relink_file(
     .map_err(|_| "StudyHub could not open the restore source picker.".to_string())?
 }
 
+fn save_backup_export(
+    data_dir: &Path,
+    filename: &str,
+    destination: &Path,
+    profile: RuntimeProfile,
+) -> Result<(), String> {
+    if !profile.allows_external_sources() {
+        return Err("Demo/Test mode cannot export backup archives.".to_string());
+    }
+    let safe_name = Path::new(filename)
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if safe_name != filename || safe_name.is_empty() || !safe_name.ends_with(".zip") {
+        return Err("Invalid backup filename.".to_string());
+    }
+    let source = data_dir.join("exports").join(&safe_name);
+    let metadata = std::fs::symlink_metadata(&source)
+        .map_err(|_| "StudyHub could not locate the exported backup.".to_string())?;
+    if !metadata.is_file() {
+        return Err("The exported backup is unavailable.".to_string());
+    }
+    std::fs::copy(&source, destination)
+        .map(|_| ())
+        .map_err(|_| "StudyHub could not save the backup archive.".to_string())
+}
+
+#[tauri::command]
+async fn export_backup_archive(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BackendState>,
+    filename: String,
+) -> Result<Option<String>, String> {
+    if !state.config.profile.allows_external_sources() {
+        return Err("Demo/Test mode cannot export backup archives.".to_string());
+    }
+    let data_dir = state.config.data_dir.clone();
+    let profile = state.config.profile;
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(destination) = app
+            .dialog()
+            .file()
+            .set_file_name(&filename)
+            .add_filter("StudyHub backup", &["zip"])
+            .blocking_save_file()
+        else {
+            return Ok(None);
+        };
+        let destination = Path::new(&destination.to_string()).to_path_buf();
+        save_backup_export(&data_dir, &filename, &destination, profile)
+            .map(|()| Some(destination.to_string_lossy().to_string()))
+    })
+    .await
+    .map_err(|_| "StudyHub could not open the save dialog.".to_string())?
+}
+
 #[tauri::command]
 async fn restart_backend(
     app: tauri::AppHandle,
@@ -1116,6 +1172,7 @@ pub fn run() {
             choose_study_files,
             choose_backup_archive,
             choose_restore_relink_file,
+            export_backup_archive,
             canvas_connection_status,
             configure_canvas_development_connection,
             provision_canvas_oauth_client,
@@ -1271,6 +1328,49 @@ mod tests {
         .is_err());
         assert!(!root.join("profile-data/restore-inbox").exists());
         std::fs::remove_dir_all(root).expect("remove synthetic deny root");
+    }
+
+    #[test]
+    fn native_backup_export_copies_profile_archive_to_chosen_path() {
+        let root = env::temp_dir().join(format!("studyhub-export-{}", next_restore_id()));
+        let data_dir = root.join("profile-data");
+        let exports = data_dir.join("exports");
+        std::fs::create_dir_all(&exports).expect("create synthetic export root");
+        let bytes = b"PK\x05\x06synthetic-backup-export";
+        std::fs::write(exports.join("studyhub-backup-v2-test.zip"), bytes).expect("write export");
+        let destination = root.join("Saved Backup.zip");
+        save_backup_export(
+            &data_dir,
+            "studyhub-backup-v2-test.zip",
+            &destination,
+            RuntimeProfile::Development,
+        )
+        .expect("copy export");
+        assert_eq!(std::fs::read(&destination).expect("read copy"), bytes);
+        std::fs::remove_dir_all(root).expect("remove synthetic export root");
+    }
+
+    #[test]
+    fn native_backup_export_rejects_unsafe_filename_and_demo_profile() {
+        let root = env::temp_dir().join(format!("studyhub-export-deny-{}", next_restore_id()));
+        let data_dir = root.join("profile-data");
+        std::fs::create_dir_all(data_dir.join("exports")).expect("create synthetic export root");
+        assert!(save_backup_export(
+            &data_dir,
+            "../escape.zip",
+            &root.join("out.zip"),
+            RuntimeProfile::Development
+        )
+        .is_err());
+        assert!(save_backup_export(
+            &data_dir,
+            "backup.zip",
+            &root.join("out.zip"),
+            RuntimeProfile::DemoTest
+        )
+        .is_err());
+        assert!(!root.join("out.zip").exists());
+        std::fs::remove_dir_all(root).expect("remove synthetic export root");
     }
 
     #[test]

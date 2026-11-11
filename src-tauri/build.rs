@@ -5,6 +5,7 @@ fn main() {
             "choose_study_files",
             "choose_backup_archive",
             "choose_restore_relink_file",
+            "export_backup_archive",
             "canvas_connection_status",
             "configure_canvas_development_connection",
             "remove_canvas_connection",
