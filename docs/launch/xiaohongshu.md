@@ -18,10 +18,12 @@ Course -> Week -> Materials / Exercises
 - 第一次打开是空工作区，不捆绑示例课程
 - OpenAI 可选，不配置 API 也能整理、预览、搜索和做学习记录
 - 默认没有 telemetry
-- 合成测试资料只留在自动化测试中，不进入生产 App
+- 展示和测试使用合成资料，不随生产 App 分发
 
 项目已经开源，还很早期，欢迎试用和反馈。
 
 GitHub 搜：langming58-hash / studyhub-local
 
 #大学学习 #学习工具 #开源项目 #AI学习 #效率工具 #GitHub #本地优先
+
+beta.2 包含 PDF Reader V1、来源关联笔记与摘录、手动 FSRS 卡片、Canvas OAuth / 作业 / Today 和本地备份导出。仅 Apple Silicon、macOS 13+，ad-hoc 签名、未公证；Canvas 需要学校配置 OAuth 客户端。完整的真实 GUI 备份保存、恢复、撤销验收仍未完成，不包含 PR #44 PDF Highlights。这是预发布测试版。可复用[通用中文文案](general-cn.md)，截图来源见[真实截图记录](../assets/screenshots/README.md)。

@@ -10,16 +10,18 @@
 - 第一次打开是干净的空工作区，不捆绑示例课程
 - 不配置 OpenAI 也能使用本地整理、预览、搜索和学习记录
 - 默认没有 telemetry
-- 服务只监听 localhost，安装后在本机打开 http://127.0.0.1:8765
+- 桌面 App 内置仅监听本机 loopback 的后端，安装后直接打开 App
 - 支持本地搜索
 - Ask AI 可选，回答要基于自己的资料，并显示来源
 - Practice 题不会凭空生成，只能来自用户导入的老师资料
 - 有只读 MCP endpoint，限制在本地资料库范围内
 
-仓库中的合成资料仅供自动化测试使用，不会进入生产 App；仓库不包含真实课程资料。
+仓库中的合成资料用于测试与展示，不会进入生产 App；仓库不包含真实课程资料。
 
 Repo: https://github.com/langming58-hash/studyhub-local
 
-Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.2.0
+Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.2
 
 目前还是早期版本，很多地方肯定可以继续打磨。欢迎试用、提 Issue、PR，或者从架构、搜索、资料整理方式、跨平台体验这些角度给点反馈。
+
+beta.2 包含 PDF Reader V1、来源关联笔记与摘录、手动 FSRS 卡片、Canvas OAuth / 作业 / Today 和本地备份导出。仅 Apple Silicon、macOS 13+，ad-hoc 签名、未公证；Canvas 需要学校配置 OAuth 客户端。完整的真实 GUI 备份保存、恢复、撤销验收仍未完成，不包含 PR #44 PDF Highlights。这是预发布测试版。可复用[通用中文文案](general-cn.md)，截图来源见[真实截图记录](../assets/screenshots/README.md)。

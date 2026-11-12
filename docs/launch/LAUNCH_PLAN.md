@@ -2,7 +2,7 @@
 
 Repository: https://github.com/langming58-hash/studyhub-local
 
-Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.2.0
+Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.2
 
 This file is a reusable public launch checklist. It must not become a ledger of
 the maintainer's personal social accounts, account status, or publication
@@ -20,8 +20,8 @@ is intentionally part of a public professional profile.
 ## Public Posting Principles
 
 - Link to the GitHub repository or a release, not a localhost URL.
-- Mention localhost only as an install instruction, for example: after
-  installation, open `http://127.0.0.1:8765` on your own machine.
+- The packaged macOS app opens its own window; do not tell DMG users to open
+  a fixed localhost port. Source development uses a printed loopback URL.
 - Use only approved screenshots from a clean empty workspace, or explicitly
   synthetic test media that is not part of production resources.
 - Do not show real course files, teacher questions, private filenames, browser
@@ -64,3 +64,5 @@ templates.
 
 When recording feedback, summarize themes without copying private messages,
 personal identifiers, screenshots, or account-specific context.
+
+For beta.2, use the five genuine captures and [provenance](../assets/screenshots/README.md), plus [English](general-en.md) / [中文](general-cn.md) copy. Keep the incomplete backup GUI acceptance and prerelease / signing limitations visible.

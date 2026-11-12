@@ -19,3 +19,5 @@ The engineering focus has been privacy boundaries rather than cloud-first conven
 Repository: https://github.com/langming58-hash/studyhub-local
 
 Issues, feedback, and PRs are welcome. I would especially appreciate feedback on local-first education tooling, retrieval UX, and privacy/security tradeoffs.
+
+Beta.2 includes PDF Reader V1, source-linked notes / PDF excerpts, manual FSRS cards, Canvas OAuth / Assignments / Today and local backup export. Apple Silicon, macOS 13+, ad-hoc signed and not notarized. Canvas requires institutional OAuth setup. Full real-GUI backup save/restore/undo acceptance remains incomplete; PR #44 PDF Highlights are excluded. This is a prerelease. See [current English copy](general-en.md) and the [real screenshot provenance](../assets/screenshots/README.md).

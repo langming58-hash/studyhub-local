@@ -7,71 +7,57 @@
 
 [简体中文](README.zh-CN.md)
 
-## Download
+Read your course PDFs, keep notes linked to their sources, and review what you learn—all on your Mac. StudyHub Local is an open-source, local-first study workspace; Canvas and AI are optional.
 
-**[Download for macOS](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.2)** · [Latest releases](https://github.com/langming58-hash/studyhub-local/releases) · [Source code](https://github.com/langming58-hash/studyhub-local)
+**[Download beta.2 for macOS](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.2)** · [Release notes](docs/releases/v0.3.0-beta.2.md) · [Source code](https://github.com/langming58-hash/studyhub-local)
 
-| Version | Status | Mac | Minimum macOS | Signing |
-| --- | --- | --- | --- | --- |
-| v0.3.0-beta.2 | Prerelease | Apple Silicon only | macOS 13 Ventura | Unsigned beta, not notarized |
+Apple Silicon only · macOS 13+ · Prerelease · **Unsigned beta** (ad-hoc signed), not Apple notarized.
 
-The downloaded app includes its local backend. A normal user does not need Git, Node.js, Python, Rust, npm, or Terminal.
+![StudyHub Local beta.2 PDF Reader with a synthetic handout and page-linked notes](docs/assets/screenshots/beta2-pdf-reader.jpg)
 
-### Install on macOS
+## From reading to review
 
-1. Open the GitHub release and download `StudyHub-Local-v0.3.0-beta.2-macos-arm64.dmg`.
-2. Open the DMG.
-3. Drag **StudyHub Local** to **Applications**.
-4. Try to open **StudyHub Local** normally.
-5. Because this beta is not Developer ID signed or notarized, macOS may block the first launch. Open **System Settings -> Privacy & Security**, find the StudyHub Local message, and choose **Open Anyway**. Apple documents this standard path in [Open a Mac app from an unknown developer](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac).
+| | |
+| --- | --- |
+| **Home and courses**<br>[![Home and courses](docs/assets/screenshots/beta2-home-dashboard.jpg)](docs/assets/screenshots/beta2-home-dashboard.jpg) | **Source-linked notes and saved excerpts**<br>[![Source-linked notes and saved excerpts](docs/assets/screenshots/beta2-source-linked-notes-excerpts.jpg)](docs/assets/screenshots/beta2-source-linked-notes-excerpts.jpg) |
+| **Manual FSRS Review Cards**<br>[![Manual FSRS Review Cards](docs/assets/screenshots/beta2-manual-fsrs-review-cards.jpg)](docs/assets/screenshots/beta2-manual-fsrs-review-cards.jpg) | **Local Data and Export Backup**<br>[![Local Data and Export Backup](docs/assets/screenshots/beta2-local-data-export-backup.jpg)](docs/assets/screenshots/beta2-local-data-export-backup.jpg) |
 
-Do not disable Gatekeeper. Terminal is not required for installation or first launch.
+Real native screenshots of the published beta.2 app, using a separate synthetic
+study library and isolated profile. All courses, materials, notes and cards are
+fictional; no live Canvas account or AI credentials are shown. Click an image
+to inspect it. [Capture provenance and privacy review](docs/assets/screenshots/README.md).
 
-StudyHub Local is an early-stage, local-first workspace for course files from any university. It organizes material by Course -> Week, supports local preview and search, keeps notes and study records, and can optionally answer questions with citations from your own indexed material.
+## Included in beta.2
 
-Your original files remain in a folder you control. The app starts with a clean, empty workspace: no sample courses, teacher material, test database, extracted text, or API credentials are bundled into the production runtime.
-
-## v0.3.0-beta.2
-
-Release candidate; the download above becomes available after independent release review and publication.
-
-- PDF Reader V1 with selectable text, find, page navigation, zoom and fit-width
-- Source-linked Notes and PDF Text Excerpts with source-page navigation
-- Manual FSRS Review Cards and local review sessions
-- Institution-authorized Canvas OAuth, read-only Assignments and Today
-- Local backup export, Restore Preview, Apply and Undo
-- Bundled backend, English / Simplified Chinese UI, artifact privacy scans and SHA-256 verification
+- **PDF Reader V1:** page navigation, find, zoom and fit-width / fit-page.
+- **Source-linked Notes and PDF Text Excerpts:** keep saved notes and excerpts connected to the source page and material version.
+- **Manual FSRS Review Cards:** author your own cards, follow source-page links and review with local scheduling.
+- **Canvas OAuth, Assignments and Today:** optional, institution-authorized, read-only Canvas connection; local study and review remain available without it.
+- **Local backup export, Restore Preview, Apply and Undo:** portable user-owned study state with validated, bounded restore operations.
+- Local organization and search, English / Simplified Chinese, optional source-grounded AI, and a bundled local backend.
 
 PDF Highlights from unmerged PR #44 are excluded. Seven core macOS learning
-workflows have passed user testing; full real-GUI backup save/restore/undo
-acceptance remains incomplete. This is a prerelease, not a stable production
-release. Unsigned beta means ad-hoc signed, without Developer ID signing or
-Apple notarization. See the [release notes](docs/releases/v0.3.0-beta.2.md) for
-installation, compatibility and backup limitations.
+workflows have passed user testing, as reported by the maintainer. **Full
+real-GUI backup save/restore/undo acceptance remains incomplete.** The Export
+Backup screenshot shows the available control; it is not full workflow
+acceptance evidence. This is a prerelease, not a stable production release.
 
-## Screenshots
+## Install on macOS
 
-![Clean first run in English](docs/assets/screenshots/first-run-en.png)
+1. Open the [GitHub Release](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.2) and download `StudyHub-Local-v0.3.0-beta.2-macos-arm64.dmg` and its matching `.sha256`.
+2. Open the DMG and drag **StudyHub Local** to **Applications**.
+3. Launch the app normally.
+4. If Gatekeeper blocks the first launch, open **System Settings → Privacy & Security → Open Anyway** for StudyHub Local. Do not disable Gatekeeper.
 
-![Clean first run in Simplified Chinese](docs/assets/screenshots/first-run-zh-CN.png)
+The backend is bundled. Git, Python, Node.js, Rust and npm are not needed by end
+users. Terminal is not required for installation or first launch. Optional
+checksum instructions and compatibility limits are in the [release notes](docs/releases/v0.3.0-beta.2.md).
 
-![Synthetic Study Engine gallery](docs/assets/screenshots/product-study-engine.png)
-
-The first two screenshots show an empty production workspace. The populated
-Study Engine gallery uses synthetic CS101, ECON201, and STAT210 text fixtures
-only. No screenshot contains personal information or real course material.
-
-## Features
-
-- Organize files by course, week/module, material type, and exercise type
-- Preview PDF, text, code, images, and supported Office documents
-- Search filenames and readable extracted text
-- Ask AI within the current question, file, week, or course scope
-- Follow citations to the source file and page/slide when reliably available
-- Keep local notes, stars, conversations, practice records, and wrong-question records
-- Track per-material progress, flag Needs Review, and use a deterministic local FSRS review queue
-- Retrieve teacher-provided questions only; StudyHub does not generate practice questions
-- Run without OpenAI for local organization, preview, search, notes, and study records
+Original files stay in a folder you control. First launch is an empty workspace;
+the gallery's synthetic study library is not bundled. Backups exclude original
+academic files and credentials, so keep separate copies of your originals.
+Canvas requires an institutionally provisioned OAuth client. AI is optional;
+enabling cloud AI/indexing sends selected content to the configured provider.
 
 ## Source Development Requirements
 
