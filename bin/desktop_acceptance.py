@@ -49,6 +49,16 @@ def write_synthetic_docx(path: Path) -> None:
         )
 
 
+def write_synthetic_xlsx(path: Path) -> None:
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    workbook.active.append(["Synthetic spreadsheet", "Value"])
+    workbook.active.append(["Packaged NumPy pandas smoke", 42])
+    workbook.save(path)
+    workbook.close()
+
+
 def write_synthetic_pdf(path: Path, text: str) -> None:
     escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
     stream = f"BT /F1 18 Tf 72 720 Td ({escaped}) Tj ET".encode("ascii")
@@ -353,6 +363,34 @@ def packaged_checks(results: dict[str, bool]) -> None:
         results["packaged_markitdown_smoke_source_unchanged"] = (
             smoke_docx_hash == hashlib.sha256(smoke_docx.read_bytes()).hexdigest()
         )
+        # Exercise pandas/NumPy in the frozen helper, without a source environment.
+        smoke_xlsx = temp_root / "synthetic-smoke.xlsx"
+        write_synthetic_xlsx(smoke_xlsx)
+        smoke_xlsx_hash = hashlib.sha256(smoke_xlsx.read_bytes()).hexdigest()
+        try:
+            spreadsheet_helper = subprocess.run(
+                [str(PACKAGED_MARKITDOWN)],
+                input=json.dumps({"operation": "convert", "path": str(smoke_xlsx)}) + "\n",
+                text=True,
+                capture_output=True,
+                timeout=90,
+                check=False,
+                cwd=temp_root,
+                env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(temp_root)},
+            )
+            spreadsheet_payload = json.loads(spreadsheet_helper.stdout.splitlines()[0]) if spreadsheet_helper.stdout.splitlines() else {}
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+            spreadsheet_helper = None
+            spreadsheet_payload = {}
+        results["packaged_spreadsheet_numpy_pandas_real_smoke"] = bool(
+            spreadsheet_helper
+            and spreadsheet_helper.returncode == 0
+            and isinstance(spreadsheet_payload, dict)
+            and spreadsheet_payload.get("ok") is True
+            and "Packaged NumPy pandas smoke" in str(spreadsheet_payload.get("text") or "")
+            and "42" in str(spreadsheet_payload.get("text") or "")
+        )
+        results["packaged_spreadsheet_source_unchanged"] = smoke_xlsx_hash == hashlib.sha256(smoke_xlsx.read_bytes()).hexdigest()
         smoke_pdf = temp_root / "synthetic-smoke.pdf"
         write_synthetic_pdf(smoke_pdf, "Synthetic packaged PDF page")
         smoke_pdf_hash = hashlib.sha256(smoke_pdf.read_bytes()).hexdigest()

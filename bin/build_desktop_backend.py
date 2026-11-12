@@ -9,6 +9,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from desktop_dependencies import verify_environment
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_PARENT = ROOT / "src-tauri" / "backend"
@@ -18,6 +19,7 @@ BUILD_ROOT = ROOT / ".desktop-build" / "pyinstaller"
 
 
 def main() -> int:
+    verify_environment(ROOT)
     try:
         import PyInstaller  # noqa: F401
     except ImportError:

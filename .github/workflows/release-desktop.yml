@@ -13,6 +13,7 @@ on:
       - "package-lock.json"
       - "requirements.txt"
       - "requirements-desktop.txt"
+      - "requirements/locks/**"
       - "README.md"
       - "README.zh-CN.md"
       - "docs/releases/**"
@@ -60,6 +61,8 @@ jobs:
           fi
           python3 bin/prepare_macos_release.py "${args[@]}"
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.12.3"
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
@@ -69,12 +72,14 @@ jobs:
 
       - name: Install JavaScript dependencies
         run: npm ci
-      - name: Install Python runtime dependencies
-        run: python -m pip install -r requirements.txt
+      - name: Prepare hash-locked desktop Python environment
+        run: |
+          npm run desktop:setup
+          echo "$PWD/.venv-desktop/bin" >> "$GITHUB_PATH"
+      - name: Verify Python hash rejection
+        run: python3 bin/python_lock_acceptance.py --installer
       - name: Run normal CI
         run: npm run ci
-      - name: Prepare pinned desktop backend environment
-        run: npm run desktop:setup
       - name: Check desktop Rust workspace
         run: npm run desktop:check
       - name: Run desktop Rust tests
