@@ -449,6 +449,8 @@ def packaged_checks(results: dict[str, bool]) -> None:
                 {
                     "packaged_backend_health": bool(clean_health),
                     "packaged_backend_reports_frozen": clean_health.get("packagedBackend") is True,
+                    "packaged_backend_exact_version": clean_health.get("version")
+                    == json.loads((ROOT / "package.json").read_text())["version"],
                     "packaged_backend_loopback": clean_url == f"http://localhost:{clean_port}",
                     "packaged_clean_first_run_has_no_demo_contract": "demoMode" not in clean_health,
                     "packaged_clean_first_run_has_zero_files": int(clean_health.get("filesIndexed") or 0) == 0,

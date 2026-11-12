@@ -33,6 +33,8 @@ jobs:
     name: Build and verify Apple Silicon DMG
     runs-on: macos-15
     timeout-minutes: 60
+    outputs:
+      artifact_stem: ${{ steps.release.outputs.artifact_stem }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,6 +46,18 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+      - name: Validate exact release version and tag
+        id: release
+        run: |
+          args=(--check-only --github-output "$GITHUB_OUTPUT")
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            args+=(--tag "$GITHUB_REF_NAME")
+            git fetch origin main
+            test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+            test "$(git rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")" = "$GITHUB_SHA"
+            test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
+          fi
+          python3 bin/prepare_macos_release.py "${args[@]}"
       - uses: astral-sh/setup-uv@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -74,22 +88,26 @@ jobs:
       - name: Run packaged app acceptance
         run: npm run desktop:test:packaged
       - name: Scan mounted DMG for private data
-        run: python3 bin/desktop_artifact_privacy.py --dmg .release/StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg
+        env:
+          DMG_NAME: ${{ steps.release.outputs.dmg_name }}
+        run: python3 bin/desktop_artifact_privacy.py --dmg ".release/$DMG_NAME"
       - name: Verify SHA-256
         working-directory: .release
-        run: shasum -a 256 -c StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg.sha256
+        env:
+          DMG_NAME: ${{ steps.release.outputs.dmg_name }}
+        run: shasum -a 256 -c "$DMG_NAME.sha256"
       - name: Upload verified workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: StudyHub-Local-v0.3.0-beta.1-macos-arm64
+          name: ${{ steps.release.outputs.artifact_stem }}
           path: |
-            .release/StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg
-            .release/StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg.sha256
+            .release/${{ steps.release.outputs.dmg_name }}
+            .release/${{ steps.release.outputs.dmg_name }}.sha256
           if-no-files-found: error
           retention-days: 14
   publish-prerelease:
     name: Publish verified GitHub prerelease
-    if: github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     needs: build-macos-arm64
     runs-on: ubuntu-latest
     permissions:
@@ -98,20 +116,42 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Revalidate exact tag and main commit
+        id: release
+        run: |
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")" = "$GITHUB_SHA"
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
+          python3 bin/prepare_macos_release.py --check-only --tag "$GITHUB_REF_NAME" --github-output "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
-          name: StudyHub-Local-v0.3.0-beta.1-macos-arm64
+          name: ${{ needs.build-macos-arm64.outputs.artifact_stem }}
           path: .release
       - name: Publish GitHub prerelease
         env:
           GH_TOKEN: ${{ github.token }}
+          DMG_NAME: ${{ steps.release.outputs.dmg_name }}
+          NOTES_FILE: ${{ steps.release.outputs.notes_file }}
+          ARTIFACT_STEM: ${{ needs.build-macos-arm64.outputs.artifact_stem }}
+          EXPECTED_STEM: ${{ steps.release.outputs.artifact_stem }}
         run: |
-          test "$GITHUB_REF_NAME" = "v0.3.0-beta.1"
-          ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1
+          test "$ARTIFACT_STEM" = "$EXPECTED_STEM"
+          test "$(find .release -type f | wc -l | tr -d ' ')" = "2"
+          test -s ".release/$DMG_NAME"
+          test -s ".release/$DMG_NAME.sha256"
+          (cd .release && shasum -a 256 -c "$DMG_NAME.sha256")
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Refusing to modify an existing release."
+            exit 1
+          fi
           gh release create "$GITHUB_REF_NAME" \
-            .release/StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg \
-            .release/StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg.sha256 \
+            ".release/$DMG_NAME" \
+            ".release/$DMG_NAME.sha256" \
             --verify-tag \
             --prerelease \
-            --title "StudyHub Local v0.3.0-beta.1" \
-            --notes-file docs/releases/v0.3.0-beta.1.md
+            --title "StudyHub Local $GITHUB_REF_NAME" \
+            --notes-file "$NOTES_FILE"

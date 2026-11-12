@@ -5818,7 +5818,7 @@ def export_user_owned_backup(
         "format_version": BACKUP_FORMAT_VERSION,
         "minimum_restore_format_version": BACKUP_FORMAT_VERSION,
         "created_at": created,
-        "app_version": "0.3.0-beta.1",
+        "app_version": "0.3.0-beta.2",
         "runtime_profile": RUNTIME_PROFILE,
         "disposable_demo": RUNTIME_PROFILE == "demo-test",
         "features": {
@@ -12752,7 +12752,7 @@ def api_health(conn: sqlite3.Connection) -> dict[str, Any]:
     extraction_warnings = [pdf_dependency_error] if pdf_dependency_error else []
     return {
         "app": APP_NAME,
-        "version": "0.3.0-beta.1",
+        "version": "0.3.0-beta.2",
         "runtimeProfile": RUNTIME_PROFILE,
         "desktopMode": DESKTOP_MODE,
         "packagedBackend": PACKAGED_BACKEND,

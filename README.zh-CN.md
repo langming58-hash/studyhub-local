@@ -1,6 +1,6 @@
 # StudyHub Local
 
-[![Release](https://img.shields.io/badge/release-v0.3.0--beta.1-orange)](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.1)
+[![Release](https://img.shields.io/badge/release-v0.3.0--beta.2-orange)](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.2)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/langming58-hash/studyhub-local/actions/workflows/ci.yml/badge.svg)](https://github.com/langming58-hash/studyhub-local/actions/workflows/ci.yml)
 
@@ -8,17 +8,17 @@
 
 ## 下载
 
-**[下载 macOS 版本](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.1)** · [全部版本](https://github.com/langming58-hash/studyhub-local/releases) · [源代码](https://github.com/langming58-hash/studyhub-local)
+**[下载 macOS 版本](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.2)** · [全部版本](https://github.com/langming58-hash/studyhub-local/releases) · [源代码](https://github.com/langming58-hash/studyhub-local)
 
 | 版本 | 状态 | Mac | 最低系统 | 签名状态 |
 | --- | --- | --- | --- | --- |
-| v0.3.0-beta.1 | 测试版 | 仅 Apple Silicon | macOS 13 Ventura | 未签名、未公证 |
+| v0.3.0-beta.2 | 测试版 | 仅 Apple Silicon | macOS 13 Ventura | 未签名、未公证 |
 
 下载的 App 已包含本地后端。普通用户不需要 Git、Node.js、Python、Rust、npm 或终端。
 
 ### 在 macOS 安装
 
-1. 打开 GitHub Release，下载 `StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg`。
+1. 打开 GitHub Release，下载 `StudyHub-Local-v0.3.0-beta.2-macos-arm64.dmg`。
 2. 打开 DMG。
 3. 将 **StudyHub Local** 拖入 **Applications（应用程序）**。
 4. 正常尝试打开 **StudyHub Local**。
@@ -30,17 +30,21 @@ StudyHub Local 是一个早期阶段、本地优先的大学课程资料工作�
 
 原始文件始终保留在你自己控制的文件夹中。生产版本第一次打开时是干净的空工作区，不会捆绑示例课程、老师资料、测试数据库、提取文本或 API 凭证。
 
-## v0.3.0-beta.1
+## v0.3.0-beta.2
 
-- 干净首启：新建课程或导入课程文件夹
-- English / 简体中文界面，可跟随系统或在设置中切换
-- Home、Courses、Search、Study、AI、Settings 六个主要工作区
-- 本地 AI 对话历史、来源引用、个人笔记与老师原题保护
-- 公开 Apple Silicon DMG，后端已打包，普通用户无需安装开发工具
-- 严格隔离生产资源与测试夹具
-- 打包产物隐私扫描与公开 SHA-256 校验值
+发布候选版本；上方下载将在独立发布审查与正式发布后可用。
 
-这是早期未签名测试版，尚未使用 Developer ID 签名或进行 Apple 公证。
+- PDF Reader V1：文本选择、查找、跳页、缩放和适应宽度
+- 来源关联笔记与 PDF 文本摘录，可返回来源页面
+- 手动 FSRS 复习卡片与本地复习会话
+- 经学校授权的 Canvas OAuth、只读作业与 Today
+- 本地备份导出、恢复预览、应用和撤销
+- 内置后端、English / 简体中文界面、产物隐私扫描和 SHA-256 校验
+
+不包含尚未合并的 PR #44 PDF Highlights。七项 macOS 核心学习流程已通过用户测试；
+完整的真实 GUI 备份保存、恢复和撤销验收仍未完成。这是预发布测试版，不是稳定生产版本。
+这里的“未签名测试版”指仅使用 ad-hoc 签名，没有 Developer ID 签名或 Apple 公证。
+安装、兼容性及备份限制见[发布说明](docs/releases/v0.3.0-beta.2.md)。
 
 ## 截图
 

@@ -1,6 +1,6 @@
 [package]
 name = "studyhub-local-desktop"
-version = "0.3.0-beta.1"
+version = "0.3.0-beta.2"
 description = "Local-first desktop study workspace"
 authors = ["StudyHub Local Maintainers"]
 edition = "2021"
