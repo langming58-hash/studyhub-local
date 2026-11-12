@@ -6,68 +6,52 @@
 
 [English](README.md)
 
-## 下载
+在 Mac 上阅读课程 PDF、保存关联来源的笔记，再用复习卡片巩固所学。StudyHub Local 是一个开源、本地优先的学习工作区；Canvas 和 AI 都是可选功能。
 
-**[下载 macOS 版本](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.2)** · [全部版本](https://github.com/langming58-hash/studyhub-local/releases) · [源代码](https://github.com/langming58-hash/studyhub-local)
+**[下载 macOS beta.2](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.2)** · [发布说明](docs/releases/v0.3.0-beta.2.md) · [源代码](https://github.com/langming58-hash/studyhub-local)
 
-| 版本 | 状态 | Mac | 最低系统 | 签名状态 |
-| --- | --- | --- | --- | --- |
-| v0.3.0-beta.2 | 测试版 | 仅 Apple Silicon | macOS 13 Ventura | 未签名、未公证 |
+仅 Apple Silicon · macOS 13+ · 预发布测试版 · 仅 ad-hoc 签名，未使用 Developer ID 签名或 Apple 公证。
 
-下载的 App 已包含本地后端。普通用户不需要 Git、Node.js、Python、Rust、npm 或终端。
+![StudyHub Local beta.2 PDF 阅读器：虚构讲义与来源页面笔记](docs/assets/screenshots/beta2-pdf-reader.jpg)
 
-### 在 macOS 安装
+## 从阅读到复习
 
-1. 打开 GitHub Release，下载 `StudyHub-Local-v0.3.0-beta.2-macos-arm64.dmg`。
-2. 打开 DMG。
-3. 将 **StudyHub Local** 拖入 **Applications（应用程序）**。
-4. 正常尝试打开 **StudyHub Local**。
-5. 由于这是未使用 Developer ID 签名、未公证的测试版，macOS 可能阻止第一次启动。打开 **系统设置 -> 隐私与安全性**，找到 StudyHub Local 的提示，然后选择 **仍要打开**。Apple 在[打开来自身份不明开发者的 Mac App](https://support.apple.com/zh-cn/guide/mac-help/mh40616/mac)中说明了这个标准流程。
+| | |
+| --- | --- |
+| **首页与课程**<br>[![首页与课程](docs/assets/screenshots/beta2-home-dashboard.jpg)](docs/assets/screenshots/beta2-home-dashboard.jpg) | **来源关联笔记与已保存摘录**<br>[![来源关联笔记与已保存摘录](docs/assets/screenshots/beta2-source-linked-notes-excerpts.jpg)](docs/assets/screenshots/beta2-source-linked-notes-excerpts.jpg) |
+| **手动 FSRS 复习卡片**<br>[![手动 FSRS 复习卡片](docs/assets/screenshots/beta2-manual-fsrs-review-cards.jpg)](docs/assets/screenshots/beta2-manual-fsrs-review-cards.jpg) | **本地数据与导出备份**<br>[![本地数据与导出备份](docs/assets/screenshots/beta2-local-data-export-backup.jpg)](docs/assets/screenshots/beta2-local-data-export-backup.jpg) |
 
-不要关闭 Gatekeeper。安装和第一次启动不需要终端。
+这些是已发布 beta.2 App 的真实原生窗口截图，使用独立的合成学习资料库和隔离配置。
+课程、资料、笔记和卡片均为虚构内容，没有真实 Canvas 账户或 AI 凭证。点击图片可查看原图。
+[截图来源与隐私检查记录](docs/assets/screenshots/README.md)。
 
-StudyHub Local 是一个早期阶段、本地优先的大学课程资料工作区，适用于任何大学。它可以按“课程 -> 周次”整理资料，提供本地预览和搜索、笔记与学习记录，并可选使用 AI，根据你已建立索引的资料回答并显示来源。
+## beta.2 已包含
 
-原始文件始终保留在你自己控制的文件夹中。生产版本第一次打开时是干净的空工作区，不会捆绑示例课程、老师资料、测试数据库、提取文本或 API 凭证。
+- **PDF Reader V1：**跳页、查找、缩放、适应宽度与整页。
+- **来源关联笔记与 PDF 文本摘录：**保存的笔记和摘录可关联来源页码及资料版本。
+- **手动 FSRS 复习卡片：**自己编写卡片、返回来源页面，并使用本地调度进行复习。
+- **Canvas OAuth、作业与 Today：**可选的学校授权只读连接；不连接也能使用本地学习与复习。
+- **本地备份导出、恢复预览、应用和撤销：**导出支持的用户学习状态，并按验证范围恢复。
+- 本地整理与搜索、English / 简体中文、可选的来源关联 AI，以及内置本地后端。
 
-## v0.3.0-beta.2
+不包含尚未合并的 PR #44 PDF Highlights。维护者报告七项 macOS 核心学习流程已通过用户测试。
+**完整的真实 GUI 备份保存、恢复和撤销验收仍未完成。** 导出备份截图展示可用的按钮，
+不能作为完整流程通过验收的证据。这是预发布测试版，不是稳定生产版本。
 
-发布候选版本；上方下载将在独立发布审查与正式发布后可用。
+## 在 macOS 安装
 
-- PDF Reader V1：文本选择、查找、跳页、缩放和适应宽度
-- 来源关联笔记与 PDF 文本摘录，可返回来源页面
-- 手动 FSRS 复习卡片与本地复习会话
-- 经学校授权的 Canvas OAuth、只读作业与 Today
-- 本地备份导出、恢复预览、应用和撤销
-- 内置后端、English / 简体中文界面、产物隐私扫描和 SHA-256 校验
+1. 打开 [GitHub Release](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.2)，下载 `StudyHub-Local-v0.3.0-beta.2-macos-arm64.dmg` 和匹配的 `.sha256`。
+2. 打开 DMG，将 **StudyHub Local** 拖入 **Applications（应用程序）**。
+3. 正常启动 App。
+4. 如果 Gatekeeper 阻止首次启动，打开 **系统设置 → 隐私与安全性 → 仍要打开**。不要关闭 Gatekeeper。
 
-不包含尚未合并的 PR #44 PDF Highlights。七项 macOS 核心学习流程已通过用户测试；
-完整的真实 GUI 备份保存、恢复和撤销验收仍未完成。这是预发布测试版，不是稳定生产版本。
-这里的“未签名测试版”指仅使用 ad-hoc 签名，没有 Developer ID 签名或 Apple 公证。
-安装、兼容性及备份限制见[发布说明](docs/releases/v0.3.0-beta.2.md)。
+这里的“未签名测试版”指仅 ad-hoc 签名，没有 Developer ID 签名或 Apple 公证。
+App 已内置后端，普通用户无需 Git、Python、Node.js、Rust、npm 或终端。
+校验方式及兼容性限制见[发布说明](docs/releases/v0.3.0-beta.2.md)。
 
-## 截图
-
-![英文干净首启](docs/assets/screenshots/first-run-en.png)
-
-![简体中文干净首启](docs/assets/screenshots/first-run-zh-CN.png)
-
-![合成数据 Study Engine 展示](docs/assets/screenshots/product-study-engine.png)
-
-前两张截图显示空的生产工作区。Study Engine 展示图只使用虚构的
-CS101、ECON201、STAT210 文本夹具。所有截图均不包含个人信息或真实课程资料。
-
-## 主要功能
-
-- 按课程、周次/模块、资料类型和练习类型整理本地文件
-- 预览 PDF、文本、代码、图片及支持的 Office 文件
-- 搜索文件名和已提取的可读正文
-- 在当前题目、文件、周次或课程范围内询问 AI
-- 从引用跳回来源文件，并在可靠时显示页码或幻灯片编号
-- 本地保存笔记、收藏、对话、练习记录和错题记录
-- 跟踪每份资料的进度、标记“需要复习”，并使用确定性的本地 FSRS 复习队列
-- 只检索老师提供的题目，不生成新的练习题
-- 不配置 OpenAI 也可使用整理、预览、搜索、笔记和学习记录
+原始文件保留在自己控制的文件夹里。第一次启动是空工作区，截图中的合成资料库不会随 App 分发。
+备份不包含原始课程文件或凭证，请单独保留原始文件。Canvas 需要学校配置 OAuth 客户端；
+AI 为可选功能，启用云端 AI 或索引会将选中的内容发送给所配置的提供商。
 
 ## 源码开发环境要求
 

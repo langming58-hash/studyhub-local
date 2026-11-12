@@ -1,5 +1,3 @@
-I released StudyHub Local: an early-stage open-source, local-first study material hub.
+StudyHub Local beta.2: PDFs, source-linked notes and FSRS cards on your Mac. Apple Silicon/macOS 13+. Ad-hoc signed, not notarized; prerelease. Backup GUI acceptance incomplete.
 
-Course -> Week organization, local search, synthetic demo, optional source-grounded OpenAI, citations, no telemetry by default, localhost-only, read-only MCP.
-
-GitHub: https://github.com/langming58-hash/studyhub-local
+https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.2

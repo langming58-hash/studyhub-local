@@ -2,9 +2,21 @@
 
 Use this guide when first users hit setup problems. Keep all examples synthetic and avoid asking people to share private course material.
 
-## macOS
+## Packaged macOS beta.2
 
-Recommended path:
+Use the [available DMG](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.2)
+on Apple Silicon with macOS 13+. Open it, drag StudyHub Local into Applications,
+and launch normally. The backend is bundled; no developer tools or Terminal
+are required. If Gatekeeper blocks the first launch, use System Settings >
+Privacy & Security > Open Anyway. Do not disable Gatekeeper. It is ad-hoc
+signed and not Apple notarized; this is a prerelease.
+
+Full real-GUI backup save/restore/undo acceptance remains incomplete. Backups
+exclude original files and credentials; keep separate copies of originals.
+
+## macOS source development
+
+For contributors:
 
 ```bash
 git clone https://github.com/langming58-hash/studyhub-local.git
@@ -24,7 +36,7 @@ If macOS blocks the `.command` launcher, start from Terminal with `npm run dev`.
 
 ## Windows
 
-Windows has not been fully polished yet. The expected path is:
+No Windows package is included in beta.2. For source development only:
 
 - install Git
 - install Python 3
@@ -36,9 +48,9 @@ Windows has not been fully polished yet. The expected path is:
 
 If this fails, ask for the exact command output with any private paths redacted.
 
-## Linux
+## Linux source development
 
-Expected path:
+No Linux package is included in beta.2. For contributors:
 
 - install Git, Python 3, and Node.js
 - clone the repository
@@ -111,8 +123,8 @@ npm run dev
 
 ## Connect Your Own StudyLibrary
 
-Use the app UI: Settings -> Study folder -> enter the local folder path -> Use
-this folder -> restart -> Scan Library.
+Use Settings -> Study folder -> Choose folder, select the intended local
+folder, then use Scan Library. Only choose folders you intend StudyHub to read.
 
 Keep real course files outside the repository.
 

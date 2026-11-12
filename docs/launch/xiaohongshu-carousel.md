@@ -1,37 +1,23 @@
-# Xiaohongshu Carousel Plan
+# beta.2 中文截图轮播文案
 
-Use only the approved clean-workspace screenshots from `docs/assets/screenshots/`. Do not use real academic screenshots, real course files, private paths, personal account UI, or API settings. Capture additional v0.2.0 screens only from a temporary empty workspace; do not reuse the removed v0.1.x Demo Mode assets.
+仅使用 [beta.2 真实截图](../assets/screenshots/README.md)。所有画面来自隔离的虚构资料库；
+不要使用真实学业资料、私人路径、个人账户或凭证，也不要将截图描述为示意图或在线 Canvas 账户。
 
-## Slide 1
+| 画面 | 原始截图 | 建议说明 |
+| --- | --- | --- |
+| 首页 | `beta2-home-dashboard.jpg` | 按课程整理本地资料，继续上次学习。 |
+| PDF 阅读 | `beta2-pdf-reader.jpg` | 在真实 Reader 中阅读虚构统计讲义。 |
+| 来源关联笔记与摘录 | `beta2-source-linked-notes-excerpts.jpg` | 已保存的摘录笔记与来源页码相连。 |
+| 手动 FSRS 卡片 | `beta2-manual-fsrs-review-cards.jpg` | 自己编写卡片，显示答案后进行本地复习评级。 |
+| 本地数据 | `beta2-local-data-export-backup.jpg` | 设置中的导出备份按钮；完整保存、恢复、撤销 GUI 验收仍未完成。 |
 
-Text: 大学课程资料太乱？我给自己做了一个本地 Study Hub
+图片位于 `docs/assets/screenshots/`，保留真实原生窗口，不添加模拟设备框架，不伪造功能。
+PDF 选中文本的手势未在本次自动化截图过程中得到验证；摘录画面只展示已保存的关联笔记。
+不包含尚未合并的 PR #44 PDF Highlights。
 
-Screenshot asset: `docs/assets/screenshots/first-run-zh-CN.png`
+正文复用 [通用中文文案](general-cn.md)。
 
-Caption: PDF / slides / Tutorial / Lab / Quiz 越堆越乱，所以做了一个本地优先的小工具。
+Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.2
 
-## Slide 2
-
-Text: English / 简体中文
-
-Screenshot asset: `docs/assets/screenshots/first-run-en.png`
-
-Caption: 可以跟随系统语言，也可以在设置里即时切换。第一次打开不带示例课程，需要自己新建课程或导入文件夹。
-
-## Future Slides
-
-Course、Week、Search、Ask AI、Study 等功能截图必须从临时空工作区重新生成并单独通过隐私检查后再加入。当前不要使用旧 Demo Mode 截图补足轮播数量。
-
-## Post Caption
-
-大学 PDF / PPT / Tutorial / Lab 越堆越乱，所以我给自己做了一个本地 Study Hub：StudyHub Local。
-
-它可以按 Course -> Week 整理资料，支持本地搜索，也可以可选开启 OpenAI，让 AI 基于自己的材料回答并显示来源。第一次打开是干净的空工作区；不开 API 也能使用本地功能；课程文件留在本机；服务只监听 localhost；默认没有 telemetry。
-
-Repo: https://github.com/langming58-hash/studyhub-local
-
-Release: https://github.com/langming58-hash/studyhub-local/releases/tag/v0.2.0
-
-这是早期开源项目，欢迎试用、提 Issue、PR 和反馈。
-
-Hashtags: #开源项目 #大学学习 #学习工具 #效率工具 #AI学习 #本地优先 #GitHub
+仅 Apple Silicon、macOS 13+；ad-hoc 签名、未公证，首次启动可能需要 Gatekeeper 批准。
+这是预发布测试版，不是稳定生产版本。
