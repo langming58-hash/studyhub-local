@@ -103,7 +103,7 @@ undisclosed vulnerabilities or substitute for independent review.
 This is a native-payload fix, not a claim that the entire upstream wheel has
 no pattern matches. The 2.4.1 wheel still contains upstream home-path patterns
 in Python build-configuration metadata and documentation examples, plus a
-token-shaped typing identifier. Their sanitized file/category counts are
+token-shaped text in a typing-file comment. Their sanitized file/category counts are
 disclosed in the structured evidence. The existing artifact scan is a byte
 scan of bundle files; it does not recursively decode compressed Python archives.
 The native preflight does not change that scanner's scope.
