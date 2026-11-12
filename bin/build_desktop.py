@@ -43,7 +43,7 @@ def main() -> int:
     env["RUSTFLAGS"] = f"{existing} {remap}".strip()
     env["CARGO_INCREMENTAL"] = "0"
     return subprocess.run(
-        [str(tauri), "build", "--bundles", "app,dmg"],
+        [str(tauri), "build", "--bundles", "app,dmg", "--", "--locked"],
         cwd=ROOT,
         env=env,
         check=False,

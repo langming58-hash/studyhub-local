@@ -32,7 +32,7 @@ def main() -> int:
     if not cargo:
         raise SystemExit("Cargo is unavailable. Install Rust or run the desktop toolchain setup.")
     return subprocess.run(
-        [cargo, "check", "--manifest-path", str(ROOT / "src-tauri" / "Cargo.toml")],
+        [cargo, "check", "--locked", "--manifest-path", str(ROOT / "src-tauri" / "Cargo.toml")],
         cwd=ROOT,
         env=env,
         check=False,
