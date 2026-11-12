@@ -1,6 +1,6 @@
 # StudyHub Local
 
-[![Release](https://img.shields.io/badge/release-v0.3.0--beta.1-orange)](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.1)
+[![Release](https://img.shields.io/badge/release-v0.3.0--beta.2-orange)](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.2)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/langming58-hash/studyhub-local/actions/workflows/ci.yml/badge.svg)](https://github.com/langming58-hash/studyhub-local/actions/workflows/ci.yml)
 ![Local-first](https://img.shields.io/badge/localhost--only-local--first-blue)
@@ -9,17 +9,17 @@
 
 ## Download
 
-**[Download for macOS](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.1)** · [Latest releases](https://github.com/langming58-hash/studyhub-local/releases) · [Source code](https://github.com/langming58-hash/studyhub-local)
+**[Download for macOS](https://github.com/langming58-hash/studyhub-local/releases/tag/v0.3.0-beta.2)** · [Latest releases](https://github.com/langming58-hash/studyhub-local/releases) · [Source code](https://github.com/langming58-hash/studyhub-local)
 
 | Version | Status | Mac | Minimum macOS | Signing |
 | --- | --- | --- | --- | --- |
-| v0.3.0-beta.1 | Prerelease | Apple Silicon only | macOS 13 Ventura | Unsigned beta, not notarized |
+| v0.3.0-beta.2 | Prerelease | Apple Silicon only | macOS 13 Ventura | Unsigned beta, not notarized |
 
 The downloaded app includes its local backend. A normal user does not need Git, Node.js, Python, Rust, npm, or Terminal.
 
 ### Install on macOS
 
-1. Open the GitHub release and download `StudyHub-Local-v0.3.0-beta.1-macos-arm64.dmg`.
+1. Open the GitHub release and download `StudyHub-Local-v0.3.0-beta.2-macos-arm64.dmg`.
 2. Open the DMG.
 3. Drag **StudyHub Local** to **Applications**.
 4. Try to open **StudyHub Local** normally.
@@ -31,17 +31,23 @@ StudyHub Local is an early-stage, local-first workspace for course files from an
 
 Your original files remain in a folder you control. The app starts with a clean, empty workspace: no sample courses, teacher material, test database, extracted text, or API credentials are bundled into the production runtime.
 
-## v0.3.0-beta.1
+## v0.3.0-beta.2
 
-- Clean first run: create a course or import a folder
-- English and Simplified Chinese UI with system detection and a local preference
-- Home, Courses, Search, Study, AI, and Settings product architecture
-- Local AI conversation history, citations, notes, and teacher-question safeguards
-- Public Apple Silicon DMG with a bundled backend and no end-user developer-tool requirement
-- Strict production/test fixture separation
-- Packaged privacy scanning and published SHA-256 checksum
+Release candidate; the download above becomes available after independent release review and publication.
 
-This is an early unsigned beta. It is not Developer ID signed or notarized.
+- PDF Reader V1 with selectable text, find, page navigation, zoom and fit-width
+- Source-linked Notes and PDF Text Excerpts with source-page navigation
+- Manual FSRS Review Cards and local review sessions
+- Institution-authorized Canvas OAuth, read-only Assignments and Today
+- Local backup export, Restore Preview, Apply and Undo
+- Bundled backend, English / Simplified Chinese UI, artifact privacy scans and SHA-256 verification
+
+PDF Highlights from unmerged PR #44 are excluded. Seven core macOS learning
+workflows have passed user testing; full real-GUI backup save/restore/undo
+acceptance remains incomplete. This is a prerelease, not a stable production
+release. Unsigned beta means ad-hoc signed, without Developer ID signing or
+Apple notarization. See the [release notes](docs/releases/v0.3.0-beta.2.md) for
+installation, compatibility and backup limitations.
 
 ## Screenshots
 
