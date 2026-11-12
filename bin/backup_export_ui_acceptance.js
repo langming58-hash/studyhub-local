@@ -67,6 +67,7 @@ const i18n = {
 
 let fetchHandler = () => ({ ok: true, status: 200, statusText: "OK", json: async () => ({}) });
 const posted = [];
+const requests = [];
 const invocations = [];
 let invokeResult = "Saved Backup.zip";
 const sandbox = {
@@ -80,7 +81,10 @@ const sandbox = {
   navigator: { clipboard: { writeText: async () => {} } },
   history: { pushState() {}, replaceState() {} },
   location: { hash: "" },
-  fetch: (url, options) => fetchHandler(url, options),
+  fetch: (url, options) => {
+    requests.push(url);
+    return fetchHandler(url, options);
+  },
   Headers,
   Response,
   setTimeout,
@@ -102,6 +106,7 @@ const sandbox = {
 };
 sandbox.window = sandbox;
 vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(path.join(ROOT, "static", "i18n", "catalog.js"), "utf8"), sandbox);
 vm.runInContext(
   appSource +
     "\n;globalThis.__test = { state, $, exportBackup };",
@@ -111,6 +116,38 @@ const app = sandbox.__test;
 
 async function main() {
   await new Promise((resolve) => setTimeout(resolve, 0));
+  app.state.health = { desktopMode: true };
+  requests.length = 0;
+  const stubTranslate = i18n.t;
+  for (const locale of ["en", "zh-CN"]) {
+    const warning = sandbox.STUDYHUB_TRANSLATIONS[locale]["backup.exportConfirm"];
+    check(locale + "_export_warning_present", typeof warning === "string" && warning.trim().length > 0);
+    check(locale + "_export_warning_privacy_and_scope", locale === "en"
+      ? /unencrypted ZIP/.test(warning) && /private notes/.test(warning) && /Original study files and credentials are not included/.test(warning)
+      : /未加密的 ZIP/.test(warning) && /私人笔记/.test(warning) && /不包含原始学习文件或凭证/.test(warning));
+    check(locale + "_export_warning_acceptance_boundary", locale === "en"
+      ? /Full real-GUI backup save\/restore\/undo acceptance remains incomplete/.test(warning)
+      : /真实 GUI 备份保存、恢复和撤销验收仍未完成/.test(warning));
+    const confirmations = [];
+    i18n.t = (key) => sandbox.STUDYHUB_TRANSLATIONS[locale][key] || key;
+    sandbox.confirm = (message) => {
+      confirmations.push(message);
+      return false;
+    };
+    await app.exportBackup();
+    check(locale + "_decline_shows_localized_warning", confirmations.length === 1 && confirmations[0] === warning);
+    check(locale + "_decline_makes_no_backend_request", requests.length === 0 && posted.length === 0);
+    check(locale + "_decline_makes_no_native_save_invocation", invocations.length === 0);
+  }
+  i18n.t = stubTranslate;
+  let desktopGuardConfirmations = 0;
+  sandbox.confirm = () => {
+    desktopGuardConfirmations += 1;
+    return true;
+  };
+  app.state.health = { desktopMode: false };
+  await app.exportBackup();
+  check("non_desktop_export_still_blocked", desktopGuardConfirmations === 0 && requests.length === 0 && invocations.length === 0 && sandbox.document.querySelector("#toast").textContent === "backup.desktopRequired");
   app.state.health = { desktopMode: true };
   fetchHandler = async (url, options = {}) => {
     if (url === "/api/backup/export" && (options.method || "GET").toUpperCase() === "POST") {

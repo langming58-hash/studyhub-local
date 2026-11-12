@@ -2784,6 +2784,7 @@ async function exportBackup() {
     toast(t("backup.desktopRequired"));
     return;
   }
+  if (!confirm(t("backup.exportConfirm"))) return;
   toast(t("backup.exporting"));
   try {
     const exported = await postJson("/api/backup/export", {});
