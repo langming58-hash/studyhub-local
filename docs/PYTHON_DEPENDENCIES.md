@@ -24,7 +24,7 @@ backend and converter helper; it is not an end-user installation requirement.
 The existing helper separation and converter/network/credential boundaries
 are unchanged.
 
-## The necessary compatibility pin
+## The necessary compatibility and privacy pins
 
 The previously installed ONNX Runtime 1.31.1 CPython 3.13 arm64 wheel is tagged
 macosx_14_0_arm64. This is a mismatch with the declared macOS 13 floor.
@@ -34,8 +34,9 @@ and the installed wheel metadata both establish that minimum.
 The locked graph uses ONNX Runtime 1.23.2, whose
 [CPython 3.13 arm64 wheel](https://pypi.org/project/onnxruntime/1.23.2/#files)
 is tagged macosx_13_0_arm64 and satisfies Magika 1.0.3's Python 3.13
-requirement of ONNX Runtime >=1.21.0. No other existing distribution version
-changes: 41 existing pins are retained, including FSRS 6.3.2, MarkItDown
+requirement of ONNX Runtime >=1.21.0. NumPy is pinned to 2.4.1 for the native
+wheel privacy reason documented below. The other 40 existing pins are retained,
+including FSRS 6.3.2, MarkItDown
 0.1.9, PyInstaller 6.22.2, certifi 2026.10.23 and the converter libraries.
 The selected ONNX version requires four additional transitives:
 coloredlogs 15.0.1, humanfriendly 10.0, sympy 1.14.0 and mpmath 1.3.0.
@@ -44,6 +45,15 @@ This pin addresses platform compatibility. pip-audit found no known
 vulnerabilities in the resulting 46-distribution environment. Wheel tags
 describe compatibility metadata; they do not verify native execution on every
 supported machine. A real macOS 13 clean-machine run remains pending.
+
+The official NumPy 2.5.4 macOS 11 arm64 wheel contains a GNU runtime library
+with 37 macOS-home-path matches. The macOS 13 target selects that wheel rather
+than the different macOS 14 wheel. Freezing preserves those strings in two
+packaged copies. NumPy 2.4.1 is the nearest tested earlier release whose
+compatible wheel's 20 native files pass the unchanged privacy patterns; all
+tested 2.4.2–2.4.6 and 2.5.0–2.5.4 compatible wheels retain the offending library.
+See the [sanitized provenance investigation](audits/numpy-wheel-privacy-2026-11-13.md)
+for artifact identities, limitations and the reasons library removal was rejected.
 
 ## Installation and drift rejection
 
@@ -61,7 +71,10 @@ PyInstaller runs, verification checks:
 - every installed distribution's exact version, with no missing, duplicate
   or extra distributions;
 - every installed wheel's tags against CPython 3.13/macOS 13 arm64 using the
-  locked packaging library's standard compatibility rules.
+  locked packaging library's standard compatibility rules;
+- NumPy's installed native files against the existing artifact scanner's
+  unchanged patterns, before freezing. Failures expose category and filename
+  only. Missing native inventory also fails closed.
 
 An edited intent file, modified lock, unpinned requirement, missing hash,
 runtime/build divergence or wrong environment fails closed. No source

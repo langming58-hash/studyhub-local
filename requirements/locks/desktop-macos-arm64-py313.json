@@ -4,8 +4,8 @@
     "requirements.txt": "7de088c7f6915b0e735c83de6f5ae8d0668aee5f18ce989939ba51c5ea85b648"
   },
   "locks": {
-    "requirements/locks/desktop-macos-arm64-py313.txt": "be8d9db914493131bb68f8ba7f57d463cfbf5857c3704bf66515ab63470e9486",
-    "requirements/locks/runtime-macos-arm64-py313.txt": "e72c22d28d348532578b92637d52a8f0db3b2dc06247ee67c23efff57e850c3a"
+    "requirements/locks/desktop-macos-arm64-py313.txt": "b3447e6673c28ec6ac155c4b8450554dade96b241d74b04ea20f785e6ca85726",
+    "requirements/locks/runtime-macos-arm64-py313.txt": "bafbf122f7340c59fa96857b79df5b676aaa3701f27d12b4fda411f361a33a57"
   },
   "schema_version": 1,
   "target": {

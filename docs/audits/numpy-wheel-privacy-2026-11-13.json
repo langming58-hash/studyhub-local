@@ -1,0 +1,1067 @@
+{
+  "blocked_head": "e0df0bbc3f2b44366b35a1a9f4f24fe4fb2a4cea",
+  "scanner_sha256": "1681cd6b8db49f0d5c8bfc869c6c20be173076afe523c28314c83a9664ea7230",
+  "fresh_reproduction": {
+    "source_head": "e0df0bbc3f2b44366b35a1a9f4f24fe4fb2a4cea",
+    "fresh_build": "PASS",
+    "expected_privacy_failure_reproduced": true,
+    "scanner_sha256": "1681cd6b8db49f0d5c8bfc869c6c20be173076afe523c28314c83a9664ea7230",
+    "files": 216,
+    "findings": [
+      "macOS home path: Contents/Resources/backend/_internal/libgcc_s.1.1.dylib",
+      "macOS home path: Contents/Resources/backend/_internal/numpy/.dylibs/libgcc_s.1.1.dylib"
+    ]
+  },
+  "upstream_wheels": [
+    {
+      "filename": "numpy-2.5.4-cp313-cp313-macosx_11_0_arm64.whl",
+      "sha256": "7415db95818b39ec475a5eea54d9e3b6bc83e3912158e46da3438cdce399804d",
+      "size": 12009826,
+      "native": [
+        {
+          "member": "numpy/.dylibs/libscipy_openblas64_.dylib",
+          "sha256": "4539d32aade191974df955d468ca49020544134982e62656ef569faa24ba7fcb",
+          "size": 13765008,
+          "architectures": [
+            "arm64"
+          ],
+          "is_symlink": false,
+          "matches": [],
+          "match_count": 0,
+          "dependencies": [
+            {
+              "library": "libgfortran.5.dylib",
+              "category": "loader-relative"
+            },
+            {
+              "library": "libSystem.B.dylib",
+              "category": "system"
+            }
+          ],
+          "install_id": {
+            "library": "libscipy_openblas64_.dylib",
+            "category": "other-absolute"
+          }
+        },
+        {
+          "member": "numpy/.dylibs/libgfortran.5.dylib",
+          "sha256": "728b8a719b0b015422632c74de2913ed14d82b319bc3a0643830bd506492662e",
+          "size": 3700784,
+          "architectures": [
+            "arm64"
+          ],
+          "is_symlink": false,
+          "matches": [],
+          "match_count": 0,
+          "dependencies": [
+            {
+              "library": "libquadmath.0.dylib",
+              "category": "loader-relative"
+            },
+            {
+              "library": "libgcc_s.1.1.dylib",
+              "category": "loader-relative"
+            },
+            {
+              "library": "libSystem.B.dylib",
+              "category": "system"
+            }
+          ],
+          "install_id": {
+            "library": "libgfortran.5.dylib",
+            "category": "other-absolute"
+          }
+        },
+        {
+          "member": "numpy/.dylibs/libquadmath.0.dylib",
+          "sha256": "1b341ae276c4adcb30c070b774ec6e68e819c883e897f0de8941d553f7989a0d",
+          "size": 371440,
+          "architectures": [
+            "arm64"
+          ],
+          "is_symlink": false,
+          "matches": [],
+          "match_count": 0,
+          "dependencies": [
+            {
+              "library": "libSystem.B.dylib",
+              "category": "system"
+            }
+          ],
+          "install_id": {
+            "library": "libquadmath.0.dylib",
+            "category": "other-absolute"
+          }
+        },
+        {
+          "member": "numpy/.dylibs/libgcc_s.1.1.dylib",
+          "sha256": "baee2e6118dd54c0852f881d718516d70884de84bfaa085de5d8d8f90baa3b06",
+          "size": 158976,
+          "architectures": [
+            "arm64"
+          ],
+          "is_symlink": false,
+          "matches": [
+            {
+              "category": "macOS-home",
+              "offset": 132167,
+              "prefix_length": 14,
+              "string_length": 133,
+              "string_sha256": "6e4fbe32dce8cabc984e1d6b9b69529fe5a877f27f117bf378f5952d6fa34320",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 133343,
+              "prefix_length": 14,
+              "string_length": 136,
+              "string_sha256": "ff6d3dd158a12fc757b9b6efa9ba35003e5f6c1e750bd4cf9f34c9e35e87fe6c",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 133539,
+              "prefix_length": 14,
+              "string_length": 140,
+              "string_sha256": "3b50e19ec5ef5ebbda3623315588e4fca0be626c101b564a63ac7e867594409a",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 133835,
+              "prefix_length": 14,
+              "string_length": 132,
+              "string_sha256": "5fa2f176161b0e98149bdd38c5566516b9a649218078bc69feac4a1325bf7155",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 133987,
+              "prefix_length": 14,
+              "string_length": 132,
+              "string_sha256": "2a23d3d6488f61f2e76690cb082addff70b2ee57764e55eb2424fe7ee0aabdbb",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 134138,
+              "prefix_length": 14,
+              "string_length": 131,
+              "string_sha256": "7ca0b9ed77fb633f334cd0c14d091daeb386d401a1459e7d8dcba1242ab701cb",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 134296,
+              "prefix_length": 14,
+              "string_length": 131,
+              "string_sha256": "e83742bdd4f570fb995f110a7fa71af08858116766b112ba71aa38f2d5fe3b5b",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 134454,
+              "prefix_length": 14,
+              "string_length": 131,
+              "string_sha256": "560cb97b8c971f85591dd5174aa8cb3754f06ef790d30c6de57ee0d4e7ec349c",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 134613,
+              "prefix_length": 14,
+              "string_length": 132,
+              "string_sha256": "1ec40e124812f80fcee2426fcd6187d9ad740aa81fad2f5c9239265579aaebec",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 134765,
+              "prefix_length": 14,
+              "string_length": 132,
+              "string_sha256": "cca39929585e1bdddf7a81d9499606430b47563a8732406f6481db1826c8a21c",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 134917,
+              "prefix_length": 14,
+              "string_length": 132,
+              "string_sha256": "cde72b342b127bc2718f48885f41bb14f16d72cc4617802b11ca155548016325",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 135071,
+              "prefix_length": 14,
+              "string_length": 134,
+              "string_sha256": "8a7a2b2d09e7e1b2e060f145ba22f287b9f1a21c4bcf4869054e714c97c0af44",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 135228,
+              "prefix_length": 14,
+              "string_length": 133,
+              "string_sha256": "1b60d5c49e2479a8f1c72dfa2c4aed83c53534e0c346be612202d42fb9fe46b3",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 135386,
+              "prefix_length": 14,
+              "string_length": 136,
+              "string_sha256": "3866decbab209872bf01c4e5493d24d0b0088a242a80efa47e927df9af970fe0",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 135549,
+              "prefix_length": 14,
+              "string_length": 135,
+              "string_sha256": "5699aea7485b48acccf5f2e41797c5337ab8e7a7ed93eb31f24193c5ab4ba19e",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 135712,
+              "prefix_length": 14,
+              "string_length": 137,
+              "string_sha256": "e0cbb5bdc6acb978a45cc3df2afabe7b226c1b0f629e58aca7184d947db3f666",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 135875,
+              "prefix_length": 14,
+              "string_length": 133,
+              "string_sha256": "818a9d453a55653c8c1e9e151beb8dd7f687438361842585d89bb06a74f51501",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 136033,
+              "prefix_length": 14,
+              "string_length": 136,
+              "string_sha256": "b5436182c40d3c7baeed874419175288413bce3228f7f7f5c6365c74a9523228",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 136196,
+              "prefix_length": 14,
+              "string_length": 135,
+              "string_sha256": "09443def1d01ec3f581479b50fa2f184c437b8e7dacb323bccc0b13e410aef78",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 136359,
+              "prefix_length": 14,
+              "string_length": 137,
+              "string_sha256": "5e8a0b1a008b35afd0b7798ca5e67344d65a8d8f2d86a70796716760e6c99459",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 136522,
+              "prefix_length": 14,
+              "string_length": 133,
+              "string_sha256": "6dee8ac1c7117dcec6c992f0289b18fd7bc20deb4eb6444ee6d4ba3db4fa6ffa",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 136680,
+              "prefix_length": 14,
+              "string_length": 136,
+              "string_sha256": "1afe9468b97dded63903bf405b26d7475290e464a2010744edd30fe566be2d15",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 136843,
+              "prefix_length": 14,
+              "string_length": 135,
+              "string_sha256": "2a187c53c58af57e0176451bcfd0932334a5a54b3b92effe218499b771acd323",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 137006,
+              "prefix_length": 14,
+              "string_length": 137,
+              "string_sha256": "784e92533040f1c8cc97bfd1b02f98b4edbb015f252cc1a1b1739a5e62fba3e5",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 137173,
+              "prefix_length": 14,
+              "string_length": 137,
+              "string_sha256": "c717eb856ae491305266695fd4604d425ce619fd69fd0f984e20b824e89e9019",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 137340,
+              "prefix_length": 14,
+              "string_length": 137,
+              "string_sha256": "3fe22288d0f031aea605e060c91725777a900203aace0829fa1cbd04154fdebe",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 137507,
+              "prefix_length": 14,
+              "string_length": 137,
+              "string_sha256": "2f9eed1cc0fb2d2e2745dcef50f1d11d92bae3f5bd368d69a1f9fef91c341bd9",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 137673,
+              "prefix_length": 14,
+              "string_length": 136,
+              "string_sha256": "2bd535282e14bc73e4c8bc09c88b2adac4ea147a3fcbc5b5e856a7763da3a148",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 137837,
+              "prefix_length": 14,
+              "string_length": 136,
+              "string_sha256": "214c811757caca3feb8dbd3227c5afa46e16a6126e08f5c1286c4b16aca742af",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 138001,
+              "prefix_length": 14,
+              "string_length": 136,
+              "string_sha256": "639946eb2cac8fc2861ff5d66c4e722199f2115abbc4f67d6b07adcfbdbfaae3",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 138162,
+              "prefix_length": 14,
+              "string_length": 133,
+              "string_sha256": "3f4ed640da0848d05327eb83df4bf631250ba1abefb38613f7b75692457d2181",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 138320,
+              "prefix_length": 14,
+              "string_length": 136,
+              "string_sha256": "dd15f59d4e207a71a2c7b8c10528482edcc2e4b45c725e3495ca60ea47e81827",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 138483,
+              "prefix_length": 14,
+              "string_length": 135,
+              "string_sha256": "9887c597dce04b8ec71fbf312183d2bb695bbfd06278251ce46869963a2157fe",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 138646,
+              "prefix_length": 14,
+              "string_length": 137,
+              "string_sha256": "a1b1a7129a245099db70c93437a2bd131e6db64189f396d2aa693c12f6d5063e",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 138817,
+              "prefix_length": 14,
+              "string_length": 141,
+              "string_sha256": "4fac5f8c469386ceba1a932d0340c939ffb00f82531dbb760efe803d195aaea4",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 139304,
+              "prefix_length": 14,
+              "string_length": 146,
+              "string_sha256": "1ef4110ea0c6bdac44e0c7842aab1f3b6e2a620021fd3ba3477b02d8fb16311c",
+              "same_string_in_upstream": null
+            },
+            {
+              "category": "macOS-home",
+              "offset": 139500,
+              "prefix_length": 14,
+              "string_length": 132,
+              "string_sha256": "e2a61363b94ce64970c2638883b7c364b5720a8d6c0f51b5055099be0d3c6b9c",
+              "same_string_in_upstream": null
+            }
+          ],
+          "match_count": 37,
+          "dependencies": [
+            {
+              "library": "libSystem.B.dylib",
+              "category": "system"
+            }
+          ],
+          "install_id": {
+            "library": "libgcc_s.1.1.dylib",
+            "category": "other-absolute"
+          }
+        }
+      ],
+      "installed_record_verified_count": 926,
+      "libgcc_record": [
+        "numpy/.dylibs/libgcc_s.1.1.dylib",
+        "sha256=uu4uYRjdVMCFL4gdcYUW1wiE3oS_qghd5djY-QuqOwY",
+        "158976"
+      ]
+    },
+    {
+      "filename": "numpy-2.5.4-cp313-cp313-macosx_14_0_arm64.whl",
+      "sha256": "6d6a71b9d9a97c03633aa12565ef2825ffa036cc1d99cfd50dacf0f128af4fe2",
+      "size": 5445803,
+      "native": []
+    }
+  ],
+  "installed_libgcc": {
+    "sha256": "baee2e6118dd54c0852f881d718516d70884de84bfaa085de5d8d8f90baa3b06",
+    "size": 158976,
+    "architectures": [
+      "arm64"
+    ],
+    "is_symlink": false,
+    "match_count": 37,
+    "dependencies": [
+      {
+        "library": "libSystem.B.dylib",
+        "category": "system"
+      }
+    ],
+    "install_id": {
+      "library": "libgcc_s.1.1.dylib",
+      "category": "other-absolute"
+    },
+    "matches_reference": "upstream_wheels[0].native libgcc matches"
+  },
+  "packaged": [
+    {
+      "member": "libgcc_s.1.1.dylib",
+      "sha256": "adb08135499a63e79fc49021e5e0613c88f66e5475941ce41bbe8dcc83d3dc88",
+      "size": 142592,
+      "architectures": [
+        "arm64"
+      ],
+      "is_symlink": false,
+      "matches": [
+        {
+          "offset": 115783,
+          "string_sha256": "6e4fbe32dce8cabc984e1d6b9b69529fe5a877f27f117bf378f5952d6fa34320",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 116959,
+          "string_sha256": "ff6d3dd158a12fc757b9b6efa9ba35003e5f6c1e750bd4cf9f34c9e35e87fe6c",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 117155,
+          "string_sha256": "3b50e19ec5ef5ebbda3623315588e4fca0be626c101b564a63ac7e867594409a",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 117451,
+          "string_sha256": "5fa2f176161b0e98149bdd38c5566516b9a649218078bc69feac4a1325bf7155",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 117603,
+          "string_sha256": "2a23d3d6488f61f2e76690cb082addff70b2ee57764e55eb2424fe7ee0aabdbb",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 117754,
+          "string_sha256": "7ca0b9ed77fb633f334cd0c14d091daeb386d401a1459e7d8dcba1242ab701cb",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 117912,
+          "string_sha256": "e83742bdd4f570fb995f110a7fa71af08858116766b112ba71aa38f2d5fe3b5b",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 118070,
+          "string_sha256": "560cb97b8c971f85591dd5174aa8cb3754f06ef790d30c6de57ee0d4e7ec349c",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 118229,
+          "string_sha256": "1ec40e124812f80fcee2426fcd6187d9ad740aa81fad2f5c9239265579aaebec",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 118381,
+          "string_sha256": "cca39929585e1bdddf7a81d9499606430b47563a8732406f6481db1826c8a21c",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 118533,
+          "string_sha256": "cde72b342b127bc2718f48885f41bb14f16d72cc4617802b11ca155548016325",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 118687,
+          "string_sha256": "8a7a2b2d09e7e1b2e060f145ba22f287b9f1a21c4bcf4869054e714c97c0af44",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 118844,
+          "string_sha256": "1b60d5c49e2479a8f1c72dfa2c4aed83c53534e0c346be612202d42fb9fe46b3",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 119002,
+          "string_sha256": "3866decbab209872bf01c4e5493d24d0b0088a242a80efa47e927df9af970fe0",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 119165,
+          "string_sha256": "5699aea7485b48acccf5f2e41797c5337ab8e7a7ed93eb31f24193c5ab4ba19e",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 119328,
+          "string_sha256": "e0cbb5bdc6acb978a45cc3df2afabe7b226c1b0f629e58aca7184d947db3f666",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 119491,
+          "string_sha256": "818a9d453a55653c8c1e9e151beb8dd7f687438361842585d89bb06a74f51501",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 119649,
+          "string_sha256": "b5436182c40d3c7baeed874419175288413bce3228f7f7f5c6365c74a9523228",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 119812,
+          "string_sha256": "09443def1d01ec3f581479b50fa2f184c437b8e7dacb323bccc0b13e410aef78",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 119975,
+          "string_sha256": "5e8a0b1a008b35afd0b7798ca5e67344d65a8d8f2d86a70796716760e6c99459",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 120138,
+          "string_sha256": "6dee8ac1c7117dcec6c992f0289b18fd7bc20deb4eb6444ee6d4ba3db4fa6ffa",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 120296,
+          "string_sha256": "1afe9468b97dded63903bf405b26d7475290e464a2010744edd30fe566be2d15",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 120459,
+          "string_sha256": "2a187c53c58af57e0176451bcfd0932334a5a54b3b92effe218499b771acd323",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 120622,
+          "string_sha256": "784e92533040f1c8cc97bfd1b02f98b4edbb015f252cc1a1b1739a5e62fba3e5",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 120789,
+          "string_sha256": "c717eb856ae491305266695fd4604d425ce619fd69fd0f984e20b824e89e9019",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 120956,
+          "string_sha256": "3fe22288d0f031aea605e060c91725777a900203aace0829fa1cbd04154fdebe",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 121123,
+          "string_sha256": "2f9eed1cc0fb2d2e2745dcef50f1d11d92bae3f5bd368d69a1f9fef91c341bd9",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 121289,
+          "string_sha256": "2bd535282e14bc73e4c8bc09c88b2adac4ea147a3fcbc5b5e856a7763da3a148",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 121453,
+          "string_sha256": "214c811757caca3feb8dbd3227c5afa46e16a6126e08f5c1286c4b16aca742af",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 121617,
+          "string_sha256": "639946eb2cac8fc2861ff5d66c4e722199f2115abbc4f67d6b07adcfbdbfaae3",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 121778,
+          "string_sha256": "3f4ed640da0848d05327eb83df4bf631250ba1abefb38613f7b75692457d2181",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 121936,
+          "string_sha256": "dd15f59d4e207a71a2c7b8c10528482edcc2e4b45c725e3495ca60ea47e81827",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 122099,
+          "string_sha256": "9887c597dce04b8ec71fbf312183d2bb695bbfd06278251ce46869963a2157fe",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 122262,
+          "string_sha256": "a1b1a7129a245099db70c93437a2bd131e6db64189f396d2aa693c12f6d5063e",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 122433,
+          "string_sha256": "4fac5f8c469386ceba1a932d0340c939ffb00f82531dbb760efe803d195aaea4",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 122920,
+          "string_sha256": "1ef4110ea0c6bdac44e0c7842aab1f3b6e2a620021fd3ba3477b02d8fb16311c",
+          "same_string_in_upstream": true
+        },
+        {
+          "offset": 123116,
+          "string_sha256": "e2a61363b94ce64970c2638883b7c364b5720a8d6c0f51b5055099be0d3c6b9c",
+          "same_string_in_upstream": true
+        }
+      ],
+      "match_count": 37,
+      "dependencies": [
+        {
+          "library": "libSystem.B.dylib",
+          "category": "system"
+        }
+      ],
+      "install_id": {
+        "library": "libgcc_s.1.1.dylib",
+        "category": "loader-relative"
+      }
+    },
+    {
+      "member": "numpy/.dylibs/libgcc_s.1.1.dylib",
+      "sha256": "adb08135499a63e79fc49021e5e0613c88f66e5475941ce41bbe8dcc83d3dc88",
+      "size": 142592,
+      "architectures": [
+        "arm64"
+      ],
+      "is_symlink": false,
+      "match_count": 37,
+      "dependencies": [
+        {
+          "library": "libSystem.B.dylib",
+          "category": "system"
+        }
+      ],
+      "install_id": {
+        "library": "libgcc_s.1.1.dylib",
+        "category": "loader-relative"
+      },
+      "matches_reference": "packaged[0].matches"
+    }
+  ],
+  "packaged_copies_same_file": false,
+  "incoming_libgcc_references": [
+    {
+      "dependent": "libgfortran.5.dylib",
+      "library": "libgcc_s.1.1.dylib",
+      "path_category": "rpath-relative",
+      "loader_sibling_exists": true
+    },
+    {
+      "dependent": "numpy/.dylibs/libgfortran.5.dylib",
+      "library": "libgcc_s.1.1.dylib",
+      "path_category": "rpath-relative",
+      "loader_sibling_exists": true
+    }
+  ],
+  "candidate_comparison": [
+    {
+      "version": "2.5.3",
+      "filename": "numpy-2.5.3-cp313-cp313-macosx_11_0_arm64.whl",
+      "sha256": "92f30e89b8ee0ecf363033576c422b2f58fed6a80bed0aa48dff6d14c654663e",
+      "size": 12003676,
+      "macos13_compatible": true,
+      "native_findings": [
+        {
+          "member": "numpy/.dylibs/libgcc_s.1.1.dylib",
+          "counts": {
+            "macOS home path": 37
+          }
+        }
+      ]
+    },
+    {
+      "version": "2.5.2",
+      "filename": "numpy-2.5.2-cp313-cp313-macosx_11_0_arm64.whl",
+      "sha256": "52c808f96484f5571a5cc863775ce50247c17dfb3b0361f8ed6b4b0456f80080",
+      "size": 11896845,
+      "macos13_compatible": true,
+      "native_findings": [
+        {
+          "member": "numpy/.dylibs/libgcc_s.1.1.dylib",
+          "counts": {
+            "macOS home path": 37
+          }
+        }
+      ]
+    },
+    {
+      "version": "2.5.1",
+      "filename": "numpy-2.5.1-cp313-cp313-macosx_11_0_arm64.whl",
+      "sha256": "30b44a6b53a7ae63c54c089a8726e5563ed302716c5b7ccc85afade40b0e7ff6",
+      "size": 11765832,
+      "macos13_compatible": true,
+      "native_findings": [
+        {
+          "member": "numpy/.dylibs/libgcc_s.1.1.dylib",
+          "counts": {
+            "macOS home path": 37
+          }
+        }
+      ]
+    },
+    {
+      "version": "2.5.0",
+      "filename": "numpy-2.5.0-cp313-cp313-macosx_11_0_arm64.whl",
+      "sha256": "146b81cdd3967fdb6beca8ba25f00c58741d8f3cbd797f55af0fbe0bfec3469c",
+      "size": 11754584,
+      "macos13_compatible": true,
+      "native_findings": [
+        {
+          "member": "numpy/.dylibs/libgcc_s.1.1.dylib",
+          "counts": {
+            "macOS home path": 37
+          }
+        }
+      ]
+    },
+    {
+      "version": "2.4.6",
+      "filename": "numpy-2.4.6-cp313-cp313-macosx_11_0_arm64.whl",
+      "sha256": "bf162abab1c1a736333192707cef898e735a5ca00f38f27eeedf44b39d9e85eb",
+      "size": 14693902,
+      "macos13_compatible": true,
+      "native_findings": [
+        {
+          "member": "numpy/.dylibs/libgcc_s.1.1.dylib",
+          "counts": {
+            "macOS home path": 37
+          }
+        }
+      ]
+    },
+    {
+      "version": "2.3.5",
+      "filename": "numpy-2.3.5-cp313-cp313-macosx_11_0_arm64.whl",
+      "sha256": "aa5bc7c5d59d831d9773d1170acac7893ce3a5e130540605770ade83280e7188",
+      "size": 12254652,
+      "macos13_compatible": true,
+      "native_findings": []
+    },
+    {
+      "version": "2.4.5",
+      "filename": "numpy-2.4.5-cp313-cp313-macosx_11_0_arm64.whl",
+      "sha256": "4603622bdcdbf8dccb1d9d5b21d16a7aa4e473ae6c8e14048d846fd4ca2907a0",
+      "size": 14694117,
+      "macos13_compatible": true,
+      "native_findings": [
+        {
+          "member": "numpy/.dylibs/libgcc_s.1.1.dylib",
+          "counts": {
+            "macOS home path": 37
+          }
+        }
+      ]
+    },
+    {
+      "version": "2.4.4",
+      "filename": "numpy-2.4.4-cp313-cp313-macosx_11_0_arm64.whl",
+      "sha256": "e823b8b6edc81e747526f70f71a9c0a07ac4e7ad13020aa736bb7c9d67196115",
+      "size": 14694532,
+      "macos13_compatible": true,
+      "native_findings": [
+        {
+          "member": "numpy/.dylibs/libgcc_s.1.1.dylib",
+          "counts": {
+            "macOS home path": 37
+          }
+        }
+      ]
+    },
+    {
+      "version": "2.4.3",
+      "filename": "numpy-2.4.3-cp313-cp313-macosx_11_0_arm64.whl",
+      "sha256": "2629289168f4897a3c4e23dc98d6f1731f0fc0fe52fb9db19f974041e4cc12b9",
+      "size": 14691853,
+      "macos13_compatible": true,
+      "native_findings": [
+        {
+          "member": "numpy/.dylibs/libgcc_s.1.1.dylib",
+          "counts": {
+            "macOS home path": 37
+          }
+        }
+      ]
+    },
+    {
+      "version": "2.4.2",
+      "filename": "numpy-2.4.2-cp313-cp313-macosx_11_0_arm64.whl",
+      "sha256": "bd3a7a9f5847d2fb8c2c6d1c862fa109c31a9abeca1a3c2bd5a64572955b2979",
+      "size": 14688322,
+      "macos13_compatible": true,
+      "native_findings": [
+        {
+          "member": "numpy/.dylibs/libgcc_s.1.1.dylib",
+          "counts": {
+            "macOS home path": 37
+          }
+        }
+      ]
+    },
+    {
+      "version": "2.4.1",
+      "filename": "numpy-2.4.1-cp313-cp313-macosx_11_0_arm64.whl",
+      "sha256": "82c55962006156aeef1629b953fd359064aa47e4d82cfc8e67f0918f7da3344f",
+      "size": 12368657,
+      "macos13_compatible": true,
+      "native_findings": []
+    }
+  ],
+  "selected": {
+    "filename": "numpy-2.4.1-cp313-cp313-macosx_11_0_arm64.whl",
+    "version": "2.4.1",
+    "sha256": "82c55962006156aeef1629b953fd359064aa47e4d82cfc8e67f0918f7da3344f",
+    "size": 12368657,
+    "macos13_compatible": true,
+    "installed_record_verified_count": 910,
+    "wheel_tags": [
+      "Tag: cp313-cp313-macosx_11_0_arm64"
+    ],
+    "native_files": [
+      {
+        "member": "numpy/linalg/lapack_lite.cpython-313-darwin.so",
+        "sha256": "741c4398de3030d30388b2fee29ff338f6171ceb34d6bb71327e1bda1328600b",
+        "size": 70992,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/linalg/_umath_linalg.cpython-313-darwin.so",
+        "sha256": "2709193054045d62aa6373e0191d34488c7b778ce9a64436951e384270ec844e",
+        "size": 172512,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/_core/_multiarray_tests.cpython-313-darwin.so",
+        "sha256": "26dfda9f8e398590ea36f58f8aa79a0decd0555d3be0ae152d82b22d028ce388",
+        "size": 120760,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/_core/_operand_flag_tests.cpython-313-darwin.so",
+        "sha256": "fbf68e06a8a8579ff686c4cbce0bcbda8f8e45e22dbc6b33e2c95fb5e10fcbf6",
+        "size": 51240,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/_core/_struct_ufunc_tests.cpython-313-darwin.so",
+        "sha256": "c187d52999bd0ec050c51d4fde0c43c72aa08919b9f305e39cae6680603283d9",
+        "size": 51464,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/_core/_rational_tests.cpython-313-darwin.so",
+        "sha256": "92ebab237f0a0fd3c8ad7bd4e6502fd1118192cd3fa3f6a3d552b98f4302ce80",
+        "size": 72760,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/_core/_simd.cpython-313-darwin.so",
+        "sha256": "c9d23f4f8d30a7cbd4b27bb587bde297b1d6938c728ba6782b11d9fbdb62e1ef",
+        "size": 339592,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/_core/_multiarray_umath.cpython-313-darwin.so",
+        "sha256": "d28cbf23314f892b67a2ff7b42a5a2f47e8295afad39e9aff26dbad381636862",
+        "size": 3695680,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/_core/_umath_tests.cpython-313-darwin.so",
+        "sha256": "87ced8874f25251e059956760483803ea80d7b18c30fc14a5acfa28cf2ae3799",
+        "size": 71680,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/.dylibs/libscipy_openblas64_.dylib",
+        "sha256": "75c96a4aa41d90c173859f1287a7632e88265710806598de454b4f8e4fff8012",
+        "size": 22701744,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/fft/_pocketfft_umath.cpython-313-darwin.so",
+        "sha256": "b35f8368ae059e68ab20596a97c4a5c4ca1a1fc4ed484a59c8913cf603fa662a",
+        "size": 329912,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/random/_pcg64.cpython-313-darwin.so",
+        "sha256": "05470cc1a5429948c9b557ba5698432426f9f8ffb82eb1ac24b263e62970dd8c",
+        "size": 133376,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/random/_mt19937.cpython-313-darwin.so",
+        "sha256": "b589f87920af29934eff4f0edb892c6e2cc0306e60636c64ae51c597602bfcbb",
+        "size": 132192,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/random/_philox.cpython-313-darwin.so",
+        "sha256": "b5f8e65eae06f8d456b645d06e2d0f145292ddfed82f6548db2b9d44aaebe8ca",
+        "size": 115664,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/random/_bounded_integers.cpython-313-darwin.so",
+        "sha256": "b3ec892295e95ba67f7f247b95e6713a9987f95fe46ac1252cf5745285dab472",
+        "size": 279752,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/random/bit_generator.cpython-313-darwin.so",
+        "sha256": "94afa4887c40d933603804752107428a51707213b935f0fe5bb494b6c4da7cbf",
+        "size": 189792,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/random/_generator.cpython-313-darwin.so",
+        "sha256": "bea2ca365e26f880de48dfc90f76c262f9dd64f24564a0cae9833c5a2a709231",
+        "size": 651264,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/random/mtrand.cpython-313-darwin.so",
+        "sha256": "138f0a4319f31759753b62f14ac55414cbc51305342c38edc84930d93a8e4fc0",
+        "size": 527712,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/random/_common.cpython-313-darwin.so",
+        "sha256": "10e7dd23c445593048a5be926b278d2d27665871ce8eae53e693de3811a44d9d",
+        "size": 231984,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      },
+      {
+        "member": "numpy/random/_sfc64.cpython-313-darwin.so",
+        "sha256": "1a00a579ee40e0e58f33f39e710badb5efa3091ea077562925be913216cc99e3",
+        "size": 97248,
+        "architecture": "arm64",
+        "macos_minimum": [
+          "11.0"
+        ]
+      }
+    ],
+    "host_macos": "15.7.4",
+    "non_native_findings": [
+      {
+        "member": "numpy/__init__.pyi",
+        "categories": {
+          "OpenAI file ID": 1
+        }
+      },
+      {
+        "member": "numpy/__config__.py",
+        "categories": {
+          "macOS home path": 2
+        }
+      },
+      {
+        "member": "numpy/lib/_datasource.py",
+        "categories": {
+          "Linux home path": 9
+        }
+      },
+      {
+        "member": "numpy/lib/_utils_impl.py",
+        "categories": {
+          "Linux home path": 1
+        }
+      }
+    ]
+  }
+}

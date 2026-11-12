@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import desktop_dependencies as deps
@@ -86,6 +87,19 @@ def main() -> int:
     checks["macos_ci_uses_locked_python"] = '.venv-desktop/bin" >> "$GITHUB_PATH"' in workflow and "python -m pip install -r requirements.txt" not in workflow
     checks["lock_changes_trigger_macos_ci"] = '"requirements/locks/**"' in workflow
     checks["uv_installer_version_pinned"] = 'version: "' + deps.UV_VERSION + '"' in workflow
+
+    with tempfile.TemporaryDirectory(prefix="studyhub-native-privacy-") as raw:
+        root = Path(raw)
+        member = Path("synthetic.dylib")
+        distribution = SimpleNamespace(files=[member], locate_file=lambda value: root / value)
+        (root / member).write_bytes(b"synthetic native payload")
+        checks["native_privacy_accepts_clean_payload"] = deps.verify_numpy_native_privacy(distribution) == 1
+        # Synthetic category fixture; no upstream private path is retained or printed.
+        (root / member).write_bytes(b"/" + b"Users" + b"/synthetic-builder/source")
+        checks["native_privacy_rejects_upstream_home_path"] = rejects(lambda: deps.verify_numpy_native_privacy(distribution))
+        checks["native_privacy_rejects_missing_inventory"] = rejects(
+            lambda: deps.verify_numpy_native_privacy(SimpleNamespace(files=[]))
+        )
 
     if args.installer:
         deps.verify_environment()

@@ -119,6 +119,21 @@ def wheel_compatible(wheel_metadata: str) -> bool:
     return bool(actual & supported)
 
 
+def verify_numpy_native_privacy(distribution) -> int:
+    """Reject upstream native payloads before freezing; never print matched bytes."""
+    from desktop_artifact_privacy import PATTERNS
+
+    native = [member for member in distribution.files or () if member.suffix in {".so", ".dylib"}]
+    if not native:
+        raise ValueError("NumPy native payload inventory is missing")
+    for member in native:
+        data = distribution.locate_file(member).read_bytes()
+        for category, pattern in PATTERNS.items():
+            if pattern.search(data):
+                raise ValueError("NumPy native privacy failure: " + category + "; " + member.name)
+    return len(native)
+
+
 def verify_environment(root: Path = ROOT) -> None:
     _, expected = validate_locks(root)
     require_platform()
@@ -134,6 +149,9 @@ def verify_environment(root: Path = ROOT) -> None:
     for distribution in distributions:
         if not wheel_compatible(distribution.read_text("WHEEL") or ""):
             raise ValueError("Wheel is incompatible with the locked desktop target: " + distribution.metadata["Name"])
+        if canonical(distribution.metadata["Name"]) == "numpy":
+            count = verify_numpy_native_privacy(distribution)
+            print(f"NumPy native privacy preflight: PASS ({count} files)")
     print(f"Desktop dependency environment: PASS ({len(expected)} distributions)")
 
 
