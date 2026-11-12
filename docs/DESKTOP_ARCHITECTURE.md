@@ -142,8 +142,12 @@ PyInstaller one-folder was selected for reliability and inspectability:
 
 The build uses a pinned uv-managed CPython 3.13.15 runtime. This avoids
 builder-specific home paths found in another Python distribution and makes the
-artifact privacy scan reproducible. PyInstaller is pinned and `certifi` has a
-minimum version constraint through the requirements files.
+artifact privacy scan reproducible. The macOS arm64 Python 3.13 runtime and
+build dependency graphs now have separate exact-version SHA-256 locks.
+`desktop:setup` uses pinned uv tooling and binary-only, hash-required sync,
+then verifies the exact environment and macOS 13 wheel compatibility. The
+freezer repeats that verification. See [Python dependency locks](PYTHON_DEPENDENCIES.md)
+for the platform target, regeneration procedure and compatibility limits.
 
 Tauri remains a good fit because:
 

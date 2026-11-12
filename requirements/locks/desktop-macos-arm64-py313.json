@@ -1,0 +1,17 @@
+{
+  "inputs": {
+    "requirements-desktop.txt": "0034505000aac956e6f095380f6185f33810103e5ec63f09e4602bf50b6bc731",
+    "requirements.txt": "7de088c7f6915b0e735c83de6f5ae8d0668aee5f18ce989939ba51c5ea85b648"
+  },
+  "locks": {
+    "requirements/locks/desktop-macos-arm64-py313.txt": "be8d9db914493131bb68f8ba7f57d463cfbf5857c3704bf66515ab63470e9486",
+    "requirements/locks/runtime-macos-arm64-py313.txt": "e72c22d28d348532578b92637d52a8f0db3b2dc06247ee67c23efff57e850c3a"
+  },
+  "schema_version": 1,
+  "target": {
+    "macos_minimum": "13.0",
+    "platform": "aarch64-apple-darwin",
+    "python": "3.13.15",
+    "uv": "0.12.3"
+  }
+}
